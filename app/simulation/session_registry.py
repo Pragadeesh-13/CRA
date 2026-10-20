@@ -2,7 +2,7 @@ import time
 from typing import Dict, Any, Optional
 from app.simulation.state import SimulationState
 from app.simulation.round_barrier import RoundBarrier
-from app.simulation.orchestrator import CouncilOrchestrator
+from app.simulation.troy import Troy, CouncilOrchestrator
 from app.http.sse_manager import SseManager
 from app.providers.base_driver import BaseLlmDriver
 

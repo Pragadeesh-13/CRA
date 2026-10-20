@@ -340,5 +340,6 @@ class ComplaintResolutionOrchestrator:
         return f"Complaint regarding {cleaned_text}."
 
 
-# Backward compatibility alias
+# Aliases
+Troy = ComplaintResolutionOrchestrator
 CouncilOrchestrator = ComplaintResolutionOrchestrator

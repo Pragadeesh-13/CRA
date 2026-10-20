@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.providers import create_driver, provider_base_url, PROVIDER_REGISTRY
-from app.simulation import SimulationState, RoundBarrier, CouncilOrchestrator, SessionRegistry
+from app.simulation import SimulationState, RoundBarrier, Troy, CouncilOrchestrator, SessionRegistry
 from app.http.sse_manager import SseManager
 from app.auth import KeyVault, SessionGuard, requires_key
 
@@ -32,7 +32,7 @@ driver = create_driver(
     stream_idle_timeout_ms=settings.llm_stream_idle_timeout_ms,
 )
 
-orchestrator = CouncilOrchestrator(
+orchestrator = Troy(
     config=settings,
     driver=driver,
     sse_manager=sse_manager,

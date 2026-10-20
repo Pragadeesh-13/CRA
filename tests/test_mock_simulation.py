@@ -2,7 +2,7 @@ import asyncio
 import pytest
 from app.config import settings
 from app.providers.mock_driver import MockDriver
-from app.simulation import SimulationState, RoundBarrier, CouncilOrchestrator
+from app.simulation import SimulationState, RoundBarrier, Troy, CouncilOrchestrator
 from app.http.sse_manager import SseManager
 from app.reference import execute_agent_with_reasoning
 
@@ -16,7 +16,7 @@ async def test_resolution_pipeline_lifecycle():
     events_received = []
     sse.broadcast = lambda event, data: events_received.append((event, data))
 
-    orch = CouncilOrchestrator(
+    orch = Troy(
         config=settings,
         driver=mock_driver,
         sse_manager=sse,
