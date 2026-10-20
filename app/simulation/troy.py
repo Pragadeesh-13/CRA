@@ -83,15 +83,14 @@ class ComplaintResolutionOrchestrator:
         if not text:
             return None
 
-        active = driver or self._active_driver()
-        short_title = await self._summarize_title(text, active)
+        short_title = self._title_fallback(text)
         self.sse.broadcast("topic", {"title": short_title or "Complaint"})
 
-        summary = await self._summarize_text(text, active)
+        summary = text if len(text) <= 160 else f"{text[:157]}..."
 
         story = {
-            "title": short_title or summary or "Complaint",
-            "source": "Complaint Resolution",
+            "title": short_title or "Complaint",
+            "source": "Customer Ticket",
             "url": "",
             "publishedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "description": text,
