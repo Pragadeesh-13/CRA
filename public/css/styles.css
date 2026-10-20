@@ -2948,3 +2948,188 @@ body {
 [data-theme="light"] .theme-icon-light {
   display: block !important;
 }
+
+/* ── CRA Troy Dedicated Styles ────────────────────────────────────────────── */
+
+.cra-live-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--input-bg);
+  border: 1px solid var(--panel-subtle-border);
+  font-family: "Poppins", sans-serif;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.03em;
+  transition: all 0.25s ease;
+}
+
+.cra-live-status .status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #38bdf8;
+  box-shadow: 0 0 8px #38bdf8;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.cra-live-status.running .status-dot {
+  background: #f59e0b;
+  box-shadow: 0 0 10px #f59e0b;
+  animation: pulse-dot 1.2s infinite;
+}
+
+.cra-live-status.completed .status-dot {
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+}
+
+.cra-intelligence-card {
+  background: var(--provider-box-bg);
+  border: 1px solid var(--provider-box-border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: var(--provider-box-shadow);
+  animation: rise-in 0.35s ease both;
+}
+
+.cra-intelligence-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: "Poppins", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cra-intelligence-header .cra-model-tag {
+  font-size: 10px;
+  color: var(--thought-badge-color);
+  background: var(--thought-bg);
+  border: 1px solid var(--thought-border);
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: none;
+}
+
+.cra-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.cra-metric-box {
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.cra-metric-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cra-metric-value {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.cra-metric-sub {
+  font-size: 10px;
+  color: var(--decision-badge-color);
+}
+
+.cra-entities-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding-top: 4px;
+  border-top: 1px dashed var(--panel-subtle-border);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.cra-entity-tag {
+  background: var(--feed-input-bg);
+  border: 1px solid var(--feed-input-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  color: var(--text);
+  font-family: monospace;
+}
+
+.agent-card.troy .troy-role-tag {
+  font-size: 10px;
+  color: var(--decision-badge-color);
+  background: var(--decision-tag-bg);
+  border: 1px solid var(--decision-tag-border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  margin-left: 6px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.agent-speech.troy-speech {
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-speech.troy-speech.streaming {
+  border-color: rgba(56, 189, 248, 0.4);
+  box-shadow: 0 0 14px rgba(56, 189, 248, 0.15);
+}
+
+.agent-speech.troy-speech h1,
+.agent-speech.troy-speech h2,
+.agent-speech.troy-speech h3,
+.agent-speech.troy-speech h4 {
+  margin: 10px 0 4px 0;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.agent-speech.troy-speech p {
+  margin-bottom: 8px;
+}
+
+.agent-speech.troy-speech ul,
+.agent-speech.troy-speech ol {
+  margin-left: 18px;
+  margin-bottom: 8px;
+}
+
+.agent-speech.troy-speech li {
+  margin-bottom: 3px;
+}
+
+.agent-speech.troy-speech strong {
+  color: var(--text-primary);
+}
+
+@keyframes pulse-dot {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  50% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
+

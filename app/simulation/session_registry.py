@@ -16,6 +16,7 @@ class SessionBundle:
         self.state = state
         self.barrier = barrier
         self.orchestrator = orchestrator
+        self.troy = orchestrator
         self.last_used_at = time.time()
 
 

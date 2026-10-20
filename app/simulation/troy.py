@@ -138,6 +138,13 @@ class ComplaintResolutionOrchestrator:
         complaint_text = story.get("description") or story.get("title") or ""
 
         self.sse.broadcast(
+            "resolution_start",
+            {
+                "story": {"title": story.get("title", ""), "url": story.get("url", "")},
+                "agent": "Troy",
+            },
+        )
+        self.sse.broadcast(
             "council_start",
             {
                 "story": {"title": story.get("title", ""), "url": story.get("url", "")},
@@ -148,15 +155,13 @@ class ComplaintResolutionOrchestrator:
         self.sse.broadcast(
             "system",
             {
-                "round": 0,
-                "message": f"Processing Complaint: {story.get('title', 'Complaint')}",
+                "message": f"Processing Complaint Ticket: {story.get('title', 'Complaint')}",
             },
         )
         self.sse.broadcast(
             "system",
             {
-                "round": 0,
-                "message": "Executing CRA machine learning inference (DistilBERT category classification, semantic similarity search, and entity extraction)...",
+                "message": "Running CRA ML models (DistilBERT category classification, semantic search, entity extraction)...",
             },
         )
 
@@ -184,11 +189,12 @@ class ComplaintResolutionOrchestrator:
         team = report.get("recommended_team", "Tier 1 Support")
         sla_hours = report.get("sla", {}).get("estimated_hours", 4.0)
 
+        # Broadcast the structured ML intelligence report
+        self.sse.broadcast("cra_report", report)
         self.sse.broadcast(
             "system",
             {
-                "round": 0,
-                "message": f"ML Analysis Complete: Category '{pred_cat}' ({conf_pct:.1f}% confidence) | Department: {team} | Estimated SLA: {sla_hours}h",
+                "message": f"ML Findings: Classified as '{pred_cat}' ({conf_pct:.1f}% confidence) | Routed to: {team} | Estimated SLA: {sla_hours}h",
             },
         )
 
@@ -256,11 +262,23 @@ class ComplaintResolutionOrchestrator:
             self.sse.broadcast("agent", {"agent": "Troy", "round": 0, "message": fallback_text, "state": f"Assigned: {team}"})
 
 
+        resolution_summary = f"Complaint categorized as '{pred_cat}' ({conf_pct:.1f}% confidence) and routed to {team}."
+        self.sse.broadcast(
+            "resolution_end",
+            {
+                "summary": resolution_summary,
+                "category": pred_cat,
+                "confidence": conf_pct,
+                "team": team,
+                "sla_hours": sla_hours,
+                "cra_report": report,
+            },
+        )
         self.sse.broadcast(
             "council_end",
             {
                 "round": 0,
-                "summary": f"Complaint categorized as '{pred_cat}' ({conf_pct:.1f}% confidence) and routed to {team}.",
+                "summary": resolution_summary,
                 "impacts": {
                     "positive": [
                         f"Category: {pred_cat}",
@@ -285,7 +303,8 @@ class ComplaintResolutionOrchestrator:
         Executes an agent call using the reference reasoning and output streaming handler.
         """
         use_stream = getattr(self.config, "llm_stream", True) is not False
-        show_reasoning = getattr(self.config, "show_reasoning", False)
+        # For LM Studio / local models: reasoning is shown only if explicitly enabled
+        show_reasoning = getattr(self.config, "show_reasoning", False) is True
 
         result = await execute_agent_with_reasoning(
             driver=self._active_driver(),

@@ -180,17 +180,18 @@ async def stream_events(request: Request):
 # ── Policy & Simulation Endpoints ─────────────────────────────────────────────
 
 @app.get("/api/policy")
+@app.get("/api/cra/ticket")
 async def get_policy(request: Request):
     session = get_active_session(request)
     story = session.orchestrator.get_latest_story()
-    return {"story": story or None}
+    return {"story": story or None, "ticket": story or None}
 
 
 @app.get("/api/trigger")
-async def manual_trigger(request: Request, title: str = "Manual council trigger"):
+async def manual_trigger(request: Request, title: str = "Manual resolution trigger"):
     session = get_active_session(request)
-    if session.orchestrator.is_council_running():
-        return JSONResponse(status_code=409, content={"ok": False, "running": True, "error": "A council run is already in progress."})
+    if session.orchestrator.is_running():
+        return JSONResponse(status_code=409, content={"ok": False, "running": True, "error": "A resolution is already in progress."})
 
     sess_cfg = await resolve_session_config(request)
     story = {
@@ -204,7 +205,7 @@ async def manual_trigger(request: Request, title: str = "Manual council trigger"
     session.sse_manager.broadcast("topic", {"title": story["title"]})
     session.sse_manager.broadcast("feed", story)
 
-    asyncio.create_task(session.orchestrator.run_council(story, driver=sess_cfg["driver"]))
+    asyncio.create_task(session.orchestrator.run(story, driver=sess_cfg["driver"]))
     return {"ok": True, "story": story}
 
 
@@ -265,20 +266,16 @@ async def next_policy(request: Request, query: str = ""):
         stream_idle_timeout_ms=settings.llm_stream_idle_timeout_ms,
     )
 
-    if session.orchestrator.is_council_running():
-        # If the previous council was waiting at a barrier for user input, reset and allow the new simulation to proceed
-        if session.orchestrator.barrier and session.orchestrator.barrier.round_begin_waiters:
-            session.orchestrator.barrier.reset()
-            session.orchestrator.state.release()
-            await asyncio.sleep(0.05)
-        else:
-            return JSONResponse(status_code=409, content={"ok": False, "running": True, "error": "A council run is already in progress. Let it finish before starting another."})
+    if session.orchestrator.is_running():
+        # Allow starting a new resolution by releasing any lingering state
+        session.orchestrator.state.release()
+        await asyncio.sleep(0.02)
 
     async def _run_flow():
         session.sse_manager.broadcast("policy_summarizing", {"query": policy_query})
         story = await session.orchestrator.summarise_policy(policy_query, driver=run_driver)
         if story:
-            await session.orchestrator.run_council(story, driver=run_driver)
+            await session.orchestrator.run(story, driver=run_driver)
 
     asyncio.create_task(_run_flow())
     return {"ok": True, "started": True}
@@ -301,7 +298,7 @@ async def get_config(request: Request):
         "maskedKey": vault_rec.get("maskedKey", ""),
         "persisted": bool(vault_rec.get("persisted", False)),
         "requiresKey": requires_key({"provider": sess_cfg["provider"]}),
-        "running": session.orchestrator.is_council_running(),
+        "running": session.orchestrator.is_running(),
         "showReasoning": getattr(settings, "show_reasoning", False),
     }
 
@@ -309,8 +306,8 @@ async def get_config(request: Request):
 @app.post("/api/config")
 async def post_config(request: Request):
     session = get_active_session(request)
-    if session.orchestrator.is_council_running():
-        return JSONResponse(status_code=409, content={"ok": False, "running": True, "error": "A council run is already in progress."})
+    if session.orchestrator.is_running():
+        return JSONResponse(status_code=409, content={"ok": False, "running": True, "error": "A resolution is already in progress."})
 
     body = await request.json()
     if not isinstance(body, dict):
@@ -404,7 +401,7 @@ async def login(request: Request):
         "id": f"user_{username}",
         "username": username,
         "fullName": username.capitalize(),
-        "email": f"{username}@council.local",
+        "email": f"{username}@cra.local",
     }
     session_token = f"token_{username}"
     guard.register_session(session_token, user)

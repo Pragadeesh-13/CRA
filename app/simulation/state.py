@@ -10,14 +10,20 @@ class SimulationState:
         self._history: List[Dict[str, Any]] = []
 
     @property
-    def council_running(self) -> bool:
+    def resolution_running(self) -> bool:
         with self._lock:
             return self._council_running
 
-    @council_running.setter
-    def council_running(self, val: bool):
+    @resolution_running.setter
+    def resolution_running(self, val: bool):
         with self._lock:
             self._council_running = bool(val)
+
+    def set_ticket(self, ticket: Optional[Dict[str, Any]]):
+        self.set_story(ticket)
+
+    def get_ticket(self) -> Optional[Dict[str, Any]]:
+        return self.get_story()
 
     def acquire_lock(self) -> bool:
         with self._lock:
