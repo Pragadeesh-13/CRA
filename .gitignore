@@ -11,3 +11,14 @@ venv/
 htmlcov/
 .env
 firebase_creds.json
+
+# Model weights and large datasets (>100MB)
+*.bin
+*.npy
+*.safetensors
+*.csv
+CRA_Models/bert_category_classifier/model.safetensors
+CRA_Models/faiss_index.bin
+CRA_Models/sbert_embeddings.npy
+CRA_Models/resolved_kb.csv
+

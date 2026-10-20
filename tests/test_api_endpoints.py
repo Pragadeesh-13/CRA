@@ -143,3 +143,30 @@ def test_lmstudio_config_and_driver():
     assert m_data["ok"] is True
     assert isinstance(m_data["models"], list)
 
+
+def test_cra_model_endpoints():
+    # Test fast category classification
+    res_cat = client.post(
+        "/api/cra/classify",
+        json={"complaint": "I was charged twice for my subscription renewal this month."},
+    )
+    assert res_cat.status_code == 200
+    cat_data = res_cat.json()
+    assert cat_data["ok"] is True
+    assert "predicted_category" in cat_data
+    assert "category_confidence" in cat_data
+
+    # Test full intelligence report
+    res_res = client.post(
+        "/api/cra/resolve",
+        json={"complaint": "Two-factor authentication codes are not being delivered to my phone. Order #9812."},
+    )
+    assert res_res.status_code == 200
+    res_data = res_res.json()
+    assert res_data["ok"] is True
+    assert "report" in res_data
+    assert "recommended_team" in res_data["report"]
+    assert "similar_cases" in res_data["report"]
+    assert "extracted_entities" in res_data["report"]
+
+

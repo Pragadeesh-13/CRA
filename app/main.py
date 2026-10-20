@@ -460,6 +460,51 @@ async def delete_keys(request: Request):
     return {"ok": True, "removed": removed}
 
 
+# ── CRA Model Inference Endpoints ─────────────────────────────────────────────
+
+@app.post("/api/cra/resolve")
+async def api_cra_resolve(request: Request):
+    """
+    Executes the full CRA machine learning intelligence pipeline for an incoming complaint.
+    Returns predicted category, top-3 breakdown, extracted entities, top-3 similar precedents,
+    recommended team routing, and estimated SLA hours.
+    """
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    complaint = str(body.get("complaint") or body.get("query") or body.get("text") or "").strip()
+    if not complaint:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Complaint text is required."})
+
+    from app.cra import cra_engine
+    report = await asyncio.to_thread(cra_engine.generate_intelligence_report, complaint)
+    return {"ok": True, "report": report}
+
+
+@app.post("/api/cra/classify")
+async def api_cra_classify(request: Request):
+    """
+    Fast category classification using the fine-tuned DistilBERT classifier.
+    """
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    complaint = str(body.get("complaint") or body.get("query") or body.get("text") or "").strip()
+    if not complaint:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Complaint text is required."})
+
+    from app.cra import cra_engine
+    result = await asyncio.to_thread(cra_engine.predict_category, complaint)
+    return {"ok": True, **result}
+
+
+
 # ── Static Frontend Serving ───────────────────────────────────────────────────
 
 PUBLIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public")

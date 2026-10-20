@@ -134,27 +134,126 @@ class ComplaintResolutionOrchestrator:
 
     async def _run_pipeline(self, story: Dict[str, Any]):
         """
-        Pipeline entry point.
-        Ready for implementing Troy's complaint resolution agent logic.
+        Executes the CRA machine learning pipeline and Troy's resolution deliberation.
         """
+        complaint_text = story.get("description") or story.get("title") or ""
+
         self.sse.broadcast(
             "council_start",
             {
                 "story": {"title": story.get("title", ""), "url": story.get("url", "")},
-                "agents": [{"name": "Troy", "state": "Complaint Agent"}],
+                "agents": [{"name": "Troy", "state": "Complaint Resolution Agent"}],
             },
         )
         self.sse.broadcast("round_start", {"round": 0, "label": "Resolution", "count": 1, "order": ["Troy"]})
-        self.sse.broadcast("system", {"round": 0, "message": f"Processing: {story.get('title', 'Complaint')}"})
+        self.sse.broadcast(
+            "system",
+            {
+                "round": 0,
+                "message": f"Processing Complaint: {story.get('title', 'Complaint')}",
+            },
+        )
+        self.sse.broadcast(
+            "system",
+            {
+                "round": 0,
+                "message": "Executing CRA machine learning inference (DistilBERT category classification, semantic similarity search, and entity extraction)...",
+            },
+        )
 
-        # Troy complaint resolution logic will be built here
-        # For now, emits lifecycle completion
+        from app.cra import cra_engine
+
+        # Run CRA models asynchronously without blocking event loop
+        try:
+            report = await asyncio.to_thread(cra_engine.generate_intelligence_report, complaint_text)
+        except Exception as e:
+            logger.error(f"CRA ML inference encountered an error: {e}", exc_info=True)
+            report = {
+                "complaint": complaint_text,
+                "predicted_category": "Support",
+                "category_confidence": 0.50,
+                "top_3_categories": [{"category": "Support", "score": 0.50}],
+                "extracted_entities": {"references": [], "dates": [], "amounts": [], "products": []},
+                "similar_cases": [],
+                "recommended_team": "Tier 1 Support",
+                "team_confidence": "Medium",
+                "sla": {"estimated_hours": 8.0, "sla_risk": "Low"},
+            }
+
+        pred_cat = report.get("predicted_category", "Support")
+        conf_pct = report.get("category_confidence", 0.0) * 100
+        team = report.get("recommended_team", "Tier 1 Support")
+        sla_hours = report.get("sla", {}).get("estimated_hours", 4.0)
+
+        self.sse.broadcast(
+            "system",
+            {
+                "round": 0,
+                "message": f"ML Analysis Complete: Category '{pred_cat}' ({conf_pct:.1f}% confidence) | Department: {team} | Estimated SLA: {sla_hours}h",
+            },
+        )
+
+        top_cats = [f"{c['category']} ({c['score']*100:.1f}%)" for c in report.get("top_3_categories", [])]
+        top_cats_str = ", ".join(top_cats)
+
+        # Build prompt for Troy incorporating ML model findings and historical precedents
+        prompt_lines = [
+            f"CUSTOMER COMPLAINT:\n\"{complaint_text}\"\n",
+            "CRA MACHINE LEARNING INTELLIGENCE FINDINGS:",
+            f"- Model: Fine-tuned DistilBERT Category Classifier",
+            f"- Predicted Category: {pred_cat} (Confidence: {conf_pct:.1f}%)",
+            f"- Top Categories: {top_cats_str}",
+            f"- Extracted Entities: References: {report.get('extracted_entities', {}).get('references', [])}, Dates: {report.get('extracted_entities', {}).get('dates', [])}, Products: {report.get('extracted_entities', {}).get('products', [])}",
+            f"- Recommended Department Routing: {team} (Method: {report.get('team_method', 'Rule-based')})",
+            f"- Estimated SLA & Resolution Time: {sla_hours} hours (Risk: {report.get('sla', {}).get('sla_risk', 'Low')})\n",
+        ]
+
+        similar_cases = report.get("similar_cases", [])
+        if similar_cases:
+            prompt_lines.append("HISTORICAL PRECEDENTS & RESOLUTION NOTES (from Knowledge Base):")
+            for idx, c in enumerate(similar_cases, 1):
+                prompt_lines.append(
+                    f"{idx}. Precedent [{c.get('similarity', 0.0)*100:.1f}% Match]: \"{c.get('description', '')}\"\n"
+                    f"   Outcome / Action: {c.get('resolution', '')}"
+                )
+            prompt_lines.append("")
+
+        prompt_lines.append(
+            "Please deliver your formal Complaint Resolution Assessment as Troy, Lead Complaint Resolution Agent. Structure your response with:\n"
+            "1. Executive Assessment & Category Confirmation\n"
+            "2. Root Cause Analysis & Precedent Alignment\n"
+            "3. Customer Communication Strategy (exact empathetic message to send to the customer)\n"
+            "4. Internal Routing & Next Action Steps"
+        )
+
+        prompt_content = "\n".join(prompt_lines)
+
+        troy_agent = {"name": "Troy", "state": f"Assigned: {team}"}
+        await self._agent_speak(
+            agent=troy_agent,
+            messages=[
+                {"role": "system", "content": "You are Troy, the Lead Autonomous Complaint Resolution Agent. Provide structured, authoritative, and helpful resolutions using model predictions."},
+                {"role": "user", "content": prompt_content},
+            ],
+            max_tokens=2048,
+            round_num=0,
+            label="Resolution",
+        )
+
         self.sse.broadcast(
             "council_end",
             {
                 "round": 0,
-                "summary": f"Complaint '{story.get('title', 'Complaint')}' registered for resolution.",
-                "impacts": {"positive": ["Registered"], "negative": []},
+                "summary": f"Complaint categorized as '{pred_cat}' ({conf_pct:.1f}% confidence) and routed to {team}.",
+                "impacts": {
+                    "positive": [
+                        f"Category: {pred_cat}",
+                        f"Team: {team}",
+                        f"SLA: {sla_hours}h",
+                    ],
+                    "negative": [],
+                },
+                "cra_report": report,
             },
         )
 

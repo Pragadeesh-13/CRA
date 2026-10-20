@@ -1,0 +1,307 @@
+[
+  {
+    "complaint": "I was charged twice for my subscription renewal this month. Please investigate.",
+    "predicted_category": "Subscription",
+    "category_confidence": 0.867,
+    "top_3_categories": [
+      {
+        "category": "Subscription",
+        "score": 0.867
+      },
+      {
+        "category": "Account Management",
+        "score": 0.0494
+      },
+      {
+        "category": "Refunds",
+        "score": 0.0435
+      }
+    ],
+    "extracted_entities": {
+      "products": [],
+      "issue_types": [
+        "subscription renewal"
+      ],
+      "dates": [
+        "this month"
+      ],
+      "locations": [],
+      "references": []
+    },
+    "similar_cases": [
+      {
+        "description": "Hi, I'm having an issue. I was charged for a renewal I didn't expect. It's been happening since yesterday.",
+        "category": "Subscription",
+        "resolution": "Manual review completed by a human agent; outcome communicated to the customer.",
+        "similarity": 0.8207
+      },
+      {
+        "description": "Hello, I'm having an issue. I was charged for a renewal I didn't expect. It's been happening since yesterday.",
+        "category": "Subscription",
+        "resolution": "Manual review completed by a human agent; outcome communicated to the customer.",
+        "similarity": 0.8207
+      },
+      {
+        "description": "I'm having an issue. I was charged for a renewal I didn't expect. It's been happening since yesterday.",
+        "category": "Subscription",
+        "resolution": "Manual review completed by a human agent; outcome communicated to the customer.",
+        "similarity": 0.8207
+      }
+    ],
+    "recommended_team": "Billing",
+    "team_confidence": "Medium",
+    "team_method": "Rule-based"
+  },
+  {
+    "complaint": "Two-factor authentication codes are not being delivered to my phone.",
+    "predicted_category": "Authentication & Access",
+    "category_confidence": 0.8772,
+    "top_3_categories": [
+      {
+        "category": "Authentication & Access",
+        "score": 0.8772
+      },
+      {
+        "category": "Account Management",
+        "score": 0.0643
+      },
+      {
+        "category": "Security",
+        "score": 0.0572
+      }
+    ],
+    "extracted_entities": {
+      "products": [],
+      "issue_types": [],
+      "dates": [],
+      "locations": [],
+      "references": []
+    },
+    "similar_cases": [
+      {
+        "description": "Good morning, Quick question - Two-factor authentication codes are not being delivered to my phone. Please advise.",
+        "category": "Authentication & Access",
+        "resolution": "Sent the requested information and confirmed the customer's issue was resolved.",
+        "similarity": 1.0
+      },
+      {
+        "description": "Good morning, Been struggling with this. Two-factor authentication codes are not being delivered to my phone.",
+        "category": "Authentication & Access",
+        "resolution": "Provided the relevant setting/steps; customer confirmed it worked.",
+        "similarity": 1.0
+      },
+      {
+        "description": "Hello, Reaching out because two-factor authentication codes are not being delivered to my phone. Any help appreciated.",
+        "category": "Authentication & Access",
+        "resolution": "Provided the relevant setting/steps; customer confirmed it worked.",
+        "similarity": 1.0
+      }
+    ],
+    "recommended_team": "Security",
+    "team_confidence": "Medium",
+    "team_method": "Rule-based"
+  },
+  {
+    "complaint": "The data is not syncing across my devices on the Mobile App. Urgent.",
+    "predicted_category": "Data Sync",
+    "category_confidence": 0.861,
+    "top_3_categories": [
+      {
+        "category": "Data Sync",
+        "score": 0.861
+      },
+      {
+        "category": "Performance",
+        "score": 0.0515
+      },
+      {
+        "category": "Bugs & Errors",
+        "score": 0.0462
+      }
+    ],
+    "extracted_entities": {
+      "products": [
+        "Mobile App"
+      ],
+      "issue_types": [],
+      "dates": [],
+      "locations": [],
+      "references": []
+    },
+    "similar_cases": [
+      {
+        "description": "Hi team, I'm having an issue. The system is not syncing data across devices properly. (on the Mobile App) This is fairly...",
+        "category": "Data Sync",
+        "resolution": "Investigated the issue, applied a fix, and verified with the customer.",
+        "similarity": 0.903
+      },
+      {
+        "description": "I'm having an issue. The system is not syncing data across devices properly. (on the Mobile App) This is fairly urgent f...",
+        "category": "Data Sync",
+        "resolution": "Walked the customer through troubleshooting; issue resolved after config change.",
+        "similarity": 0.9008
+      },
+      {
+        "description": "Hi, I'm having an issue. The system is not syncing data across devices properly. (on the Mobile App) This is fairly urge...",
+        "category": "Data Sync",
+        "resolution": "Reproduced the problem, escalated to L2, and confirmed resolution.",
+        "similarity": 0.9008
+      }
+    ],
+    "recommended_team": "Engineering",
+    "team_confidence": "High",
+    "team_method": "Rule + Similarity"
+  },
+  {
+    "complaint": "Where can I find the API documentation for bulk export?",
+    "predicted_category": "Integrations & API",
+    "category_confidence": 0.9001,
+    "top_3_categories": [
+      {
+        "category": "Integrations & API",
+        "score": 0.9001
+      },
+      {
+        "category": "Onboarding & How-To",
+        "score": 0.04
+      },
+      {
+        "category": "Bugs & Errors",
+        "score": 0.0342
+      }
+    ],
+    "extracted_entities": {
+      "products": [],
+      "issue_types": [
+        "API documentation",
+        "bulk export"
+      ],
+      "dates": [],
+      "locations": [],
+      "references": []
+    },
+    "similar_cases": [
+      {
+        "description": "Good morning, Need some help here. How do I bulk-export data via the API? (on the Web Portal) This is fairly urgent for ...",
+        "category": "Integrations & API",
+        "resolution": "Walked the customer through troubleshooting; issue resolved after config change.",
+        "similarity": 0.7875
+      },
+      {
+        "description": "Been struggling with this. How do I bulk-export data via the API? (on the Web Portal) This is fairly urgent for us.",
+        "category": "Onboarding & How-To",
+        "resolution": "Investigated the issue, applied a fix, and verified with the customer.",
+        "similarity": 0.7875
+      },
+      {
+        "description": "Hello, Quick question - How do I bulk-export data via the API? (on the Web Portal) This is fairly urgent for us.",
+        "category": "Integrations & API",
+        "resolution": "Investigated the issue, applied a fix, and verified with the customer.",
+        "similarity": 0.7875
+      }
+    ],
+    "recommended_team": "Engineering",
+    "team_confidence": "High",
+    "team_method": "Rule + Similarity"
+  },
+  {
+    "complaint": "A team member has more permissions than they should have on our account.",
+    "predicted_category": "Security",
+    "category_confidence": 0.8495,
+    "top_3_categories": [
+      {
+        "category": "Security",
+        "score": 0.8495
+      },
+      {
+        "category": "Authentication & Access",
+        "score": 0.0831
+      },
+      {
+        "category": "Account Management",
+        "score": 0.0666
+      }
+    ],
+    "extracted_entities": {
+      "products": [],
+      "issue_types": [],
+      "dates": [],
+      "locations": [],
+      "references": []
+    },
+    "similar_cases": [
+      {
+        "description": "Good morning, Hoping you can help: a team member has more access than they should. Happy to share more detail.",
+        "category": "Security",
+        "resolution": "Reproduced the problem, escalated to L2, and confirmed resolution.",
+        "similarity": 0.8577
+      },
+      {
+        "description": "A team member has more access than they should. Happy to share more detail.",
+        "category": "Security",
+        "resolution": "Walked the customer through troubleshooting; issue resolved after config change.",
+        "similarity": 0.8577
+      },
+      {
+        "description": "Reaching out because a team member has more access than they should. Happy to share more detail.",
+        "category": "Account Management",
+        "resolution": "Investigated the issue, applied a fix, and verified with the customer.",
+        "similarity": 0.8577
+      }
+    ],
+    "recommended_team": "Security",
+    "team_confidence": "High",
+    "team_method": "Rule + Similarity"
+  },
+  {
+    "complaint": "The dashboard is loading very slowly since yesterday's update.",
+    "predicted_category": "Data Sync",
+    "category_confidence": 0.8312,
+    "top_3_categories": [
+      {
+        "category": "Data Sync",
+        "score": 0.8312
+      },
+      {
+        "category": "Performance",
+        "score": 0.0768
+      },
+      {
+        "category": "Bugs & Errors",
+        "score": 0.0559
+      }
+    ],
+    "extracted_entities": {
+      "products": [],
+      "issue_types": [],
+      "dates": [
+        "yesterday"
+      ],
+      "locations": [],
+      "references": []
+    },
+    "similar_cases": [
+      {
+        "description": "Hi there, Need some help here. I am experiencing very slow performance while using the dashboard. This started today.",
+        "category": "Performance",
+        "resolution": "Walked the customer through troubleshooting; issue resolved after config change.",
+        "similarity": 0.7893
+      },
+      {
+        "description": "Hi there, I am experiencing very slow performance while using the dashboard. This started today.",
+        "category": "Performance",
+        "resolution": "Investigated the issue, applied a fix, and verified with the customer.",
+        "similarity": 0.7893
+      },
+      {
+        "description": "Hi there, Been struggling with this. I am experiencing very slow performance while using the dashboard. This started tod...",
+        "category": "Performance",
+        "resolution": "Investigated the issue, applied a fix, and verified with the customer.",
+        "similarity": 0.7893
+      }
+    ],
+    "recommended_team": "Engineering",
+    "team_confidence": "High",
+    "team_method": "Rule + Similarity"
+  }
+]
