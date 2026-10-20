@@ -229,7 +229,7 @@ class ComplaintResolutionOrchestrator:
         prompt_content = "\n".join(prompt_lines)
 
         troy_agent = {"name": "Troy", "state": f"Assigned: {team}"}
-        await self._agent_speak(
+        troy_message = await self._agent_speak(
             agent=troy_agent,
             messages=[
                 {"role": "system", "content": "You are Troy, the Lead Autonomous Complaint Resolution Agent. Provide structured, authoritative, and helpful resolutions using model predictions."},
@@ -239,6 +239,23 @@ class ComplaintResolutionOrchestrator:
             round_num=0,
             label="Resolution",
         )
+
+        if not troy_message:
+            fallback_text = (
+                f"**Complaint Resolution Assessment**\n\n"
+                f"- **Classified Category**: {pred_cat} ({conf_pct:.1f}% confidence)\n"
+                f"- **Assigned Department**: {team} ({report.get('team_method', 'Rule-based')})\n"
+                f"- **Target SLA**: {sla_hours} hours (Risk: {report.get('sla', {}).get('sla_risk', 'Low')})\n"
+                f"- **Extracted References**: {report.get('extracted_entities', {}).get('references', []) or 'None detected'}\n\n"
+                f"**Precedent Resolution Summary**:\n"
+                f"Found {len(similar_cases)} matching historical cases in the knowledge base. "
+                f"Top resolution pattern: {similar_cases[0].get('resolution', 'Standard review protocol.') if similar_cases else 'Manual verification.'}\n\n"
+                f"**Customer Action Plan**:\n"
+                f"Your request has been logged and assigned directly to our {team} team with priority tracking."
+            )
+            self.sse.broadcast("agent_start", {"agent": "Troy", "round": 0, "state": f"Assigned: {team}"})
+            self.sse.broadcast("agent", {"agent": "Troy", "round": 0, "message": fallback_text, "state": f"Assigned: {team}"})
+
 
         self.sse.broadcast(
             "council_end",

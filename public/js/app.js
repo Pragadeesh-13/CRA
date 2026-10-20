@@ -2699,6 +2699,14 @@ const connectLiveStream = () => {
       (data.impacts.negative || []).forEach((s) => setStateImpact(s, "negative"));
     }
 
+    isSummarizing = false;
+    fetchLocked = false;
+    const summarizingCard = document.getElementById("active-feed-card");
+    if (summarizingCard && summarizingCard.querySelector(".badge-summarizing")) {
+      summarizingCard.remove();
+      activeFeedCard = null;
+      updateFeedEmptyState();
+    }
     stopDebateRunningIndicator();
     setDebateLocked(false);
     if (fetchNextBtn) {
