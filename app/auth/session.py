@@ -10,6 +10,8 @@ PUBLIC_API_PATHS = {
     "/api/auth/google",
     "/health",
     "/api/health",
+    "/api/cra/resolve",
+    "/api/cra/classify",
 }
 
 
