@@ -1834,7 +1834,7 @@ body {
 }
 
 [data-theme="light"] .thinking-dot {
-  color: rgba(15, 23, 42, 0.95);
+  color: inherit;
   text-shadow: none;
 }
 
@@ -1849,19 +1849,22 @@ body {
 
 .thinking-dots {
   display: inline-flex;
+  align-items: baseline;
+  vertical-align: baseline;
   font-weight: 700;
   font-style: normal;
-  letter-spacing: 1.5px;
+  letter-spacing: 2px;
   margin-left: 2px;
 }
 
 .thinking-dot {
   opacity: 0;
-  color: rgba(255, 255, 255, 0.95);
-  text-shadow: 0 0 8px rgba(255, 255, 255, 0.4);
+  color: inherit;
+  display: inline-block;
 }
 
 .thinking-dot:nth-child(1) {
+  opacity: 1;
   animation: dot-1-cycle 1.4s infinite;
 }
 

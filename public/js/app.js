@@ -783,6 +783,9 @@ const updateFeedEmptyState = () => {
   }
 };
 
+const getThinkingDotsHtml = () =>
+  `<span class="thinking-dots" aria-hidden="true"><span class="thinking-dot">.</span><span class="thinking-dot">.</span><span class="thinking-dot">.</span></span>`;
+
 const showSummarizingFeedCard = (complaintText) => {
   let card = document.getElementById("active-feed-card");
   if (!card) {
@@ -794,9 +797,9 @@ const showSummarizingFeedCard = (complaintText) => {
   card.className = "feed-card active processing";
   card.innerHTML = `
     <div class="feed-card__header">
-      <span class="badge processing">Processing...</span>
+      <span class="badge processing">Processing${getThinkingDotsHtml()}</span>
     </div>
-    <h3 class="summarizing-pulse">Analyzing complaint ticket...</h3>
+    <h3 class="summarizing-pulse">Analyzing complaint ticket${getThinkingDotsHtml()}</h3>
     <p>${complaintText ? complaintText.slice(0, 140) + "..." : "Extracting intent & details..."}</p>
   `;
   updateFeedEmptyState();
@@ -995,11 +998,11 @@ const startTransformedStream = (rawText) => {
 // ── ML Model Analyzing Animation & Preliminary Assessment ──────────────────
 
 const ML_ANALYZING_STEPS = [
-  "Running Fine-Tuned DistilBERT Category Classifier...",
-  "Extracting ticket entities, order references, and monetary values...",
-  "Executing SBERT Vector Semantic Search across 248K historical precedents...",
-  "Evaluating XGBoost SLA timeline estimation & breach risk...",
-  "Synthesizing historical resolution patterns & department routing rules...",
+  "Running Fine-Tuned DistilBERT Category Classifier",
+  "Extracting ticket entities, order references, and monetary values",
+  "Executing SBERT Vector Semantic Search across 248K historical precedents",
+  "Evaluating XGBoost SLA timeline estimation & breach risk",
+  "Synthesizing historical resolution patterns & department routing rules",
 ];
 
 let mlCycleInterval = null;
@@ -1023,11 +1026,11 @@ const startMlAnalyzingCycle = () => {
     troySpeech.innerHTML = `
       <div class="troy-deliberating">
         <span class="troy-pulse-orb"></span>
-        <span class="troy-analyzing-text" id="troy-analyzing-msg">${ML_ANALYZING_STEPS[0]}</span>
+        <span class="troy-analyzing-text" id="troy-analyzing-msg">${ML_ANALYZING_STEPS[0]}${getThinkingDotsHtml()}</span>
       </div>
     `;
   }
-  updateLiveStatus("Troy: " + ML_ANALYZING_STEPS[0], true);
+  updateLiveStatus("Troy: " + ML_ANALYZING_STEPS[0] + "...", true);
 
   // Cycle messages every 1000ms
   mlCycleInterval = setInterval(() => {
@@ -1035,9 +1038,9 @@ const startMlAnalyzingCycle = () => {
     const msg = ML_ANALYZING_STEPS[mlCycleIndex % ML_ANALYZING_STEPS.length];
     const msgEl = document.getElementById("troy-analyzing-msg");
     if (msgEl) {
-      msgEl.textContent = msg;
+      msgEl.innerHTML = `${msg}${getThinkingDotsHtml()}`;
     }
-    updateLiveStatus("Troy: " + msg, true);
+    updateLiveStatus("Troy: " + msg + "...", true);
   }, 1000);
 
   // Complete cycling after 5 seconds exactly
@@ -1073,7 +1076,7 @@ const onMlCycleComplete = () => {
       troySpeech.innerHTML = `
         <div class="troy-deliberating">
           <span class="troy-pulse-orb"></span>
-          <span>Synthesizing formal resolution assessment & customer communication...</span>
+          <span>Synthesizing formal resolution assessment & customer communication${getThinkingDotsHtml()}</span>
         </div>
       `;
     }
@@ -1211,7 +1214,7 @@ const resetTroyConsole = () => {
     troySpeech.innerHTML = `
       <div class="troy-deliberating">
         <span class="troy-pulse-orb"></span>
-        <span class="troy-analyzing-text" id="troy-analyzing-msg">Initializing Fine-Tuned DistilBERT Category Classifier...</span>
+        <span class="troy-analyzing-text" id="troy-analyzing-msg">Initializing Fine-Tuned DistilBERT Category Classifier${getThinkingDotsHtml()}</span>
       </div>
     `;
   }
