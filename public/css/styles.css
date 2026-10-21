@@ -1385,13 +1385,18 @@ body {
   }
 }
 
-.deliberation {
+.panel.deliberation,
+.deliberation,
+#deliberation-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  overflow: hidden;
-  padding-right: 6px;
+  overflow-y: auto !important;
+  overflow-x: hidden;
+  padding-right: 8px;
+  padding-bottom: 28px;
   min-height: 0;
+  scroll-behavior: smooth;
 }
 
 .chat-pane {

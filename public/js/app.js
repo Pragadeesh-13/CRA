@@ -986,7 +986,11 @@ const startTransformedStream = (rawText) => {
     }
 
     if (deliberationList) {
-      deliberationList.scrollTop = deliberationList.scrollHeight;
+      const isNearBottom =
+        deliberationList.scrollHeight - deliberationList.scrollTop - deliberationList.clientHeight < 160;
+      if (isNearBottom) {
+        deliberationList.scrollTop = deliberationList.scrollHeight;
+      }
     }
 
     if (streamActionQueue.length === 0) {
