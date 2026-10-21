@@ -1439,10 +1439,10 @@ const renderResolutionActionButtons = async () => {
             <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || "Valued Customer"}</strong> (${c.customer_id} &middot; ${c.customer_email})</div>
             <div><span class="res-meta-lbl">Subscription Plan:</span> ${c.subscription_plan || "Enterprise Tier"}</div>
             <div><span class="res-meta-lbl">Category Audit:</span> <span class="status-badge verified">${cat} Reconciled</span></div>
-            <div><span class="res-meta-lbl">Autonomous Action:</span> <strong>${data?.resolution_action || verifyData?.action_btn_text}</strong></div>
+            <div><span class="res-meta-lbl">Autonomous Action:</span> <strong>${data?.resolution_action || data?.ticket?.resolution_action || verifyData?.action_btn_text || "Autonomous Resolution Executed"}</strong></div>
             <div><span class="res-meta-lbl">Reference ID:</span> <code>${data?.reference_id || verifyData?.reference_id || activeRefId}</code> | <span class="status-badge agent">Active - In Good Standing</span></div>
             <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Yes - Confirmation Dispatched</span> to ${c.customer_email}</div>
-            <div><span class="res-meta-lbl">Audit Log:</span> Recorded in <code>${data?.database_file || "data/customer_accounts.csv"}</code> at ${data?.timestamp || "Just now"} by Troy</div>
+            <div><span class="res-meta-lbl">Audit Log:</span> Recorded in <code>${data?.database_file || verifyData?.database_file || verifyData?.system_label || "System Audit Log"}</code> at ${data?.timestamp || "Just now"} by Troy</div>
           </div>
         </div>
       `;

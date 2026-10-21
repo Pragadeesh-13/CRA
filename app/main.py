@@ -206,14 +206,22 @@ async def get_ticket(request: Request):
 @app.get("/api/customer/verify")
 async def verify_customer(query: Optional[str] = None, customer_id: Optional[str] = None, category: Optional[str] = None):
     """Analyzes customer transaction and account records across all 11 categories."""
-    from app.database import get_category_complaint_context
-    q = (query or "").lower()
-    is_refund_query = any(k in q for k in ["refund", "double", "49", "88219", "twice"])
-    
-    if (category and category != "Refunds") or (not is_refund_query and category):
-        ctx = get_category_complaint_context(category=category or "", query=query or "")
+    from app.database import get_category_complaint_context, analyze_customer_transactions
+    from app.cra import cra_engine
+
+    cat = (category or "").strip()
+    if not cat and query:
+        try:
+            pred = cra_engine.predict_category(query)
+            cat = pred.get("predicted_category", "")
+        except Exception:
+            pass
+
+    ctx = get_category_complaint_context(category=cat, query=query or "")
+    if not ctx.get("is_refund", False):
         return {
             "ok": True,
+            "verified": True,
             "category": ctx.get("category"),
             "customer_id": ctx.get("customer_id"),
             "customer_name": ctx.get("customer_name"),
@@ -221,6 +229,7 @@ async def verify_customer(query: Optional[str] = None, customer_id: Optional[str
             "subscription_plan": ctx.get("subscription_plan"),
             "reference_id": ctx.get("reference_id"),
             "system_label": ctx.get("system_label"),
+            "database_file": ctx.get("database_file"),
             "status_pill": ctx.get("status_pill"),
             "action_btn_text": ctx.get("action_btn_text"),
             "system_details": ctx.get("system_details"),

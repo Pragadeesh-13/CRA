@@ -76,3 +76,71 @@ def test_troy_fallback_generation_all_11():
         assert "Customer Communication Strategy" in fallback
         assert "Internal Routing & Next Action Steps" in fallback
         assert cat in fallback
+
+
+def test_two_factor_auth_complaint_flow():
+    prompt = "Two-factor authentication codes are not being delivered to my phone. Cannot login to dashboard."
+    pred = cra_engine.predict_category(prompt)
+    assert pred["predicted_category"] == "Authentication & Access"
+    assert pred["category_confidence"] > 0.80
+
+    ctx = get_category_complaint_context(category=pred["predicted_category"], query=prompt)
+    assert ctx["is_refund"] is False
+    assert "Identity" in ctx["system_label"]
+    assert "AUTH-" in ctx["reference_id"]
+
+    res = execute_agent_resolution(query=prompt, category="Authentication & Access")
+    assert res["ok"] is True
+    assert res["category"] == "Authentication & Access"
+    assert "data/transactions.csv" not in res.get("database_file", "")
+    assert res["customer"]["customer_name"] == "Sarah Jenkins"
+
+    troy = Troy(
+        config=settings,
+        driver=None,
+        sse_manager=SseManager(),
+        state=SimulationState(),
+        enable_barrier=False,
+    )
+    fallback = troy._build_category_fallback(
+        pred_cat="Authentication & Access",
+        complaint_text=prompt,
+        conf_pct=pred["category_confidence"] * 100,
+        team="Security",
+        sla_hours=3.5,
+        report={"team_method": "Rule-based", "sla": {"sla_risk": "Low"}},
+        cat_ctx=ctx,
+    )
+    assert "data/transactions.csv" not in fallback
+    assert "Alex Morgan" not in fallback
+    assert "$49.00" not in fallback
+    assert "AUTH-" in fallback
+
+
+def test_non_refund_categories_have_no_csv_references():
+    non_refund_cats = [c for c in ALL_11_CATEGORIES if c != "Refunds"]
+    troy = Troy(
+        config=settings,
+        driver=None,
+        sse_manager=SseManager(),
+        state=SimulationState(),
+        enable_barrier=False,
+    )
+
+    for cat in non_refund_cats:
+        ctx = get_category_complaint_context(category=cat, query="issue description")
+        assert ctx["is_refund"] is False
+        assert "data/transactions.csv" not in ctx.get("database_file", "")
+
+        fallback = troy._build_category_fallback(
+            pred_cat=cat,
+            complaint_text="issue description",
+            conf_pct=90.0,
+            team="Engineering",
+            sla_hours=4.0,
+            report={"team_method": "Rule-based", "sla": {"sla_risk": "Low"}},
+            cat_ctx=ctx,
+        )
+        assert "data/transactions.csv" not in fallback
+        assert "Alex Morgan" not in fallback
+        assert "$49.00" not in fallback

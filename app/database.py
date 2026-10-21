@@ -409,14 +409,14 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
     q = (query or "").strip().lower()
 
     # Category 1: Refunds
-    is_refund_query = (
-        cat == "Refunds"
-        or "refund" in q
-        or "twice" in q
-        or "double" in q
+    # Triggered if explicitly in Refunds category or explicitly requesting duplicate charge/refund
+    is_explicit_refund = (
+        "refund" in q
         or "88219" in q
-        or ("charged" in q and ("twice" in q or "second" in q or "again" in q or "49" in q))
+        or ("charged" in q and ("twice" in q or "second" in q or "again" in q or "49" in q or "double" in q))
+        or ("duplicate" in q and ("charge" in q or "debit" in q or "payment" in q or "transaction" in q or "billing" in q))
     )
+    is_refund_query = cat == "Refunds" or is_explicit_refund
 
     if is_refund_query:
         txn_analysis = analyze_customer_transactions(query=query)
@@ -426,6 +426,7 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "category": "Refunds",
             "is_refund": True,
             "system_label": "Customer Transaction Ledger (data/transactions.csv)",
+            "database_file": "data/transactions.csv",
             "status_pill": f"✓ Refund Already Processed ({ref_id})" if is_already_refunded else "2 Charges in Single Cycle Found",
             "action_btn_text": "Verify & Reconfirm Refund" if is_already_refunded else "Let agent resolve it",
             "customer_id": txn_analysis.get("customer_id", "USR-10492"),
@@ -454,6 +455,7 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "category": "Authentication & Access",
             "is_refund": False,
             "system_label": "Identity & Access Management (Okta / IAM Gateway)",
+            "database_file": "Identity Directory (IAM / Okta)",
             "status_pill": "🔒 Account Locked: 2FA SMS Gateway Failure",
             "action_btn_text": "Let agent restore access & reset 2FA",
             "customer_id": "USR-08914",
@@ -467,7 +469,7 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
                 {"text": "Verifying corporate identity credentials for Sarah Jenkins (USR-08914)...", "delay": 700},
                 {"text": "Diagnosing authentication log: Carrier SMS delivery timeout on Payment Gateway...", "delay": 750},
                 {"text": "Generating temporary secure 2FA emergency bypass token (AUTH-9921)...", "delay": 750},
-                {"text": "Unlocking account status in customer database & resetting failed attempt counter...", "delay": 700},
+                {"text": "Unlocking account status in IAM directory & resetting failed attempt counter...", "delay": 700},
                 {"text": "Dispatching secure biometric re-enrollment link to sarah.j@enterprise.org...", "delay": 600},
             ],
         }
@@ -478,6 +480,7 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "category": "Billing",
             "is_refund": False,
             "system_label": "Stripe Invoicing & Global Tax Ledger",
+            "database_file": "Invoicing & Regional Tax Ledger",
             "status_pill": "📋 Pending VAT & Invoicing Documentation",
             "action_btn_text": "Let agent generate & dispatch VAT invoice",
             "customer_id": "USR-14309",
@@ -491,7 +494,7 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
                 {"text": "Locating account records for Elena Rostova (USR-14309)...", "delay": 700},
                 {"text": "Validating VAT registration ID via European VIES tax service...", "delay": 750},
                 {"text": "Generating official stamped VAT invoice (INV-85420-VAT) with tax breakdown...", "delay": 750},
-                {"text": "Updating billing profile in customer account database...", "delay": 700},
+                {"text": "Updating billing profile in customer organization profile...", "delay": 700},
                 {"text": "Dispatching signed tax receipt and PDF invoice to elena@globaltrade.de...", "delay": 600},
             ],
         }
@@ -502,6 +505,7 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "category": "Bugs & Errors",
             "is_refund": False,
             "system_label": "Sentry Error Telemetry & Jira Engineering Board",
+            "database_file": "Engineering Defect Telemetry (Sentry & Jira)",
             "status_pill": "🐛 HTTP 500 Unhandled Exception Logged",
             "action_btn_text": "Let agent dispatch bug report to Engineering",
             "customer_id": "USR-12053",
@@ -526,6 +530,7 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "category": "Data Sync",
             "is_refund": False,
             "system_label": "Cloud Real-Time Sync & State Reconciler",
+            "database_file": "Cloud Real-Time Sync & State Reconciler",
             "status_pill": "🔄 Desynchronized: Offline Queue Conflict",
             "action_btn_text": "Let agent trigger cloud resync & reconcile state",
             "customer_id": "USR-10492",
@@ -550,6 +555,7 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "category": "Integrations & API",
             "is_refund": False,
             "system_label": "API Gateway Telemetry & Webhook Dispatcher",
+            "database_file": "API Gateway Telemetry & Webhook Dispatcher",
             "status_pill": "⚡ Webhook Timeout (HTTP 504) / Rate Limit 429",
             "action_btn_text": "Let agent dispatch API guide & flush webhook queue",
             "customer_id": "USR-12053",
@@ -574,6 +580,7 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "category": "Onboarding & How-To",
             "is_refund": False,
             "system_label": "Customer Success Knowledge Base & Permissions Engine",
+            "database_file": "Customer Success Knowledge Base & CRM",
             "status_pill": "📚 Workspace Setup & Role Delegation Assistance",
             "action_btn_text": "Let agent send setup guide & configure workspace",
             "customer_id": "USR-09148",
@@ -598,6 +605,7 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "category": "Performance",
             "is_refund": False,
             "system_label": "Datadog APM & Database Query Telemetry",
+            "database_file": "Datadog APM & Database Query Telemetry",
             "status_pill": "⚡ High Latency Bottleneck: 42.8s Search Duration",
             "action_btn_text": "Let agent flush query cache & run optimization",
             "customer_id": "USR-08914",
@@ -622,6 +630,7 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "category": "Security",
             "is_refund": False,
             "system_label": "Cloudflare WAF & Security Operations Center (SOC)",
+            "database_file": "Cloudflare WAF & Security Operations Center (SOC)",
             "status_pill": "🛡️ Anomaly: Unauthorized Access / Untrusted IP",
             "action_btn_text": "Let agent terminate sessions & secure account",
             "customer_id": "USR-08914",
@@ -646,6 +655,7 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "category": "Subscription",
             "is_refund": False,
             "system_label": "Stripe Subscription Billing & Entitlements Engine",
+            "database_file": "Stripe Subscription & Entitlements Engine",
             "status_pill": "📋 Pending Downgrade Adjustment ($50.00 Credit Due)",
             "action_btn_text": "Let agent apply downgrade & credit prorated balance",
             "customer_id": "USR-09148",
@@ -669,7 +679,8 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
         return {
             "category": "Account Management",
             "is_refund": False,
-            "system_label": "Master Customer Account Directory (data/customer_accounts.csv)",
+            "system_label": "Enterprise Workspace Directory & IAM",
+            "database_file": "Enterprise Workspace Directory & IAM",
             "status_pill": "👤 Entity Update & Account Consolidation Request",
             "action_btn_text": "Let agent update account records & confirm",
             "customer_id": "USR-14309",
@@ -679,11 +690,11 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "reference_id": "ACC-MGT-5501",
             "system_details": "Request to merge subsidiary account into primary organization and update legal contact information.",
             "steps": [
-                {"text": "Accessing Master Customer Directory (data/customer_accounts.csv)...", "delay": 650},
+                {"text": "Accessing Enterprise Workspace Directory (IAM / SSO)...", "delay": 650},
                 {"text": "Locating organization profile for Elena Rostova (USR-14309)...", "delay": 700},
                 {"text": "Verifying organizational signing authority and corporate domain records...", "delay": 750},
                 {"text": "Processing account consolidation and updating primary contact credentials (ACC-MGT-5501)...", "delay": 750},
-                {"text": "Updating customer account master record in data/customer_accounts.csv...", "delay": 700},
+                {"text": "Updating customer master account record in Enterprise Directory...", "delay": 700},
                 {"text": "Dispatching consolidation confirmation notice to elena@globaltrade.de...", "delay": 600},
             ],
         }
@@ -787,6 +798,8 @@ def execute_agent_resolution(
     cust_name = context.get("customer_name", "Valued Customer")
     cust_email = context.get("customer_email", "customer@enterprise.org")
     plan = context.get("subscription_plan", "Enterprise Tier")
+    sys_file = context.get("database_file") or context.get("system_label", "System Directory")
+    res_action = action if (action and "Refund" not in action) else (context.get("action_btn_text") or f"{cat_name} autonomously resolved by Troy under reference {ref_id}.")
 
     logger.info(f"Autonomous resolution executed for category [{cat_name}] on account {cust_id} ({ref_id}).")
 
@@ -797,7 +810,7 @@ def execute_agent_resolution(
         "reference_id": ref_id,
         "already_refunded": False,
         "is_already_refunded": False,
-        "resolution_action": f"{cat_name} autonomously resolved by Troy under reference {ref_id}.",
+        "resolution_action": res_action,
         "customer": {
             "customer_id": cust_id,
             "customer_name": cust_name,
@@ -816,11 +829,11 @@ def execute_agent_resolution(
             "customer_name": cust_name,
             "customer_email": cust_email,
             "status": "Resolved",
-            "resolution_action": f"{cat_name} resolution executed by Troy. Reference ID: {ref_id}",
+            "resolution_action": res_action,
             "reference_id": ref_id,
             "customer_notified": f"Yes - Notice Dispatched ({ref_id})",
         },
-        "database_file": "data/customer_accounts.csv",
+        "database_file": sys_file,
         "timestamp": now_str,
     }
 

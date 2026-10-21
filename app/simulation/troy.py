@@ -302,13 +302,16 @@ class ComplaintResolutionOrchestrator:
             prompt_lines.append(f"INTERNAL SYSTEM & TELEMETRY AUDIT ({cat_ctx.get('system_label', 'Master Records')}):")
             prompt_lines.append(f"- Account ID: {cat_ctx.get('customer_id')} | Customer: {cat_ctx.get('customer_name')} ({cat_ctx.get('customer_email')})")
             prompt_lines.append(f"- Subscription Tier: {cat_ctx.get('subscription_plan')}")
-            prompt_lines.append(f"- Current Audit Status: {cat_ctx.get('status_pill')}")
+            prompt_lines.append(f"- Current Diagnostic Status: {cat_ctx.get('status_pill')}")
             prompt_lines.append(f"- Domain Findings: {cat_ctx.get('system_details')}")
-            prompt_lines.append(f"- Recommended Autonomous Action: {cat_ctx.get('action_btn_text')} (Ref: {cat_ctx.get('reference_id')})\n")
+            prompt_lines.append(f"- Recommended Autonomous Action: {cat_ctx.get('action_btn_text')} (Reference: {cat_ctx.get('reference_id')})\n")
 
             prompt_lines.append(
-                f"Please deliver your formal Complaint Resolution Assessment as Troy, Lead Complaint Resolution Agent for this '{pred_cat}' ticket. "
-                f"Address the root cause directly, explain the concrete resolution steps taking place under reference ID {cat_ctx.get('reference_id')}, and reassure the customer with clear next steps. "
+                f"DOMAIN RESOLUTION INSTRUCTIONS:\n"
+                f"You are Troy, Lead Complaint Resolution Agent. This is a '{pred_cat}' complaint ticket routed to {team}.\n"
+                f"CRITICAL CONSTRAINT: This ticket is strictly about '{pred_cat}'. Do NOT mention database transactions, bank charges, refunds, payment ledgers, CSV files, or transactions.csv.\n"
+                f"Address the technical and operational root cause of the {pred_cat} issue directly. "
+                f"Explain the concrete actions taking place under reference ID {cat_ctx.get('reference_id')}, and reassure the customer with clear next steps."
             )
 
         prompt_lines.append(
@@ -321,19 +324,26 @@ class ComplaintResolutionOrchestrator:
 
         prompt_content = "\n".join(prompt_lines)
 
+        if is_refund_domain:
+            system_instruction = (
+                "You are Troy, Lead Autonomous Complaint Resolution Agent (CRA) specializing in billing disputes and refund resolutions. "
+                "You analyze customer transaction records in data/transactions.csv to reconcile accounts, prevent duplicate debits, and execute or reconfirm refunds. "
+                "Provide a structured, authoritative, empathetic, and definitive resolution. Never mention 'policy simulation' or 'council'."
+            )
+        else:
+            system_instruction = (
+                f"You are Troy, Lead Autonomous Complaint Resolution Agent (CRA) specializing in {pred_cat}. "
+                f"You diagnose technical issues using ML model findings, system telemetry, and historical precedents. "
+                f"CRITICAL CONSTRAINT: Do NOT mention transactions, refunds, charges, payments, CSV files, or transactions.csv for this ticket. "
+                f"Provide a structured, authoritative, empathetic, and definitive resolution tailored strictly to this {pred_cat} complaint. "
+                "Never mention 'policy simulation' or 'council'."
+            )
+
         troy_agent = {"name": "Troy", "state": f"Assigned: {team}"}
         troy_message = await self._agent_speak(
             agent=troy_agent,
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are Troy, the Lead Autonomous Complaint Resolution Agent (CRA). "
-                        "You analyze customer complaint tickets using ML model findings, transaction records, and historical precedents. "
-                        "Provide a structured, authoritative, empathetic, and definitive resolution for the customer complaint ticket. "
-                        "Never mention 'policy simulation' or 'council'."
-                    ),
-                },
+                {"role": "system", "content": system_instruction},
                 {"role": "user", "content": prompt_content},
             ],
             max_tokens=2048,
@@ -341,7 +351,7 @@ class ComplaintResolutionOrchestrator:
             label="Resolution",
         )
 
-        if not troy_message:
+        if not troy_message or "Signal lost" in troy_message:
             fallback_text = self._build_category_fallback(
                 pred_cat=pred_cat,
                 complaint_text=complaint_text,
@@ -544,7 +554,7 @@ class ComplaintResolutionOrchestrator:
                 f"\"Hello Elena, thank you for reaching out. We have validated your German VAT/Tax identifier through the European VIES system and updated your organization profile. An updated, stamped tax invoice (Reference: {ref_id}) has been generated and dispatched to your email for accounting records.\"\n\n"
                 f"### Internal Routing & Next Action Steps\n"
                 f"- **Internal Routing**: Routed to {team}.\n"
-                f"- **Autonomous Action**: Appended verified VAT number to master customer profile in `data/customer_accounts.csv`; dispatched signed invoice PDF."
+                f"- **Autonomous Action**: Appended verified VAT number to master organization profile; dispatched signed invoice PDF."
             )
 
         elif pred_cat == "Bugs & Errors":
@@ -663,7 +673,7 @@ class ComplaintResolutionOrchestrator:
                 f"\"Hello Michael, thank you for reaching out. We confirmed that you requested a plan downgrade prior to renewal. We have updated your account to the Starter Tier ($29.00/mo) and credited the $50.00 prorated difference back to your account ledger under Reference {ref_id}. Future renewals will be billed at the correct $29 rate.\"\n\n"
                 f"### Internal Routing & Next Action Steps\n"
                 f"- **Internal Routing**: Routed to {team}.\n"
-                f"- **Autonomous Action**: Updated subscription plan to Starter Tier in `data/customer_accounts.csv`; applied $50.00 credit under {ref_id}."
+                f"- **Autonomous Action**: Updated subscription plan to Starter Tier in billing subscription schedule; applied $50.00 credit under {ref_id}."
             )
 
         else:  # Account Management
@@ -680,7 +690,7 @@ class ComplaintResolutionOrchestrator:
                 f"\"Hello Elena, thank you for contacting account support. We verified your corporate signing authority and successfully consolidated your organization accounts under reference {ref_id}. Your primary contact details and billing ownership have been updated in our master directory.\"\n\n"
                 f"### Internal Routing & Next Action Steps\n"
                 f"- **Internal Routing**: Routed to {team}.\n"
-                f"- **Autonomous Action**: Merged account entities in `data/customer_accounts.csv` under {ref_id}; dispatched corporate administrative confirmation."
+                f"- **Autonomous Action**: Merged account entities in Enterprise Directory under {ref_id}; dispatched corporate administrative confirmation."
             )
 
 
