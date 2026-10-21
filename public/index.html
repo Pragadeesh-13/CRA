@@ -129,12 +129,11 @@
               <div class="config-field">
                 <label for="provider-select" class="config-label">
                   <span>Provider</span>
-                  <span class="config-label-sub" id="provider-badge">None</span>
+                  <span class="config-label-sub" id="provider-badge">Cloud (Router)</span>
                 </label>
                 <div class="config-select-wrapper">
                   <select class="config-select" id="provider-select">
-                    <option value="" disabled selected>Select Provider</option>
-                    <option value="openrouter">OpenRouter</option>
+                    <option value="openrouter" selected>OpenRouter</option>
                     <option value="openai">OpenAI</option>
                     <option value="anthropic">Anthropic</option>
                     <option value="groq">Groq</option>
@@ -150,7 +149,11 @@
                 <!-- Dropdown for cloud providers -->
                 <div class="config-select-wrapper" id="model-select-wrapper">
                   <select class="config-select" id="model-select">
-                    <option value="" disabled selected>Select Model</option>
+                    <option value="openai/gpt-6.1-sol-pro" selected>openai/gpt-6.1-sol-pro</option>
+                    <option value="google/gemini-3.8-flash">google/gemini-3.8-flash</option>
+                    <option value="anthropic/claude-sonnet-5-5">anthropic/claude-sonnet-5-5</option>
+                    <option value="deepseek/deepseek-r1">deepseek/deepseek-r1</option>
+                    <option value="openai/gpt-4o">openai/gpt-4o</option>
                   </select>
                 </div>
                 <!-- Free-form text input for LM Studio -->
@@ -159,7 +162,8 @@
                     type="text"
                     class="config-input"
                     id="model-input"
-                    placeholder="e.g. qwen2.5-7b-instruct, local-model"
+                    placeholder="e.g. qwen/qwen3.5-9b, local-model"
+                    value="qwen/qwen3.5-9b"
                     autocomplete="off"
                     spellcheck="false"
                   />
@@ -227,6 +231,6 @@
         </section>
       </main>
     </div>
-    <script src="/js/app.js?v=38"></script>
+    <script src="/js/app.js?v=39"></script>
   </body>
 </html>

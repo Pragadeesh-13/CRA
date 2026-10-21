@@ -10,13 +10,15 @@ logger = logging.getLogger("provider:openai")
 
 CURATED_MODELS: Dict[str, List[str]] = {
     "openrouter": [
+        "openai/gpt-6.1-sol-pro",
+        "google/gemini-3.8-flash",
+        "anthropic/claude-sonnet-5-5",
+        "deepseek/deepseek-r1",
         "openai/gpt-4o",
         "openai/gpt-4o-mini",
-        "openai/gpt-6.1-sol-pro",
         "anthropic/claude-3.5-sonnet",
         "google/gemini-2.5-flash",
         "meta-llama/llama-3.3-70b-instruct",
-        "deepseek/deepseek-r1",
     ],
     "openai": [
         "gpt-4o",
@@ -24,13 +26,18 @@ CURATED_MODELS: Dict[str, List[str]] = {
         "gpt-4-turbo",
         "o1-preview",
         "o1-mini",
+        "o3-mini",
     ],
     "groq": [
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
         "mixtral-8x7b-32768",
     ],
-    "lmstudio": [],
+    "lmstudio": [
+        "qwen/qwen3.5-9b",
+        "google/gemma-4-e4b",
+        "google/gemma-4-12b-qat",
+    ],
 }
 
 
@@ -285,7 +292,11 @@ class OpenAiDriver(BaseLlmDriver):
                     data = res.json()
                     models_list = [m.get("id") for m in data.get("data", []) if m.get("id")]
                     if models_list:
-                        return {"ok": True, "models": models_list}
+                        curated = CURATED_MODELS.get(self.provider, [])
+                        pinned = [m for m in curated if m in models_list]
+                        remaining = [m for m in models_list if m not in pinned]
+                        combined = (pinned or curated) + remaining[:40]
+                        return {"ok": True, "models": combined}
         except Exception as e:
             logger.warning(f"Failed to fetch live models for {self.provider}: {e}")
 

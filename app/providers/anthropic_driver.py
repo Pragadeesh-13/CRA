@@ -8,6 +8,7 @@ logger = logging.getLogger("provider:anthropic")
 
 ANTHROPIC_MODELS = [
     "claude-3-5-sonnet-20241022",
+    "claude-3-7-sonnet-20250219",
     "claude-3-5-haiku-20241022",
     "claude-3-opus-20240229",
 ]
@@ -49,6 +50,7 @@ def format_anthropic_payload(
 class AnthropicDriver(BaseLlmDriver):
     def __init__(
         self,
+        provider: str = "anthropic",
         model: str = "claude-3-5-sonnet-20241022",
         api_key: str = "",
         base_url: str = "https://api.anthropic.com",
@@ -56,7 +58,7 @@ class AnthropicDriver(BaseLlmDriver):
         stream_idle_timeout_ms: int = 90000,
         **options: Any,
     ):
-        super().__init__(provider="anthropic", **options)
+        super().__init__(provider=provider, **options)
         self.model = model
         self.api_key = api_key
         self.base_url = (base_url or "https://api.anthropic.com").rstrip("/")

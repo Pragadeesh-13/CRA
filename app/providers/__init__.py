@@ -34,7 +34,9 @@ def create_driver(provider_name: str, **options) -> BaseLlmDriver:
         raise ValueError(
             f"Unsupported provider '{provider_name}'. Supported: {', '.join(PROVIDER_REGISTRY.keys())}"
         )
-    return driver_cls(provider=norm, **options)
+    clean_opts = dict(options)
+    clean_opts.pop("provider", None)
+    return driver_cls(provider=norm, **clean_opts)
 
 
 __all__ = [

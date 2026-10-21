@@ -5,8 +5,8 @@ from app.providers.base_driver import BaseLlmDriver
 
 
 class MockDriver(BaseLlmDriver):
-    def __init__(self, **options: Any):
-        super().__init__(provider="mock", **options)
+    def __init__(self, provider: str = "mock", **options: Any):
+        super().__init__(provider=provider, **options)
 
     def _determine_response(self, messages: List[Dict[str, str]]) -> str:
         prompt_text = " ".join(m.get("content", "") for m in messages).lower()

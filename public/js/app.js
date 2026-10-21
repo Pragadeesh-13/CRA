@@ -100,6 +100,8 @@ const PROVIDERS = {
       "google/gemini-3.8-flash",
       "anthropic/claude-sonnet-5-5",
       "deepseek/deepseek-r1",
+      "openai/gpt-4o",
+      "openai/gpt-4o-mini",
     ],
     keyHint: "Required",
     keyPlaceholder: "sk-or-v1-...",
@@ -113,6 +115,9 @@ const PROVIDERS = {
       "gpt-4o",
       "gpt-4o-mini",
       "gpt-4-turbo",
+      "o1-preview",
+      "o1-mini",
+      "o3-mini",
     ],
     keyHint: "Required",
     keyPlaceholder: "sk-...",
@@ -120,12 +125,13 @@ const PROVIDERS = {
   anthropic: {
     name: "Anthropic",
     badge: "Cloud",
-    baseUrl: "https://api.anthropic.com/v1",
-    defaultModel: "claude-sonnet-5-5",
+    baseUrl: "https://api.anthropic.com",
+    defaultModel: "claude-3-5-sonnet-20241022",
     exampleModels: [
-      "claude-sonnet-5-5",
-      "claude-haiku-4-5",
-      "claude-opus-5-5",
+      "claude-3-5-sonnet-20241022",
+      "claude-3-7-sonnet-20250219",
+      "claude-3-5-haiku-20241022",
+      "claude-3-opus-20240229",
     ],
     keyHint: "Required",
     keyPlaceholder: "sk-ant-...",
@@ -138,6 +144,7 @@ const PROVIDERS = {
     exampleModels: [
       "llama-3.3-70b-versatile",
       "llama-3.1-8b-instant",
+      "mixtral-8x7b-32768",
     ],
     keyHint: "Required",
     keyPlaceholder: "gsk_...",
@@ -170,10 +177,11 @@ const initProviderConfig = () => {
   if (!providerSelect || !modelSelect) return;
 
   const modelCache = {};
+  let activeLoadSeq = 0;
 
   const getActiveModel = () => {
     if (providerSelect?.value === "lmstudio") {
-      return modelInput?.value?.trim() || "";
+      return modelInput?.value?.trim() || PROVIDERS.lmstudio.defaultModel;
     }
     return modelSelect?.value?.trim() || "";
   };
@@ -190,10 +198,11 @@ const initProviderConfig = () => {
           break;
         }
       }
-      if (!matched) {
+      if (!matched && val) {
         const opt = document.createElement("option");
         opt.value = val;
         opt.textContent = val;
+        opt.selected = true;
         modelSelect.prepend(opt);
         modelSelect.selectedIndex = 0;
       }
@@ -204,7 +213,12 @@ const initProviderConfig = () => {
     const isLmStudio = providerKey === "lmstudio";
     if (isLmStudio) {
       if (modelSelectWrapper) modelSelectWrapper.style.display = "none";
-      if (modelInputWrapper) modelInputWrapper.style.display = "flex";
+      if (modelInputWrapper) {
+        modelInputWrapper.style.display = "flex";
+        if (modelInput && !modelInput.value.trim()) {
+          modelInput.value = PROVIDERS.lmstudio.defaultModel;
+        }
+      }
       if (modelFieldLabel) modelFieldLabel.setAttribute("for", "model-input");
     } else {
       if (modelSelectWrapper) modelSelectWrapper.style.display = "flex";
@@ -214,7 +228,9 @@ const initProviderConfig = () => {
   };
 
   const updateModelOptions = (providerKey, models, preferredModel) => {
-    const targetModel = preferredModel || "";
+    if (!modelSelect) return;
+    const targetModel = preferredModel || modelSelect.value || PROVIDERS[providerKey]?.defaultModel || "";
+
     modelSelect.innerHTML = "";
     const placeholderOpt = document.createElement("option");
     placeholderOpt.value = "";
@@ -238,6 +254,10 @@ const initProviderConfig = () => {
       opt.textContent = targetModel;
       opt.selected = true;
       modelSelect.appendChild(opt);
+    }
+
+    if (modelInput && targetModel) {
+      modelInput.value = targetModel;
     }
   };
 
@@ -272,10 +292,11 @@ const initProviderConfig = () => {
   };
 
   const loadModelsDynamically = async (providerKey) => {
+    if (providerKey === "lmstudio") return; // LM Studio uses text input
+    const seq = ++activeLoadSeq;
     const config = PROVIDERS[providerKey];
     if (!config) return;
     const apiKey = apiKeyInput?.value?.trim() || "";
-    const currentModel = getActiveModel();
 
     try {
       const q = new URLSearchParams({ provider: providerKey });
@@ -284,13 +305,18 @@ const initProviderConfig = () => {
 
       const res = await fetch(`/api/models?${q.toString()}`, { headers });
       const data = await res.json();
+      if (seq !== activeLoadSeq || providerSelect.value !== providerKey) return;
+
       if (data.ok && Array.isArray(data.models) && data.models.length > 0) {
         modelCache[providerKey] = data.models;
+        const currentModel = getActiveModel() || config.defaultModel;
         updateModelOptions(providerKey, data.models, currentModel);
         return;
       }
     } catch (_) {}
 
+    if (seq !== activeLoadSeq || providerSelect.value !== providerKey) return;
+    const currentModel = getActiveModel() || config.defaultModel;
     updateModelOptions(providerKey, modelCache[providerKey] || config.exampleModels || [], currentModel);
   };
 
@@ -359,6 +385,7 @@ const initProviderConfig = () => {
     if (modelSelect.value) {
       clearInputError(modelSelect);
       dismissTopWarning();
+      if (modelInput) modelInput.value = modelSelect.value;
     }
     saveConfigLocally();
     syncConfigToServer();
@@ -386,7 +413,7 @@ const initProviderConfig = () => {
   fetch("/api/config", { headers: authHeaders() })
     .then((r) => (r.ok ? r.json() : null))
     .then((cfg) => {
-      if (cfg && cfg.provider) {
+      if (cfg && cfg.provider && PROVIDERS[cfg.provider]) {
         providerSelect.value = cfg.provider;
         applyProvider(cfg.provider, cfg.model);
         if (cfg.maskedKey && apiKeyInput) {
@@ -398,15 +425,35 @@ const initProviderConfig = () => {
           const raw = localStorage.getItem("cra_troy_config");
           if (raw) {
             const parsed = JSON.parse(raw);
-            if (parsed.provider) {
+            if (parsed.provider && PROVIDERS[parsed.provider]) {
               providerSelect.value = parsed.provider;
               applyProvider(parsed.provider, parsed.model);
+              return;
             }
           }
         } catch (_) {}
+
+        // Fallback default provider
+        providerSelect.value = "openrouter";
+        applyProvider("openrouter");
       }
     })
-    .catch(() => {});
+    .catch(() => {
+      try {
+        const raw = localStorage.getItem("cra_troy_config");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed.provider && PROVIDERS[parsed.provider]) {
+            providerSelect.value = parsed.provider;
+            applyProvider(parsed.provider, parsed.model);
+            return;
+          }
+        }
+      } catch (_) {}
+
+      providerSelect.value = "openrouter";
+      applyProvider("openrouter");
+    });
 };
 
 // ── User Profile Menu ───────────────────────────────────────────────────────
