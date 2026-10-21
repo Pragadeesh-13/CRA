@@ -11,13 +11,11 @@ Rather than functioning as a traditional chatbot that offers generic canned resp
 > Watch Troy autonomously triage a live complaint, verify customer transactional ledgers, cross-reference institutional precedents, and execute remediation in real time.
 
 <div align="center">
-  <video src="docs/assets/About_Troy.mp4" controls="controls" width="100%" poster="docs/assets/demo_preview.png">
-    <a href="docs/assets/About_Troy.mp4">
-      <img src="docs/assets/demo_preview.png" alt="Complaint Resolution Agent Walkthrough" width="100%" style="border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" />
-    </a>
-  </video>
+  <a href="https://github.com/Pragadeesh-13/CRA/blob/master/docs/assets/About_Troy.mp4">
+    <img src="docs/assets/demo_preview.gif" alt="Troy Walkthrough Demo" width="100%" style="border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" />
+  </a>
   <p align="center">
-    ▶️ <strong><a href="docs/assets/About_Troy.mp4">Watch Walkthrough Video (About_Troy.mp4)</a></strong>
+    🎬 <strong><a href="https://github.com/Pragadeesh-13/CRA/blob/master/docs/assets/About_Troy.mp4">Click to Watch Full HD Walkthrough (About_Troy.mp4)</a></strong>
   </p>
 </div>
 
