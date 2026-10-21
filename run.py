@@ -29,4 +29,4 @@ if __name__ == "__main__":
         target_port = alt_port
 
     print(f"Starting Complaint Resolution Agent (CRA) on port {target_port} (auth_mode: {settings.auth_mode})...")
-    uvicorn.run("app.main:app", host="0.0.0.0", port=target_port, reload=False)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=target_port, reload=True)

@@ -273,6 +273,14 @@ async def post_resolve_action(request: Request):
     custom_action = body.get("action_details") or "Refund Initiated ($49.00 via Stripe API)"
     notes = body.get("notes")
 
+    if not category and query:
+        from app.cra import cra_engine
+        try:
+            pred = cra_engine.predict_category(query)
+            category = pred.get("predicted_category")
+        except Exception:
+            pass
+
     if action == "manual_resolve":
         res = execute_manual_resolution(customer_id=customer_id, query=query, notes=notes, category=category)
     else:

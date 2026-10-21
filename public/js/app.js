@@ -1062,6 +1062,23 @@ const renderResolutionActionButtons = async () => {
     verifyData = null;
   }
 
+  const CATEGORY_SPECIALIST_MAP = {
+    "Refunds": "Billing Team Specialist",
+    "Billing": "Corporate Tax & Billing Specialist",
+    "Subscription": "Subscription & Retention Specialist",
+    "Authentication & Access": "Security & IAM Specialist",
+    "Security": "Security Operations Center (SOC)",
+    "Bugs & Errors": "Engineering Bug Triage",
+    "Integrations & API": "API Platform Engineering",
+    "Performance": "SRE & Performance Team",
+    "Data Sync": "Distributed Systems Team",
+    "Onboarding & How-To": "Customer Success Team",
+    "Account Management": "Account Administration",
+  };
+
+  const effectiveCat = verifyData?.category || cat;
+  const specQueue = CATEGORY_SPECIALIST_MAP[effectiveCat] || (cachedCraReport?.recommended_team ? `${cachedCraReport.recommended_team} Specialist` : `${effectiveCat} Specialist`);
+
   const cust = verifyData?.customer || {
     customer_id: "USR-10492",
     customer_name: "Alex Morgan",
@@ -1077,7 +1094,7 @@ const renderResolutionActionButtons = async () => {
     account_balance: "$-49.00 (Overcharged)",
   };
 
-  const isRefundCategory = cat === "Refunds" || Boolean(verifyData?.is_refund);
+  const isRefundCategory = effectiveCat === "Refunds" || Boolean(verifyData?.is_refund);
   const chargesCount = cust.charges_this_month || "2";
   const totBilled = parseFloat(String(cust.total_billed_this_month || "98").split()[0].replace("$", "")).toFixed(2);
   const planRate = parseFloat(String(cust.monthly_rate || "49").split()[0].replace("$", "")).toFixed(2);
@@ -1096,8 +1113,8 @@ const renderResolutionActionButtons = async () => {
 
   if (!isRefundCategory) {
     // Non-refund category: Authentication & Access, Bugs & Errors, Data Sync, Integrations & API, etc.
-    const agentActionLabel = verifyData?.action_btn_text || `Let agent resolve ${cat}`;
-    const manualActionLabel = `Route to ${cachedCraReport?.recommended_team || "Specialist"}`;
+    const agentActionLabel = verifyData?.action_btn_text || `Let agent resolve ${effectiveCat}`;
+    const manualActionLabel = `Route to ${specQueue}`;
 
     actionBar.innerHTML = `
       <div class="customer-verify-strip">
@@ -1109,9 +1126,9 @@ const renderResolutionActionButtons = async () => {
             </svg>
             <strong>${verifyData?.system_label || "Internal Telemetry & Directory Analyzed"}:</strong>
             <span class="verify-customer-highlight">${cust.customer_name}</span>
-            <span class="db-source-tag">${cat}</span>
+            <span class="db-source-tag">${effectiveCat}</span>
           </div>
-          <span class="verify-status-pill settled">${verifyData?.status_pill || cat + " Detected"}</span>
+          <span class="verify-status-pill settled">${verifyData?.status_pill || effectiveCat + " Detected"}</span>
         </div>
         <div class="verify-strip-details">
           <div class="verify-detail-item"><span class="v-label">Account ID:</span> <strong>${cust.customer_id}</strong> (${cust.customer_email})</div>
@@ -1211,7 +1228,7 @@ const renderResolutionActionButtons = async () => {
     btnManual.disabled = true;
     if (btnAgent) btnAgent.disabled = true;
 
-    const targetQueue = cachedCraReport?.recommended_team ? `${cachedCraReport.recommended_team} Specialist` : `${cat} Specialist`;
+    const targetQueue = specQueue;
     const targetRefId = verifyData?.reference_id || activeRefId;
     const targetSystem = verifyData?.system_label || verifyData?.database_file || "Internal System Telemetry";
 
@@ -1220,7 +1237,7 @@ const renderResolutionActionButtons = async () => {
       manualSteps = [
         { text: `Accessing ${targetSystem}...`, delay: 650 },
         { text: `Routing ticket #${targetRefId} to ${targetQueue} queue...`, delay: 700 },
-        { text: `Attaching CRA diagnostic report and category context (${cat}) to operator dispatch...`, delay: 750 },
+        { text: `Attaching CRA diagnostic report and category context (${effectiveCat}) to operator dispatch...`, delay: 750 },
         { text: `Logging escalation audit record in ${verifyData?.database_file || targetSystem}...`, delay: 700 },
         { text: `Dispatching manual escalation advisory notice to ${cust.customer_email || "customer"}...`, delay: 600 },
       ];
@@ -1235,7 +1252,7 @@ const renderResolutionActionButtons = async () => {
     }
 
     const engineTitle = !isRefundCategory
-      ? `Manual Escalation Router: ${cat}`
+      ? `Manual Escalation Router: ${effectiveCat}`
       : "Manual Resolution Routing Engine";
 
     actionBar.innerHTML = `
@@ -1262,7 +1279,7 @@ const renderResolutionActionButtons = async () => {
       body: JSON.stringify({
         action: "manual_resolve",
         customer_id: cust.customer_id || "USR-10492",
-        category: cat,
+        category: effectiveCat,
         query: q,
         notes: `Manual escalation to ${targetQueue} requested by operator via CRA console.`,
       }),
@@ -1304,7 +1321,7 @@ const renderResolutionActionButtons = async () => {
 
     const c = data?.customer || cust;
     const queueName = data?.assigned_queue || data?.ticket?.predicted_team || targetQueue;
-    const displaySysFile = data?.database_file || (isRefundCategory ? "data/transactions.csv" : (verifyData?.database_file || targetSystem));
+    const displaySysFile = data?.database_file || (isRefundCategory ? "data/transactions.csv" : (verifyData?.database_file || verifyData?.system_label || targetSystem));
 
     if (!isRefundCategory) {
       actionBar.innerHTML = `
