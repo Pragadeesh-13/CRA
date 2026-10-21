@@ -543,6 +543,17 @@ const renderMarkdown = (text) => {
   src = src.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   src = src.replace(/`([^`]+)`/g, "<code>$1</code>");
 
+  // Handle blockquotes: transform lines starting with > into customer quotation box and strip >
+  src = src.replace(/((?:^|\n)(?:>[^\n]*\n?)+)/g, (match) => {
+    const lines = match
+      .split("\n")
+      .map((line) => line.replace(/^\s*>\s?/, "").trim())
+      .filter((line, idx, arr) => line || (idx > 0 && idx < arr.length - 1 && arr[idx - 1]));
+    return `\n\n<blockquote class="customer-quote-box">\n${lines.join("<br/>")}\n</blockquote>\n\n`;
+  });
+  // Strip any remaining > at line starts or standalone
+  src = src.replace(/^\s*>\s*/gm, "");
+
   // Normalize headings by ensuring double newlines around them
   src = src.replace(/^(#{1,6}\s+[^\n]+)/gm, "\n\n$1\n\n").trim();
 
@@ -552,6 +563,11 @@ const renderMarkdown = (text) => {
   for (const block of rawBlocks) {
     const trimmed = block.trim();
     if (!trimmed) continue;
+
+    if (trimmed.startsWith("<blockquote") && trimmed.endsWith("</blockquote>")) {
+      formattedBlocks.push(trimmed);
+      continue;
+    }
 
     if (/^###\s+(.*)$/.test(trimmed)) {
       formattedBlocks.push(`<h4>${trimmed.replace(/^###\s+/, "")}</h4>`);
@@ -597,9 +613,11 @@ const renderMarkdown = (text) => {
 
 const parseInlineSpans = (line) => {
   const spans = [];
+  // Strip any leading > or whitespace
+  const cleanLine = line.replace(/^\s*>\s*/, "");
   const regex = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|[^*`]+)/g;
   let match;
-  while ((match = regex.exec(line)) !== null) {
+  while ((match = regex.exec(cleanLine)) !== null) {
     const token = match[0];
     if (token.startsWith("**") && token.endsWith("**")) {
       spans.push({ type: "strong", text: token.slice(2, -2) });
@@ -608,7 +626,9 @@ const parseInlineSpans = (line) => {
     } else if (token.startsWith("`") && token.endsWith("`")) {
       spans.push({ type: "code", text: token.slice(1, -1) });
     } else {
-      spans.push({ type: "text", text: token });
+      // Remove any dangling > characters in plain text
+      const cleanToken = token.replace(/(?:^|\s)>\s*/g, " ");
+      spans.push({ type: "text", text: cleanToken });
     }
   }
   return spans;
@@ -617,7 +637,9 @@ const parseInlineSpans = (line) => {
 const parseMarkdownToStreamItems = (text) => {
   if (!text) return [];
   const src = text.replace(/\r\n/g, "\n").trim();
-  const normalized = src.replace(/^(#{1,6}\s+[^\n]+)/gm, "\n\n$1\n\n").trim();
+  // Ensure double newlines around blockquotes and headings
+  let normalized = src.replace(/((?:^|\n)(?:>[^\n]*\n?)+)/g, "\n\n$1\n\n");
+  normalized = normalized.replace(/^(#{1,6}\s+[^\n]+)/gm, "\n\n$1\n\n").trim();
   const rawBlocks = normalized.split(/\n{2,}/);
   const items = [];
 
@@ -638,6 +660,21 @@ const parseMarkdownToStreamItems = (text) => {
       continue;
     }
 
+    // Blockquote handling (customer communication draft)
+    if (/^>\s*/m.test(trimmed)) {
+      const quoteLines = trimmed
+        .split(/\n/)
+        .map((line) => line.replace(/^\s*>\s?/, "").trim())
+        .filter((line, idx, arr) => line || (idx > 0 && idx < arr.length - 1 && arr[idx - 1]));
+      const quoteSpans = [];
+      for (let i = 0; i < quoteLines.length; i++) {
+        if (i > 0) quoteSpans.push({ type: "br" });
+        quoteSpans.push(...parseInlineSpans(quoteLines[i]));
+      }
+      items.push({ tag: "blockquote", className: "customer-quote-box", spans: quoteSpans });
+      continue;
+    }
+
     if (/^[-*]\s+/m.test(trimmed)) {
       const listLines = trimmed.split(/\n/).map((l) => l.replace(/^[-*]\s+/, "").trim()).filter(Boolean);
       items.push({ tag: "ul", listItems: listLines.map(parseInlineSpans) });
@@ -654,8 +691,7 @@ const parseMarkdownToStreamItems = (text) => {
     const paraSpans = [];
     for (let i = 0; i < lines.length; i++) {
       if (i > 0) paraSpans.push({ type: "br" });
-      const inlineParts = parseInlineSpans(lines[i]);
-      paraSpans.push(...inlineParts);
+      paraSpans.push(...parseInlineSpans(lines[i]));
     }
     items.push({ tag: "p", spans: paraSpans });
   }
@@ -667,7 +703,7 @@ const buildStreamingActions = (items) => {
   const actions = [];
 
   for (const item of items) {
-    actions.push({ type: "create_block", tag: item.tag });
+    actions.push({ type: "create_block", tag: item.tag, className: item.className });
 
     if (item.text) {
       const words = item.text.split(/\s+/).filter(Boolean);
@@ -820,6 +856,7 @@ const executeStreamAction = (action, container) => {
   switch (action.type) {
     case "create_block":
       currentBlockEl = document.createElement(action.tag);
+      if (action.className) currentBlockEl.className = action.className;
       currentInlineEl = null;
       currentLiEl = null;
       container.appendChild(currentBlockEl);
@@ -899,6 +936,23 @@ const finishTransformedStream = (fullText = "") => {
 const startTransformedStream = (rawText) => {
   stopTransformedStreamTicker();
 
+  const textToParse = (rawText || streamedSpeechText || "").trim();
+  if (!textToParse) {
+    finishTransformedStream("");
+    return;
+  }
+
+  // If still cycling through the 5-second ML messages, store for onMlCycleComplete!
+  if (isMlCycling) {
+    cachedResolutionText = textToParse;
+    return;
+  }
+
+  // Ensure preliminary assessment has been presented before resolution starts
+  if (!hasDeliveredPreliminary && cachedCraReport) {
+    deliverPreliminaryAssessment(cachedCraReport);
+  }
+
   const troySpeech = document.getElementById("troy-speech");
   const troyCard = document.getElementById("troy-card") || document.getElementById("booting-card");
   if (!troySpeech) return;
@@ -906,12 +960,6 @@ const startTransformedStream = (rawText) => {
   if (troyCard) troyCard.classList.add("speaking");
   troySpeech.className = "agent-speech troy-speech streaming";
   troySpeech.innerHTML = "";
-
-  const textToParse = (rawText || streamedSpeechText || "").trim();
-  if (!textToParse) {
-    finishTransformedStream("");
-    return;
-  }
 
   const items = parseMarkdownToStreamItems(textToParse);
   streamActionQueue = buildStreamingActions(items);
@@ -944,12 +992,201 @@ const startTransformedStream = (rawText) => {
   }, tickIntervalMs);
 };
 
+// ── ML Model Analyzing Animation & Preliminary Assessment ──────────────────
+
+const ML_ANALYZING_STEPS = [
+  "Running Fine-Tuned DistilBERT Category Classifier...",
+  "Extracting ticket entities, order references, and monetary values...",
+  "Executing SBERT Vector Semantic Search across 248K historical precedents...",
+  "Evaluating XGBoost SLA timeline estimation & breach risk...",
+  "Synthesizing historical resolution patterns & department routing rules...",
+];
+
+let mlCycleInterval = null;
+let mlCycleIndex = 0;
+let mlCycleTimer = null;
+let cachedCraReport = null;
+let cachedResolutionText = null;
+let hasDeliveredPreliminary = false;
+let isMlCycling = false;
+
+const startMlAnalyzingCycle = () => {
+  stopMlAnalyzingCycle();
+  mlCycleIndex = 0;
+  isMlCycling = true;
+  hasDeliveredPreliminary = false;
+  cachedResolutionText = null;
+
+  const troySpeech = document.getElementById("troy-speech");
+  if (troySpeech) {
+    troySpeech.className = "agent-speech troy-speech formulating";
+    troySpeech.innerHTML = `
+      <div class="troy-deliberating">
+        <span class="troy-pulse-orb"></span>
+        <span class="troy-analyzing-text" id="troy-analyzing-msg">${ML_ANALYZING_STEPS[0]}</span>
+      </div>
+    `;
+  }
+  updateLiveStatus("Troy: " + ML_ANALYZING_STEPS[0], true);
+
+  // Cycle messages every 1000ms
+  mlCycleInterval = setInterval(() => {
+    mlCycleIndex++;
+    const msg = ML_ANALYZING_STEPS[mlCycleIndex % ML_ANALYZING_STEPS.length];
+    const msgEl = document.getElementById("troy-analyzing-msg");
+    if (msgEl) {
+      msgEl.textContent = msg;
+    }
+    updateLiveStatus("Troy: " + msg, true);
+  }, 1000);
+
+  // Complete cycling after 5 seconds exactly
+  mlCycleTimer = setTimeout(() => {
+    onMlCycleComplete();
+  }, 5000);
+};
+
+const stopMlAnalyzingCycle = () => {
+  if (mlCycleInterval) {
+    clearInterval(mlCycleInterval);
+    mlCycleInterval = null;
+  }
+  if (mlCycleTimer) {
+    clearTimeout(mlCycleTimer);
+    mlCycleTimer = null;
+  }
+  isMlCycling = false;
+};
+
+const onMlCycleComplete = () => {
+  stopMlAnalyzingCycle();
+  deliverPreliminaryAssessment(cachedCraReport);
+
+  // If LM Studio has already finished generating during the 5s cycle, stream resolution now!
+  if (cachedResolutionText) {
+    startTransformedStream(cachedResolutionText);
+  } else {
+    // Still waiting on LM Studio: show final formulation status in Troy's speech bubble
+    const troySpeech = document.getElementById("troy-speech");
+    if (troySpeech && !isTypingTransformed) {
+      troySpeech.className = "agent-speech troy-speech formulating";
+      troySpeech.innerHTML = `
+        <div class="troy-deliberating">
+          <span class="troy-pulse-orb"></span>
+          <span>Synthesizing formal resolution assessment & customer communication...</span>
+        </div>
+      `;
+    }
+    updateLiveStatus("Troy is finalizing resolution assessment with LM Studio...", true);
+  }
+};
+
+const deliverPreliminaryAssessment = (report) => {
+  if (hasDeliveredPreliminary) return;
+  hasDeliveredPreliminary = true;
+
+  // Remove old preliminary card and old intelligence card if present
+  const oldPrelim = document.getElementById("troy-preliminary-card");
+  if (oldPrelim) oldPrelim.remove();
+  const oldMlCard = document.getElementById("cra-ml-card");
+  if (oldMlCard) oldMlCard.remove();
+
+  const cat = report?.predicted_category || "Subscription";
+  const conf = Math.round((report?.category_confidence || 0.65) * 100);
+  const team = report?.recommended_team || "Billing Team";
+  const sla = report?.sla?.estimated_hours || 18.0;
+  const slaRisk = report?.sla?.sla_risk || "Low";
+  const similarCount = report?.similar_cases?.length || 3;
+  const topMatch = report?.similar_cases?.[0] ? `${Math.round(report.similar_cases[0].similarity * 100)}% match` : "72.5% match";
+
+  const refs = report?.extracted_entities?.references || [];
+  const dates = report?.extracted_entities?.dates || [];
+  const amounts = report?.extracted_entities?.amounts || [];
+  const entitiesList = [...refs, ...dates, ...amounts];
+
+  const entitiesHtml = entitiesList.length > 0
+    ? `<div class="preliminary-entities">
+        <span>Identified Parameters:</span>
+        ${entitiesList.map(e => `<span class="preliminary-entity-tag">${e}</span>`).join("")}
+       </div>`
+    : "";
+
+  const prelimCard = document.createElement("div");
+  prelimCard.id = "troy-preliminary-card";
+  prelimCard.className = "agent-card troy preliminary-card";
+  prelimCard.innerHTML = `
+    <div class="agent-avatar">
+      <video class="agent-avatar-video" autoplay loop muted playsinline>
+        <source src="/assets/images/AI_spin.webm" type="video/webm" />
+      </video>
+      <canvas class="agent-avatar-canvas" width="96" height="96"></canvas>
+    </div>
+    <div>
+      <div class="agent-name">Troy <span class="troy-role-tag preliminary-tag">Preliminary Case Assessment</span></div>
+      <div class="agent-speech troy-speech preliminary-speech" id="troy-preliminary-speech">
+        <div class="preliminary-assessment-card">
+          <div class="preliminary-header">
+            <div class="preliminary-title">Preliminary Case Assessment</div>
+            <span class="preliminary-models-badge">DistilBERT + SBERT + XGBoost</span>
+          </div>
+          <div class="preliminary-desc">
+            Autonomous case intake assessment synthesized via Fine-Tuned DistilBERT Classifier and vector similarity search.
+          </div>
+          <div class="preliminary-grid">
+            <div class="preliminary-item">
+              <span class="preliminary-label">Predicted Category</span>
+              <span class="preliminary-val">${cat} <span class="preliminary-highlight">(${conf}% confidence)</span></span>
+            </div>
+            <div class="preliminary-item">
+              <span class="preliminary-label">Department Routing</span>
+              <span class="preliminary-val">${team} <span class="preliminary-highlight">(Direct Routing)</span></span>
+            </div>
+            <div class="preliminary-item">
+              <span class="preliminary-label">Target SLA Timeline</span>
+              <span class="preliminary-val">${sla} Hours <span class="preliminary-highlight">(Risk: ${slaRisk})</span></span>
+            </div>
+            <div class="preliminary-item">
+              <span class="preliminary-label">Historical Precedents</span>
+              <span class="preliminary-val">${similarCount} Matched Cases <span class="preliminary-highlight">(${topMatch})</span></span>
+            </div>
+          </div>
+          ${entitiesHtml}
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Insert immediately before Troy's main resolution card
+  const troyCard = document.getElementById("troy-card") || document.getElementById("booting-card");
+  if (troyCard && deliberationList) {
+    deliberationList.insertBefore(prelimCard, troyCard);
+  } else if (deliberationList) {
+    deliberationList.appendChild(prelimCard);
+  }
+
+  // Initialize transparent video canvas for the preliminary avatar
+  const avatarEl = prelimCard.querySelector(".agent-avatar");
+  if (avatarEl) {
+    initTransparentVideoCanvas(avatarEl);
+  }
+
+  // Update Troy's role tag on resolution card
+  const troyRole = document.getElementById("troy-role");
+  if (troyRole) {
+    troyRole.textContent = `Assigned: ${team} | Lead Resolution Agent`;
+  }
+};
+
 const resetTroyConsole = () => {
   stopTransformedStreamTicker();
+  stopMlAnalyzingCycle();
   isTypingTransformed = false;
   pendingResolutionEnd = false;
   streamActionQueue = [];
   streamedSpeechText = "";
+  cachedCraReport = null;
+  cachedResolutionText = null;
+  hasDeliveredPreliminary = false;
 
   // Ensure live status banner exists
   let statusBanner = document.getElementById("cra-live-status");
@@ -962,7 +1199,9 @@ const resetTroyConsole = () => {
   statusBanner.className = "cra-live-status running";
   statusBanner.innerHTML = `<span class="status-dot"></span><span>Processing Complaint with CRA ML Engine...</span>`;
 
-  // Remove old ML card if any
+  // Remove old preliminary card and ML card if any
+  const oldPrelim = document.getElementById("troy-preliminary-card");
+  if (oldPrelim) oldPrelim.remove();
   const oldMlCard = document.getElementById("cra-ml-card");
   if (oldMlCard) oldMlCard.remove();
 
@@ -978,7 +1217,7 @@ const resetTroyConsole = () => {
     troySpeech.innerHTML = `
       <div class="troy-deliberating">
         <span class="troy-pulse-orb"></span>
-        <span>Analyzing complaint precedents & formulating optimal resolution...</span>
+        <span class="troy-analyzing-text" id="troy-analyzing-msg">Initializing Fine-Tuned DistilBERT Category Classifier...</span>
       </div>
     `;
   }
@@ -989,77 +1228,6 @@ const updateLiveStatus = (message, isRunning = true) => {
   if (!statusBanner) return;
   statusBanner.className = `cra-live-status ${isRunning ? "running" : "completed"}`;
   statusBanner.innerHTML = `<span class="status-dot"></span><span>${message}</span>`;
-};
-
-const renderMlIntelligenceCard = (report) => {
-  if (!report) return;
-  let card = document.getElementById("cra-ml-card");
-  if (!card) {
-    card = document.createElement("div");
-    card.id = "cra-ml-card";
-    card.className = "cra-intelligence-card";
-    const troyCard = document.getElementById("troy-card") || document.getElementById("booting-card");
-    if (troyCard) {
-      deliberationList.insertBefore(card, troyCard);
-    } else {
-      deliberationList.appendChild(card);
-    }
-  }
-
-  const cat = report.predicted_category || "Support";
-  const conf = Math.round((report.category_confidence || 0.8) * 100);
-  const team = report.recommended_team || "Customer Operations";
-  const sla = report.sla?.estimated_hours || 4.0;
-  const slaRisk = report.sla?.sla_risk || "Low";
-  const similarCount = report.similar_cases?.length || 0;
-
-  const refs = report.extracted_entities?.references || [];
-  const dates = report.extracted_entities?.dates || [];
-  const amounts = report.extracted_entities?.amounts || [];
-  const entitiesList = [...refs, ...dates, ...amounts];
-
-  card.innerHTML = `
-    <div class="cra-intelligence-header">
-      <span>CRA ML Intelligence Report</span>
-      <span class="cra-model-tag">DistilBERT + SBERT</span>
-    </div>
-    <div class="cra-metrics-grid">
-      <div class="cra-metric-box">
-        <span class="cra-metric-label">Category</span>
-        <span class="cra-metric-value">${cat}</span>
-        <span class="cra-metric-sub">${conf}% Confidence</span>
-      </div>
-      <div class="cra-metric-box">
-        <span class="cra-metric-label">Routing Dept</span>
-        <span class="cra-metric-value">${team}</span>
-        <span class="cra-metric-sub">Direct Assignment</span>
-      </div>
-      <div class="cra-metric-box">
-        <span class="cra-metric-label">Target SLA</span>
-        <span class="cra-metric-value">${sla} Hours</span>
-        <span class="cra-metric-sub">Risk: ${slaRisk}</span>
-      </div>
-      <div class="cra-metric-box">
-        <span class="cra-metric-label">Precedents</span>
-        <span class="cra-metric-value">${similarCount} Matched</span>
-        <span class="cra-metric-sub">Knowledge Base</span>
-      </div>
-    </div>
-    ${
-      entitiesList.length > 0
-        ? `<div class="cra-entities-row">
-            <span>Extracted Entities:</span>
-            ${entitiesList.map((e) => `<span class="cra-entity-tag">${e}</span>`).join("")}
-          </div>`
-        : ""
-    }
-  `;
-
-  // Update Troy's role badge
-  const troyRole = document.getElementById("troy-role");
-  if (troyRole) {
-    troyRole.textContent = `Assigned: ${team} | Lead Resolution Agent`;
-  }
 };
 
 // ── Resolution Execution Flow ───────────────────────────────────────────────
@@ -1106,6 +1274,7 @@ const startResolutionFlow = async () => {
 
   showSummarizingFeedCard(query);
   resetTroyConsole();
+  startMlAnalyzingCycle();
   setStatusTopic(query.slice(0, 40) + "...");
 
   try {
@@ -1120,6 +1289,7 @@ const startResolutionFlow = async () => {
     }
   } catch (err) {
     isResolving = false;
+    stopMlAnalyzingCycle();
     showTopWarning(err.message || "Failed to initiate resolution.");
     if (fetchNextBtn) {
       fetchNextBtn.disabled = false;
@@ -1174,17 +1344,23 @@ const connectLiveStream = () => {
   });
 
   stream.addEventListener("resolution_start", () => {
-    resetTroyConsole();
+    if (!isMlCycling && !isTypingTransformed) {
+      resetTroyConsole();
+      startMlAnalyzingCycle();
+    }
   });
 
   stream.addEventListener("council_start", () => {
-    resetTroyConsole();
+    if (!isMlCycling && !isTypingTransformed) {
+      resetTroyConsole();
+      startMlAnalyzingCycle();
+    }
   });
 
   stream.addEventListener("system", (e) => {
     try {
       const data = JSON.parse(e.data);
-      if (data.message) {
+      if (data.message && !isMlCycling) {
         updateLiveStatus(data.message, true);
       }
     } catch (_) {}
@@ -1193,7 +1369,11 @@ const connectLiveStream = () => {
   stream.addEventListener("cra_report", (e) => {
     try {
       const report = JSON.parse(e.data);
-      renderMlIntelligenceCard(report);
+      cachedCraReport = report;
+      // If cycling has already finished, deliver preliminary assessment immediately
+      if (!isMlCycling && !hasDeliveredPreliminary) {
+        deliverPreliminaryAssessment(report);
+      }
     } catch (_) {}
   });
 
@@ -1204,18 +1384,7 @@ const connectLiveStream = () => {
       if (troyRole && data.state) {
         troyRole.textContent = `${data.state} | Lead Resolution Agent`;
       }
-      const troySpeech = document.getElementById("troy-speech");
-      if (troySpeech) {
-        troySpeech.className = "agent-speech troy-speech formulating";
-        troySpeech.innerHTML = `
-          <div class="troy-deliberating">
-            <span class="troy-pulse-orb"></span>
-            <span>Analyzing complaint precedents & formulating optimal resolution...</span>
-          </div>
-        `;
-      }
       streamedSpeechText = "";
-      updateLiveStatus("Troy is analyzing precedents with LM Studio...", true);
     } catch (_) {}
   });
 
@@ -1233,8 +1402,11 @@ const connectLiveStream = () => {
     try {
       const data = JSON.parse(e.data);
       const fullText = data.message || streamedSpeechText;
-      // Start transformed progressive streaming after LM Studio text has finished
-      startTransformedStream(fullText);
+      cachedResolutionText = fullText;
+      // If 5s ML cycling is already complete, start progressive transformed stream now
+      if (!isMlCycling) {
+        startTransformedStream(fullText);
+      }
     } catch (_) {}
   });
 
