@@ -1,9 +1,9 @@
 """
-Complaint Resolution Orchestrator.
+Complaint Resolution Orchestrator - Troy.
 
-Base orchestrator for the Complaint Resolution Agent Troy.
-Legacy agentic council logic and placeholder scripts have been removed.
-The reasoning and output processing reference logic is maintained in app.reference.
+Base orchestrator for the Complaint Resolution Agent (CRA) Troy.
+Coordinates DistilBERT category classification, SBERT semantic search,
+and LLM resolution deliberation.
 """
 
 import asyncio
@@ -17,7 +17,12 @@ from app.simulation.state import SimulationState
 from app.simulation.round_barrier import RoundBarrier
 from app.http.sse_manager import SseManager
 from app.providers.base_driver import BaseLlmDriver
-from app.prompts.policy_prompts import build_title_prompt, build_summary_prompt
+from app.prompts.ticket_prompts import (
+    build_ticket_title_prompt,
+    build_ticket_summary_prompt,
+    build_title_prompt,
+    build_summary_prompt,
+)
 from app.reference.reasoning_and_output_reference import execute_agent_with_reasoning
 
 logger = logging.getLogger("simulation:orchestrator")
@@ -25,7 +30,7 @@ logger = logging.getLogger("simulation:orchestrator")
 
 class ComplaintResolutionOrchestrator:
     """
-    Orchestrator managing session state and LLM execution for the Complaint Resolution Agent.
+    Orchestrator managing session state and LLM execution for the Complaint Resolution Agent Troy.
     """
 
     def __init__(
@@ -78,18 +83,41 @@ class ComplaintResolutionOrchestrator:
         d = driver or self._active_driver()
         return await d.complete(messages, max_tokens)
 
-    async def summarise_policy(self, query: str, driver: Optional[BaseLlmDriver] = None) -> Optional[Dict[str, Any]]:
+    async def summarise_ticket(self, query: str, driver: Optional[BaseLlmDriver] = None) -> Optional[Dict[str, Any]]:
+        """
+        Creates a concise summary of the incoming complaint ticket.
+        """
         text = (query or "").strip()
         if not text:
             return None
 
+        # Determine short title
         short_title = self._title_fallback(text)
-        self.sse.broadcast("topic", {"title": short_title or "Complaint"})
+        self.sse.broadcast("topic", {"title": short_title or "Complaint Ticket"})
 
-        summary = text if len(text) <= 160 else f"{text[:157]}..."
+        # Generate ticket summary
+        summary = ""
+        d = driver or self._active_driver()
+        if d:
+            try:
+                # Brief call with timeout so resolution isn't delayed
+                summary = await asyncio.wait_for(self._summarize_text(text, d), timeout=5.0)
+            except Exception as e:
+                logger.info(f"Summarizer used fast fallback: {e}")
+
+        if not summary:
+            # Clean direct heuristic summary
+            clean_first = re.split(r"[\n\.\?!]", text)[0].strip()
+            if len(clean_first) > 10:
+                summary = f"Customer reported: {clean_first}"
+            else:
+                summary = f"Customer complaint ticket regarding {text[:140]}..."
+
+        # Guarantee no 'policy' word appears in summary
+        summary = re.sub(r"\bpolicy\b", "ticket", summary, flags=re.IGNORECASE)
 
         story = {
-            "title": short_title or "Complaint",
+            "title": short_title or "Complaint Ticket",
             "source": "Customer Ticket",
             "url": "",
             "publishedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -99,6 +127,10 @@ class ComplaintResolutionOrchestrator:
         self.set_story(story)
         self.sse.broadcast("feed", story)
         return story
+
+    async def summarise_policy(self, query: str, driver: Optional[BaseLlmDriver] = None) -> Optional[Dict[str, Any]]:
+        # Backward compatibility alias
+        return await self.summarise_ticket(query, driver=driver)
 
     async def run(self, story: Dict[str, Any], driver: Optional[BaseLlmDriver] = None) -> bool:
         """
@@ -155,7 +187,7 @@ class ComplaintResolutionOrchestrator:
         self.sse.broadcast(
             "system",
             {
-                "message": f"Processing Complaint Ticket: {story.get('title', 'Complaint')}",
+                "message": f"Processing Complaint Ticket: {story.get('title', 'Ticket')}",
             },
         )
         self.sse.broadcast(
@@ -203,7 +235,7 @@ class ComplaintResolutionOrchestrator:
 
         # Build prompt for Troy incorporating ML model findings and historical precedents
         prompt_lines = [
-            f"CUSTOMER COMPLAINT:\n\"{complaint_text}\"\n",
+            f"CUSTOMER COMPLAINT TICKET:\n\"{complaint_text}\"\n",
             "CRA MACHINE LEARNING INTELLIGENCE FINDINGS:",
             f"- Model: Fine-tuned DistilBERT Category Classifier",
             f"- Predicted Category: {pred_cat} (Confidence: {conf_pct:.1f}%)",
@@ -237,7 +269,15 @@ class ComplaintResolutionOrchestrator:
         troy_message = await self._agent_speak(
             agent=troy_agent,
             messages=[
-                {"role": "system", "content": "You are Troy, the Lead Autonomous Complaint Resolution Agent. Provide structured, authoritative, and helpful resolutions using model predictions."},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Troy, the Lead Autonomous Complaint Resolution Agent (CRA). "
+                        "You analyze customer complaint tickets using ML model findings and historical precedents. "
+                        "Provide a structured, authoritative, empathetic, and definitive resolution for the customer complaint ticket. "
+                        "Never mention 'policy simulation' or 'council'."
+                    ),
+                },
                 {"role": "user", "content": prompt_content},
             ],
             max_tokens=2048,
@@ -247,22 +287,21 @@ class ComplaintResolutionOrchestrator:
 
         if not troy_message:
             fallback_text = (
-                f"**Complaint Resolution Assessment**\n\n"
+                f"### Complaint Resolution Assessment\n\n"
                 f"- **Classified Category**: {pred_cat} ({conf_pct:.1f}% confidence)\n"
                 f"- **Assigned Department**: {team} ({report.get('team_method', 'Rule-based')})\n"
                 f"- **Target SLA**: {sla_hours} hours (Risk: {report.get('sla', {}).get('sla_risk', 'Low')})\n"
                 f"- **Extracted References**: {report.get('extracted_entities', {}).get('references', []) or 'None detected'}\n\n"
-                f"**Precedent Resolution Summary**:\n"
+                f"### Precedent Resolution Summary\n"
                 f"Found {len(similar_cases)} matching historical cases in the knowledge base. "
                 f"Top resolution pattern: {similar_cases[0].get('resolution', 'Standard review protocol.') if similar_cases else 'Manual verification.'}\n\n"
-                f"**Customer Action Plan**:\n"
+                f"### Customer Action Plan\n"
                 f"Your request has been logged and assigned directly to our {team} team with priority tracking."
             )
             self.sse.broadcast("agent_start", {"agent": "Troy", "round": 0, "state": f"Assigned: {team}"})
             self.sse.broadcast("agent", {"agent": "Troy", "round": 0, "message": fallback_text, "state": f"Assigned: {team}"})
 
-
-        resolution_summary = f"Complaint categorized as '{pred_cat}' ({conf_pct:.1f}% confidence) and routed to {team}."
+        resolution_summary = f"Complaint ticket categorized as '{pred_cat}' ({conf_pct:.1f}% confidence) and routed to {team}."
         self.sse.broadcast(
             "resolution_end",
             {
@@ -310,7 +349,7 @@ class ComplaintResolutionOrchestrator:
             driver=self._active_driver(),
             sse_manager=self.sse,
             agent_name=agent.get("name", "Troy"),
-            role_or_state=agent.get("state", "Complaint Agent"),
+            role_or_state=agent.get("state", "Complaint Resolution Agent"),
             messages=messages,
             max_tokens=max_tokens,
             round_num=round_num,
@@ -321,14 +360,14 @@ class ComplaintResolutionOrchestrator:
         return result.get("message", "")
 
     async def _summarize_title(self, text: str, driver: BaseLlmDriver) -> str:
-        messages, max_tokens = build_title_prompt(text)
+        messages, max_tokens = build_ticket_title_prompt(text)
         try:
             res = await driver.complete(messages, max_tokens)
             cleaned = sanitize_model_output(res)
             words = [w for w in re.sub(r"[^\w\s]", " ", cleaned).strip().split() if w]
             if words:
-                candidate = " ".join(words[:3])
-                if not re.match(r"^policy$", candidate, re.IGNORECASE):
+                candidate = " ".join(words[:4])
+                if not re.match(r"^(ticket|policy|complaint)$", candidate, re.IGNORECASE):
                     return candidate
         except Exception as e:
             logger.error(f"Title extraction failed: {e}")
@@ -336,26 +375,34 @@ class ComplaintResolutionOrchestrator:
 
     def _title_fallback(self, text: str) -> str:
         cleaned = re.sub(r"[#*_>`~\[\]\(\)\{\}\"'\-]", " ", text or "")
-        stop_words = {"the", "a", "an", "and", "or", "of", "to", "in", "for", "on", "with", "by", "as", "is", "are", "be"}
+        stop_words = {"the", "a", "an", "and", "or", "of", "to", "in", "for", "on", "with", "by", "as", "is", "are", "be", "i", "my", "we", "our", "me"}
         words = [w.capitalize() for w in cleaned.split() if w.lower() not in stop_words]
-        return " ".join(words[:3]) if words else "Complaint Issue"
+        return " ".join(words[:3]) if words else "Complaint Ticket"
 
     async def _summarize_text(self, text: str, driver: BaseLlmDriver) -> str:
-        messages, max_tokens = build_summary_prompt(text)
+        messages, max_tokens = build_ticket_summary_prompt(text)
         try:
             res = await driver.complete(messages, max_tokens)
-            cleaned = sanitize_model_output(res)
-            if cleaned and cleaned != "Policy summary unavailable.":
+            cleaned = sanitize_model_output(res).strip()
+            # Remove any accidental "The policy is about..." or "The ticket is about..."
+            cleaned = re.sub(
+                r"^(?:the\s+policy\s+is\s+about|this\s+policy\s+is|the\s+ticket\s+is\s+about|customer\s+complaint\s+ticket\s*:)\s*",
+                "",
+                cleaned,
+                flags=re.IGNORECASE,
+            ).strip()
+            cleaned = re.sub(r"\bpolicy\b", "ticket", cleaned, flags=re.IGNORECASE)
+            if cleaned:
                 sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned) if s.strip()]
                 if len(sentences) >= 2:
                     return f"{sentences[0]} {sentences[1]}"
                 if sentences:
                     return sentences[0]
         except Exception as e:
-            logger.error(f"Summary text failed: {e}")
+            logger.warning(f"Summary text failed: {e}")
 
         cleaned_text = (text or "").strip()
-        return f"Complaint regarding {cleaned_text}."
+        return f"Customer ticket regarding {cleaned_text[:140]}."
 
 
 # Aliases

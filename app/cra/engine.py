@@ -331,6 +331,20 @@ class CRAEngine:
             "sla": sla_est,
         }
 
+    def warmup(self):
+        """
+        Pre-loads models and vector database so user requests execute immediately.
+        """
+        try:
+            logger.info("Warming up CRA machine learning models...")
+            self._ensure_bert()
+            self._ensure_sbert()
+            self._ensure_knowledge_base()
+            self.predict_category("Billing inquiry account charge")
+            logger.info("CRA ML models fully initialized and ready.")
+        except Exception as e:
+            logger.warning(f"CRA ML warmup non-fatal issue: {e}")
+
 
 # Global singleton engine
 cra_engine = CRAEngine()

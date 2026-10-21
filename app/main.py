@@ -47,7 +47,12 @@ guard = SessionGuard(mode=settings.auth_mode)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    # Startup: warm up CRA machine learning models asynchronously
+    try:
+        from app.cra import cra_engine
+        asyncio.create_task(asyncio.to_thread(cra_engine.warmup))
+    except Exception as e:
+        logger.warning(f"Could not launch CRA warmup task: {e}")
     yield
     # Shutdown: clean up SSE connections and sessions
     session_registry.close_all()
@@ -177,11 +182,12 @@ async def stream_events(request: Request):
     )
 
 
-# ── Policy & Simulation Endpoints ─────────────────────────────────────────────
+# ── Ticket & Simulation Endpoints ─────────────────────────────────────────────
 
 @app.get("/api/policy")
+@app.get("/api/ticket")
 @app.get("/api/cra/ticket")
-async def get_policy(request: Request):
+async def get_ticket(request: Request):
     session = get_active_session(request)
     story = session.orchestrator.get_latest_story()
     return {"story": story or None, "ticket": story or None}
@@ -221,7 +227,8 @@ async def begin_round(request: Request):
 
 
 @app.post("/api/next")
-async def next_policy(request: Request, query: str = ""):
+@app.post("/api/ticket/next")
+async def next_ticket(request: Request, query: str = ""):
     session = get_active_session(request)
     sess_cfg = await resolve_session_config(request)
 
@@ -231,11 +238,11 @@ async def next_policy(request: Request, query: str = ""):
     except Exception:
         pass
 
-    policy_query = (body.get("query") if isinstance(body, dict) and body.get("query") is not None else query) or ""
-    policy_query = str(policy_query).strip()
+    ticket_query = (body.get("query") if isinstance(body, dict) and body.get("query") is not None else query) or ""
+    ticket_query = str(ticket_query).strip()
 
-    if not policy_query:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Policy details have not been entered."})
+    if not ticket_query:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Complaint ticket details have not been entered."})
 
     provider = str(body.get("provider") if body.get("provider") is not None else sess_cfg.get("provider", "")).strip().lower()
     api_key = str(body.get("apiKey") if body.get("apiKey") is not None else sess_cfg.get("apiKey", "")).strip()
@@ -272,8 +279,9 @@ async def next_policy(request: Request, query: str = ""):
         await asyncio.sleep(0.02)
 
     async def _run_flow():
-        session.sse_manager.broadcast("policy_summarizing", {"query": policy_query})
-        story = await session.orchestrator.summarise_policy(policy_query, driver=run_driver)
+        session.sse_manager.broadcast("ticket_summarizing", {"query": ticket_query})
+        session.sse_manager.broadcast("policy_summarizing", {"query": ticket_query})
+        story = await session.orchestrator.summarise_ticket(ticket_query, driver=run_driver)
         if story:
             await session.orchestrator.run(story, driver=run_driver)
 

@@ -14,7 +14,7 @@
     <script>
       (function() {
         try {
-          var saved = localStorage.getItem('policy_sim_theme');
+          var saved = localStorage.getItem('cra_troy_theme') || localStorage.getItem('policy_sim_theme');
           if (saved === 'light') {
             document.documentElement.setAttribute('data-theme', 'light');
           } else {

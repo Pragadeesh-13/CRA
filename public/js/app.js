@@ -21,6 +21,7 @@ const applyTheme = (theme, persist = true) => {
   document.documentElement.setAttribute("data-theme", effectiveTheme);
   if (persist) {
     try {
+      localStorage.setItem("cra_troy_theme", effectiveTheme);
       localStorage.setItem("policy_sim_theme", effectiveTheme);
     } catch (_) {}
   }
@@ -46,7 +47,7 @@ const toggleTheme = () => {
 const initTheme = () => {
   let savedTheme = "dark";
   try {
-    savedTheme = localStorage.getItem("policy_sim_theme") || "dark";
+    savedTheme = localStorage.getItem("cra_troy_theme") || localStorage.getItem("policy_sim_theme") || "dark";
   } catch (_) {}
   applyTheme(savedTheme, false);
 };
@@ -856,10 +857,19 @@ const startResolutionFlow = async () => {
 
 // ── SSE Stream Connection ───────────────────────────────────────────────────
 
+let activeEventSource = null;
+
 const connectLiveStream = () => {
+  if (activeEventSource) {
+    try {
+      activeEventSource.close();
+    } catch (_) {}
+  }
+
   const token = localStorage.getItem("agenticCouncilIdToken");
   const streamUrl = token ? `/api/stream?token=${encodeURIComponent(token)}` : "/api/stream";
   const stream = new EventSource(streamUrl);
+  activeEventSource = stream;
 
   stream.addEventListener("open", () => {
     console.log("[SSE] Connected to CRA Troy event stream.");
@@ -872,12 +882,14 @@ const connectLiveStream = () => {
     } catch (_) {}
   });
 
-  stream.addEventListener("policy_summarizing", (e) => {
+  const handleSummarizing = (e) => {
     try {
       const data = JSON.parse(e.data);
       showSummarizingFeedCard(data.query);
     } catch (_) {}
-  });
+  };
+  stream.addEventListener("ticket_summarizing", handleSummarizing);
+  stream.addEventListener("policy_summarizing", handleSummarizing);
 
   stream.addEventListener("feed", (e) => {
     try {
@@ -990,7 +1002,11 @@ fetchNextBtn?.addEventListener("click", () => {
 
 // ── Application Bootstrap ───────────────────────────────────────────────────
 
-document.addEventListener("DOMContentLoaded", () => {
+let appBootstrapped = false;
+const bootstrapApp = () => {
+  if (appBootstrapped) return;
+  appBootstrapped = true;
+
   initTheme();
   initProviderConfig();
   initUserProfileMenu();
@@ -1004,17 +1020,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Connect live event stream
   connectLiveStream();
-});
+};
 
-// Immediately initialize if DOM is already ready
+document.addEventListener("DOMContentLoaded", bootstrapApp);
 if (document.readyState === "complete" || document.readyState === "interactive") {
-  initTheme();
-  initProviderConfig();
-  initUserProfileMenu();
-  autoResizeTopicInput();
-  updateFeedEmptyState();
-  document.querySelectorAll(".agent-avatar").forEach((avatar) => {
-    initTransparentVideoCanvas(avatar);
-  });
-  connectLiveStream();
+  bootstrapApp();
 }

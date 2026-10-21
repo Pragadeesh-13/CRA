@@ -111,7 +111,7 @@ class OpenAiDriver(BaseLlmDriver):
             headers["Authorization"] = "Bearer lm-studio"
         if self.provider == "openrouter":
             headers["HTTP-Referer"] = self.public_url
-            headers["X-Title"] = "Policy Simulation"
+            headers["X-Title"] = "Complaint Resolution Agent"
         return headers
 
     def _build_request_body(
