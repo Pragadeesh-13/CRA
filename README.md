@@ -1,52 +1,53 @@
-# Agentic Complaint Resolution System
+# Complaint Resolution Agent (CRA) — Troy
 
-An asynchronous simulation platform built with Python (FastAPI, AsyncIO, Uvicorn) that models multi-agent council deliberations for comprehensive complaint resolution and policy impact analysis.
+An autonomous AI-powered complaint resolution system built with Python (FastAPI, AsyncIO, PyTorch, Transformers) and an interactive web interface. The platform classifies incoming customer complaints, retrieves historical precedent resolutions from vector storage, extracts critical entities, routes tickets to target departments, and streams real-time formal resolution assessments via **Troy**, the Lead Autonomous Complaint Resolution Agent.
 
 ---
 
 ## Overview
 
-Agentic Council simulates a multi-agent deliberation process across five sequential rounds:
+When a customer complaint ticket is submitted, CRA Troy executes a unified intelligence pipeline:
 
-1. **Round 0: Impact Declarations**: All participating state delegations assess immediate economic, fiscal, and regulatory impacts based on their unique demographics and industrial baselines.
-2. **Round 1: Opening Statements**: The most impacted states present formal opening positions, incorporating strategic policy analysis with optional streaming reasoning traces.
-3. **Round 2: Cross-Examination and Rebuttals**: Opposing state delegations engage in direct counter-arguments, citing and refuting specific delegate claims.
-4. **Round 3: Right of Reply**: The most targeted state delegation delivers a focused strategic defense and policy clarification.
-5. **Round 4: Synthesis and Economic Verdict**: The council computes regional sentiment distributions, winners and losers classifications, and national consensus metrics.
+1. **Category Classification**: Fine-tuned **DistilBERT** classifier determines complaint intent across multiple categories with calibrated confidence scores.
+2. **Precedent Retrieval**: **Sentence-BERT (SBERT)** semantic vector search performs memory-mapped dot product similarity search across over 248,000 historical resolved tickets.
+3. **Entity Extraction**: Rule-based and regular expression parsing identifies order IDs, reference numbers, dates, monetary amounts, and product names.
+4. **Automated Department Routing & SLA Prediction**: Predicts target department assignment (Billing, Shipping, Technical Support, Hardware, etc.) and resolution time window.
+5. **Troy's Resolution Assessment**: Troy streams a structured, empathetic, and actionable resolution plan directly to the agent console in real-time.
 
 ---
 
 ## System Architecture
 
 ```
-policy-sim-local/
+Complaint-Resolution-Agent/
 ├── app/
-│   ├── auth/           # AES-256-GCM encrypted credential vault and session management
-│   ├── http/           # Server-Sent Events (SSE) broadcast engine and client registry
-│   ├── personas/       # State persona profiles, geopolitical interests, and alliances
-│   ├── prompts/        # Deliberation, cross-examination, and verdict prompt templates
-│   ├── providers/      # OpenRouter, OpenAI, Anthropic, Groq, and Mock provider drivers
-│   ├── simulation/     # Orchestrator, round barriers, keyword analysis, and state machines
+│   ├── auth/           # AES-256-GCM encrypted credential vault and Firebase auth
+│   ├── cra/            # CRA Machine Learning inference engine (DistilBERT, SBERT vector search)
+│   ├── http/           # Server-Sent Events (SSE) broadcast engine
+│   ├── prompts/        # Complaint title, summary, and Troy resolution prompt templates
+│   ├── providers/      # OpenRouter, OpenAI, Anthropic, Groq, LM Studio, and Mock drivers
+│   ├── reference/      # Reference reasoning and output streaming architecture
+│   ├── simulation/     # Troy orchestrator and session management
 │   ├── utils/          # Thought buffer parsing, content sanitization, and JSON extraction
 │   ├── config.py       # Pydantic settings schema and environment parsing
 │   └── main.py         # FastAPI application exposing REST and SSE streaming endpoints
-├── public/             # Single-page web interface, stylesheet themes, and GeoJSON maps
-├── tests/              # Pytest automated test suite (48 unit and integration tests)
+├── CRA_Models/         # Trained model assets (DistilBERT weights, vector embeddings, XGBoost models)
+├── public/             # Single-page web interface (Dark/Light theme, live SSE streaming)
+├── tests/              # Pytest automated test suite
 ├── run.py              # Application launch entry point
-├── requirements.txt    # Project runtime dependencies
-└── .env.example        # Environment variable configuration template
+└── requirements.txt    # Project runtime dependencies
 ```
 
 ---
 
 ## Key Features
 
-- **Asynchronous Deliberation Pipeline**: Built on Python `asyncio` with barrier synchronization (`RoundBarrier`) ensuring turn progression across concurrent agents.
-- **Multi-Provider LLM Integration**: Pluggable provider architecture supporting OpenRouter, OpenAI, Anthropic, Groq, local inference engines (such as LM Studio and Ollama via OpenAI-compatible APIs), and deterministic mock drivers.
-- **Real-Time Streaming**: Server-Sent Events (SSE) engine broadcasting live agent thoughts, argument tokens, and consensus updates directly to the client interface.
+- **End-to-End Machine Learning Pipeline**: Integrated DistilBERT category classifier, SBERT vector similarity search, and entity extractors.
+- **Multi-Provider LLM Integration**: Pluggable provider architecture supporting local models via **LM Studio** (`http://127.0.0.1:1235/v1`), OpenRouter, OpenAI, Anthropic, and Groq.
+- **Real-Time Token Streaming**: Server-Sent Events (SSE) stream tokens directly into Troy's resolution console with live auto-scroll.
 - **Secure Key Management**: Client-provided API credentials are protected via AES-256-GCM encryption with per-session isolation (`KeyVault`).
-- **Flexible Authentication**: Configurable authentication supporting standard credentials, optional guest modes, and Firebase / Google OAuth integration.
-- **Theme-Aware Interface**: Modern user interface featuring light and dark color schemes, responsive deliberation tracking, and dynamic typing interfaces.
+- **Flexible Authentication**: Configurable authentication supporting standard credentials, optional guest modes, and Firebase OAuth.
+- **Theme-Aware Interface**: Modern responsive UI with dark/light themes, glowing AI orb canvas, and ticket feed.
 
 ---
 
@@ -56,13 +57,14 @@ policy-sim-local/
 
 - Python 3.11 or higher (verified on Python 3.14)
 - Git
+- (Optional) [LM Studio](https://lmstudio.ai/) for running local LLMs (e.g. `qwen/qwen3.5-9b` on port 1235)
 
 ### Installation
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/Pragadeesh-13/Complaint-resolution-Agent.git
-   cd Complaint-resolution-Agent
+   git clone https://github.com/Pragadeesh-13/CRA.git
+   cd CRA
    ```
 
 2. Create and activate a virtual environment:
@@ -86,19 +88,14 @@ Create a `.env` file based on `.env.example`:
 cp .env.example .env
 ```
 
-Configure the relevant environment variables:
-
 | Variable | Description | Default |
 |---|---|---|
 | `PORT` | HTTP server port | `3000` |
-| `LLM_PROVIDER` | LLM service provider (`openrouter`, `openai`, `anthropic`, `groq`, `mock`) | `openrouter` |
-| `LLM_MODEL` | Model identifier string | `openai/gpt-6.1-sol-pro` |
-| `LLM_API_KEY` | Server-level default API key for the selected provider | `""` |
-| `SHOW_REASONING` | Toggle live streaming of agent reasoning and thought buffers | `false` |
-| `AUTH_MODE` | Authentication requirement level (`optional`, `required`, `disabled`) | `optional` |
+| `LLM_PROVIDER` | LLM service provider (`lmstudio`, `openrouter`, `openai`, `anthropic`, `groq`) | `lmstudio` |
+| `LLM_MODEL` | Model identifier string (e.g., `qwen/qwen3.5-9b`, `gpt-4o`) | `qwen/qwen3.5-9b` |
+| `LLM_API_KEY` | Server-level default API key (not required for LM Studio) | `""` |
+| `AUTH_MODE` | Authentication level (`optional`, `required`, `disabled`) | `optional` |
 | `PUBLIC_URL` | Base public URL for the server instance | `http://localhost:3000` |
-| `PANEL_SIZE` | Number of state delegates selected for detailed debate rounds | `5` |
-| `REBUTTAL_SIZE` | Number of state delegates selected for direct rebuttal rounds | `3` |
 
 ### Running the Application
 
@@ -107,12 +104,7 @@ Launch the server using the entry point script:
 python run.py
 ```
 
-Alternatively, run directly via Uvicorn:
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 3000
-```
-
-Once running, navigate to [http://localhost:3000](http://localhost:3000) in your web browser.
+Once running, navigate to [http://localhost:3000](http://localhost:3000) (or the port displayed in terminal) in your browser.
 
 ---
 
@@ -120,21 +112,19 @@ Once running, navigate to [http://localhost:3000](http://localhost:3000) in your
 
 Execute the test suite using `pytest`:
 ```bash
-python -m pytest tests/ -v
+pytest
 ```
 
 The test suite covers:
+- CRA model inference and intelligence reporting
 - Thought buffer token streaming and tag extraction
-- JSON response extraction and markdown code block parsing
-- Persona profile construction and alliance mapping
-- Round barrier concurrency and execution synchronization
-- Keyword analysis and sentiment aggregation
+- Sanitization and content filtering
 - Session security and credential encryption
-- REST API and Server-Sent Event endpoints
-- End-to-end deliberation pipeline execution
+- REST API and Server-Sent Event streaming endpoints
+- Troy complaint resolution pipeline execution
 
 ---
 
 ## License
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+This project is licensed under the MIT License.
