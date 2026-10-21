@@ -309,6 +309,7 @@ def analyze_customer_transactions(
     # Detect if multiple settled transactions exist in the same month
     has_multiple_in_cycle = len(cycle_txns) > 1
     has_duplicate_settled = len(settled_txns) > 1
+    is_already_refunded = len(refunded_txns) > 0 and len(settled_txns) <= 1
 
     # Candidate for refund: the later transaction in the cycle
     candidate_to_refund: Optional[Dict[str, str]] = None
@@ -319,19 +320,39 @@ def analyze_customer_transactions(
         sorted_settled = sorted(settled_txns, key=lambda x: x.get("transaction_date", ""))
         retained_valid_txn = sorted_settled[0]
         candidate_to_refund = sorted_settled[1]
-    elif len(cycle_txns) > 1 and refunded_txns:
+    elif is_already_refunded:
         # Already refunded in earlier resolution
         retained_valid_txn = settled_txns[0] if settled_txns else cycle_txns[0]
         candidate_to_refund = refunded_txns[0]
+    else:
+        retained_valid_txn = settled_txns[0] if settled_txns else (cycle_txns[0] if cycle_txns else None)
+        candidate_to_refund = None
 
-    overcharged_amount = float(candidate_to_refund.get("amount", "0")) if candidate_to_refund else 0.0
+    overcharged_amount = float(candidate_to_refund.get("amount", "49.00")) if candidate_to_refund else 0.0
 
-    summary_text = (
-        f"Analyzed data/transactions.csv: Found {len(cycle_txns)} transaction records in {cycle} for {cust_name} ({cust_id}). "
-        f"Records: {', '.join([f'{t.get('transaction_id')} (${t.get('amount')}, {t.get('status')})' for t in cycle_txns])}. "
-        f"{'Multiple settled debits detected in a single monthly cycle.' if has_duplicate_settled else 'Ledger reconciled.'} "
-        f"Candidate transaction for refund: {candidate_to_refund.get('transaction_id') if candidate_to_refund else 'None'}."
-    )
+    ref_id = refunded_txns[0].get("refund_id") or "REF-88219-AUTO" if refunded_txns else ""
+    ref_date = refunded_txns[0].get("refunded_at") or "" if refunded_txns else ""
+
+    if is_already_refunded:
+        summary_text = (
+            f"Analyzed data/transactions.csv: Found {len(cycle_txns)} transaction records in {cycle} for {cust_name} ({cust_id}). "
+            f"Records: {', '.join([f'{t.get('transaction_id')} (${t.get('amount')}, {t.get('status')})' for t in cycle_txns])}. "
+            f"Accidental duplicate debit {candidate_to_refund.get('transaction_id')} was ALREADY REFUNDED on {ref_date} (Refund ID: {ref_id}). "
+            f"Current ledger has 1 valid active renewal ({retained_valid_txn.get('transaction_id')}: ${retained_valid_txn.get('amount')}, Settled). "
+            f"Account balance is $0.00. No further refund required."
+        )
+    elif has_duplicate_settled:
+        summary_text = (
+            f"Analyzed data/transactions.csv: Found {len(cycle_txns)} transaction records in {cycle} for {cust_name} ({cust_id}). "
+            f"Records: {', '.join([f'{t.get('transaction_id')} (${t.get('amount')}, {t.get('status')})' for t in cycle_txns])}. "
+            f"Multiple settled debits detected in a single monthly cycle. Candidate transaction for refund: {candidate_to_refund.get('transaction_id') if candidate_to_refund else 'None'}."
+        )
+    else:
+        summary_text = (
+            f"Analyzed data/transactions.csv: Found {len(cycle_txns)} transaction records in {cycle} for {cust_name} ({cust_id}). "
+            f"Records: {', '.join([f'{t.get('transaction_id')} (${t.get('amount')}, {t.get('status')})' for t in cycle_txns])}. "
+            f"Ledger reconciled. No duplicate charges found."
+        )
 
     return {
         "ok": True,
@@ -345,9 +366,15 @@ def analyze_customer_transactions(
         "total_billed_this_month": f"{total_billed:.2f}",
         "settled_count": len(settled_txns),
         "has_duplicate": has_duplicate_settled or len(refunded_txns) > 0,
+        "has_pending_duplicate": has_duplicate_settled,
+        "is_already_refunded": is_already_refunded,
+        "already_refunded": is_already_refunded,
+        "refund_id": ref_id,
+        "refunded_at": ref_date,
         "overcharge_amount": f"${overcharged_amount:.2f}",
         "retained_transaction": retained_valid_txn,
         "duplicate_transaction": candidate_to_refund,
+        "refunded_transaction": refunded_txns[0] if refunded_txns else None,
         "transactions": cycle_txns,
         "summary": summary_text,
         # Backward compatibility fields for UI components
@@ -364,8 +391,10 @@ def analyze_customer_transactions(
             "transaction_1": f"{txns[0].get('transaction_id')} (${txns[0].get('amount')} on {txns[0].get('transaction_date')[:10]}) [{txns[0].get('status')}]" if len(txns) > 0 else "",
             "transaction_2": f"{txns[1].get('transaction_id')} (${txns[1].get('amount')} on {txns[1].get('transaction_date')[:10]}) [{txns[1].get('status')}]" if len(txns) > 1 else "None",
             "duplicate_verified": "Yes - 2 Transaction Records in Same Cycle" if has_multiple_in_cycle else "No",
-            "refund_status": "Refunded" if refunded_txns else ("Pending Refund" if has_duplicate_settled else "N/A"),
-            "refund_id": refunded_txns[0].get("refund_id", "") if refunded_txns else "",
+            "is_already_refunded": is_already_refunded,
+            "refund_status": "Already Refunded" if is_already_refunded else ("Refunded" if refunded_txns else ("Pending Refund" if has_duplicate_settled else "N/A")),
+            "refund_id": ref_id,
+            "refunded_at": ref_date,
             "account_balance": "$0.00 (Settled)" if not has_duplicate_settled else f"$-{overcharged_amount:.2f} (Overcharged)",
             "account_status": "Active - In Good Standing" if not has_duplicate_settled else "Flagged - Multiple Charges in Cycle",
         },
@@ -391,28 +420,43 @@ def execute_agent_resolution(
 
     dup_txn = analysis.get("duplicate_transaction")
     target_txn_id = dup_txn.get("transaction_id") if dup_txn else "TXN-9012"
+    is_already_ref = analysis.get("is_already_refunded", False)
+    existing_ref_id = dup_txn.get("refund_id") or "REF-88219-AUTO" if dup_txn else "REF-88219-AUTO"
+    existing_ref_date = dup_txn.get("refunded_at") or now_str if dup_txn else now_str
 
     updated_txn: Optional[Dict[str, str]] = None
 
-    for row in all_txns:
-        if row.get("transaction_id") == target_txn_id:
-            row["status"] = "Refunded"
-            row["refund_id"] = "REF-88219-AUTO"
-            row["refund_amount"] = row.get("amount", "49.00")
-            row["refunded_at"] = now_str
-            row["processed_by"] = "Troy (Autonomous Resolution Agent)"
-            row["notes"] = notes or "Refunded by Troy: Duplicate subscription charge in October 2026 billing cycle."
-            updated_txn = row
-            break
-
-    write_all_transactions(all_txns)
-    logger.info(f"Database updated: Transaction {target_txn_id} marked as Refunded in data/transactions.csv.")
+    if is_already_ref:
+        # Transaction was already refunded previously; do not double refund or overwrite original timestamp
+        for row in all_txns:
+            if row.get("transaction_id") == target_txn_id:
+                updated_txn = row
+                break
+        logger.info(f"Database verify: Transaction {target_txn_id} was ALREADY refunded under {existing_ref_id}. Reconfirming existing refund.")
+        res_action = f"Transaction {target_txn_id} was already refunded under {existing_ref_id} on {existing_ref_date}. Reconfirmed without duplicate payout."
+    else:
+        for row in all_txns:
+            if row.get("transaction_id") == target_txn_id:
+                row["status"] = "Refunded"
+                row["refund_id"] = "REF-88219-AUTO"
+                row["refund_amount"] = row.get("amount", "49.00")
+                row["refunded_at"] = now_str
+                row["processed_by"] = "Troy (Autonomous Resolution Agent)"
+                row["notes"] = notes or "Refunded by Troy: Duplicate subscription charge in October 2026 billing cycle."
+                updated_txn = row
+                break
+        write_all_transactions(all_txns)
+        logger.info(f"Database updated: Transaction {target_txn_id} marked as Refunded in data/transactions.csv.")
+        res_action = f"Transaction {target_txn_id} Refunded ($49.00 via Stripe Gateway API)"
 
     plan_rate = analysis.get("retained_transaction", {}).get("amount", "49.00")
+    active_ref_id = existing_ref_id if is_already_ref else (updated_txn.get("refund_id") if updated_txn else "REF-88219-AUTO")
 
     return {
         "ok": True,
         "action": "agent_resolve",
+        "already_refunded": is_already_ref,
+        "is_already_refunded": is_already_ref,
         "refunded_transaction": updated_txn,
         "retained_transaction": analysis.get("retained_transaction"),
         "customer": {
@@ -423,9 +467,10 @@ def execute_agent_resolution(
             "status": "Resolved",
             "account_status": "Active - In Good Standing",
             "refund_status": "Refunded ($49.00 via Stripe API)",
-            "refund_id": "REF-88219-AUTO",
+            "refund_id": active_ref_id,
+            "refunded_at": existing_ref_date if is_already_ref else now_str,
             "account_balance": "$0.00 (Settled)",
-            "customer_notified": "Yes - Confirmation Dispatched (REF-88219-AUTO)",
+            "customer_notified": f"Yes - Confirmation Dispatched ({active_ref_id})",
         },
         "ticket": {
             "ticket_id": "88219",
@@ -433,9 +478,9 @@ def execute_agent_resolution(
             "customer_name": analysis.get("customer_name", "Alex Morgan"),
             "customer_email": analysis.get("customer_email", "alex.morgan@gmail.com"),
             "status": "Resolved",
-            "resolution_action": f"Transaction {target_txn_id} Refunded ($49.00 via Stripe Gateway API)",
-            "refund_id": "REF-88219-AUTO",
-            "customer_notified": "Yes - Email Dispatched (REF-88219-AUTO)",
+            "resolution_action": res_action,
+            "refund_id": active_ref_id,
+            "customer_notified": f"Yes - Email Dispatched ({active_ref_id})",
         },
         "database_file": "data/transactions.csv",
         "timestamp": now_str,

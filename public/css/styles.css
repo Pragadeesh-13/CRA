@@ -3292,6 +3292,18 @@ body {
   border-color: rgba(239, 68, 68, 0.25);
 }
 
+.verify-status-pill.settled {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+[data-theme="light"] .verify-status-pill.settled {
+  background: #ecfdf5;
+  color: #059669;
+  border-color: rgba(16, 185, 129, 0.25);
+}
+
 .verify-strip-details {
   display: flex;
   flex-wrap: wrap;
@@ -3331,6 +3343,15 @@ body {
 
 [data-theme="light"] .verify-detail-item .v-alert {
   color: #dc2626;
+}
+
+.verify-detail-item .v-settled {
+  color: #34d399;
+  font-weight: 600;
+}
+
+[data-theme="light"] .verify-detail-item .v-settled {
+  color: #059669;
 }
 
 .status-badge.verified {
