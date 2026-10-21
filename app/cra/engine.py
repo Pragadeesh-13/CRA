@@ -297,13 +297,19 @@ class CRAEngine:
                     "sla_risk": "Low" if avg_time < 24 else "Medium",
                 }
 
-        # Fallbacks by category
+        # Fallbacks by category matching complaints-deduplicated-fixed.csv
         defaults = {
+            "Account Management": {"estimated_hours": 6.0, "sla_target_hours": 24.0, "sla_risk": "Low"},
+            "Authentication & Access": {"estimated_hours": 3.5, "sla_target_hours": 12.0, "sla_risk": "Low"},
             "Billing": {"estimated_hours": 4.5, "sla_target_hours": 24.0, "sla_risk": "Low"},
-            "Subscription": {"estimated_hours": 3.0, "sla_target_hours": 24.0, "sla_risk": "Low"},
-            "Security": {"estimated_hours": 2.0, "sla_target_hours": 12.0, "sla_risk": "Urgent"},
             "Bugs & Errors": {"estimated_hours": 18.0, "sla_target_hours": 48.0, "sla_risk": "Medium"},
+            "Data Sync": {"estimated_hours": 12.0, "sla_target_hours": 48.0, "sla_risk": "Medium"},
+            "Integrations & API": {"estimated_hours": 8.0, "sla_target_hours": 24.0, "sla_risk": "Low"},
+            "Onboarding & How-To": {"estimated_hours": 2.5, "sla_target_hours": 12.0, "sla_risk": "Low"},
             "Performance": {"estimated_hours": 14.0, "sla_target_hours": 48.0, "sla_risk": "Medium"},
+            "Refunds": {"estimated_hours": 3.5, "sla_target_hours": 24.0, "sla_risk": "Low"},
+            "Security": {"estimated_hours": 2.0, "sla_target_hours": 8.0, "sla_risk": "Urgent"},
+            "Subscription": {"estimated_hours": 3.0, "sla_target_hours": 24.0, "sla_risk": "Low"},
         }
         return defaults.get(category, {"estimated_hours": 8.0, "sla_target_hours": 24.0, "sla_risk": "Low"})
 

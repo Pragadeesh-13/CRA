@@ -1047,14 +1047,16 @@ const renderResolutionActionButtons = async () => {
   actionBar.id = "resolution-action-bar";
   actionBar.className = "resolution-action-bar";
 
+  const cat = cachedCraReport?.predicted_category || "Refunds";
   const q = topicInput?.value || "88219";
 
   // Pre-fetch verification from data/customer_accounts.csv
   let verifyData = null;
   try {
-    const vRes = await fetch("/api/customer/verify?query=" + encodeURIComponent(q), {
-      headers: { ...authHeaders() },
-    });
+    const vRes = await fetch(
+      "/api/customer/verify?query=" + encodeURIComponent(q) + "&category=" + encodeURIComponent(cat),
+      { headers: { ...authHeaders() } }
+    );
     verifyData = await vRes.json();
   } catch (_) {
     verifyData = null;
@@ -1075,6 +1077,7 @@ const renderResolutionActionButtons = async () => {
     account_balance: "$-49.00 (Overcharged)",
   };
 
+  const isRefundCategory = cat === "Refunds" || Boolean(verifyData?.is_refund);
   const chargesCount = cust.charges_this_month || "2";
   const totBilled = parseFloat(String(cust.total_billed_this_month || "98").split()[0].replace("$", "")).toFixed(2);
   const planRate = parseFloat(String(cust.monthly_rate || "49").split()[0].replace("$", "")).toFixed(2);
@@ -1088,63 +1091,108 @@ const renderResolutionActionButtons = async () => {
     cust.refund_status === "Already Refunded" ||
     (cust.refund_id && String(cust.refund_status || "").includes("Refunded"))
   );
-  const activeRefId = verifyData?.refund_id || cust.refund_id || "REF-88219-AUTO";
+  const activeRefId = verifyData?.refund_id || cust.refund_id || verifyData?.reference_id || "REF-88219-AUTO";
   const activeRefDate = verifyData?.refunded_at || cust.refunded_at || "Oct 21, 2026";
 
-  const stripPillHtml = isAlreadyRefunded
-    ? `<span class="verify-status-pill settled">✓ Refund Already Processed (${activeRefId})</span>`
-    : `<span class="verify-status-pill duplicate">2 Charges in Single Cycle Found</span>`;
+  if (!isRefundCategory) {
+    // Non-refund category: Authentication & Access, Bugs & Errors, Data Sync, Integrations & API, etc.
+    const agentActionLabel = verifyData?.action_btn_text || `Let agent resolve ${cat}`;
+    const manualActionLabel = `Route to ${cachedCraReport?.recommended_team || "Specialist"}`;
 
-  const stripDetailsHtml = isAlreadyRefunded
-    ? `
-        <div class="verify-detail-item"><span class="v-label">Customer ID:</span> <strong>${cust.customer_id}</strong> (${cust.customer_email})</div>
-        <div class="verify-detail-item"><span class="v-label">Plan & Cycle:</span> <strong>${cust.subscription_plan}</strong> (${cycle})</div>
-        <div class="verify-detail-item"><span class="v-label">Account Balance:</span> <span class="v-settled">$0.00 (Settled)</span> &middot; <code>${activeRefId}</code></div>
-        <div class="verify-detail-item"><span class="v-label">Agent Finding:</span> TXN-9012 already refunded; TXN-9011 active. No duplicate payout needed.</div>
-      `
-    : `
-        <div class="verify-detail-item"><span class="v-label">Customer ID:</span> <strong>${cust.customer_id}</strong> (${cust.customer_email})</div>
-        <div class="verify-detail-item"><span class="v-label">Plan & Cycle:</span> <strong>${cust.subscription_plan}</strong> (${cycle})</div>
-        <div class="verify-detail-item"><span class="v-label">Ledger Records:</span> <span class="v-alert">${chargesCount} transaction records in ${cycle} ($${totBilled})</span></div>
-        <div class="verify-detail-item"><span class="v-label">Agent Decision:</span> Refund redundant <strong>TXN-9012 ($${planRate})</strong> &amp; retain TXN-9011</div>
-      `;
-
-  const agentBtnText = isAlreadyRefunded ? "Verify &amp; Reconfirm Refund" : "Let agent resolve it";
-
-  actionBar.innerHTML = `
-    <div class="customer-verify-strip">
-      <div class="verify-strip-header">
-        <div class="verify-strip-title">
-          <svg class="verify-check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-            <polyline points="22 4 12 14.01 9 11.01"></polyline>
-          </svg>
-          <strong>Customer Transaction Ledger Analyzed:</strong>
-          <span class="verify-customer-highlight">${cust.customer_name}</span>
-          <span class="db-source-tag">data/transactions.csv</span>
+    actionBar.innerHTML = `
+      <div class="customer-verify-strip">
+        <div class="verify-strip-header">
+          <div class="verify-strip-title">
+            <svg class="verify-check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+              <polyline points="22 4 12 14.01 9 11.01"></polyline>
+            </svg>
+            <strong>${verifyData?.system_label || "Internal Telemetry & Directory Analyzed"}:</strong>
+            <span class="verify-customer-highlight">${cust.customer_name}</span>
+            <span class="db-source-tag">${cat}</span>
+          </div>
+          <span class="verify-status-pill settled">${verifyData?.status_pill || cat + " Detected"}</span>
         </div>
-        ${stripPillHtml}
+        <div class="verify-strip-details">
+          <div class="verify-detail-item"><span class="v-label">Account ID:</span> <strong>${cust.customer_id}</strong> (${cust.customer_email})</div>
+          <div class="verify-detail-item"><span class="v-label">Subscription Tier:</span> <strong>${cust.subscription_plan}</strong></div>
+          <div class="verify-detail-item"><span class="v-label">Domain Findings:</span> <span class="v-settled">${verifyData?.system_details || "Verified against CRA historical precedents."}</span></div>
+          <div class="verify-detail-item"><span class="v-label">Autonomous Action:</span> <strong>${agentActionLabel}</strong> (Ref: <code>${verifyData?.reference_id || activeRefId}</code>)</div>
+        </div>
       </div>
-      <div class="verify-strip-details">
-        ${stripDetailsHtml}
+      <div class="resolution-buttons-row">
+        <button class="resolution-btn btn-manual" id="btn-resolve-manually" type="button">
+          <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+            <circle cx="12" cy="7" r="4"></circle>
+          </svg>
+          <span>${manualActionLabel}</span>
+        </button>
+        <button class="resolution-btn btn-agent" id="btn-agent-resolve" type="button">
+          <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+          <span>${agentActionLabel}</span>
+        </button>
       </div>
-    </div>
-    <div class="resolution-buttons-row">
-      <button class="resolution-btn btn-manual" id="btn-resolve-manually" type="button">
-        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-          <circle cx="12" cy="7" r="4"></circle>
-        </svg>
-        <span>Resolve Manually</span>
-      </button>
-      <button class="resolution-btn btn-agent" id="btn-agent-resolve" type="button">
-        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-        </svg>
-        <span>${agentBtnText}</span>
-      </button>
-    </div>
-  `;
+    `;
+  } else {
+    // Refund / Billing Category
+    const stripPillHtml = isAlreadyRefunded
+      ? `<span class="verify-status-pill settled">✓ Refund Already Processed (${activeRefId})</span>`
+      : `<span class="verify-status-pill duplicate">2 Charges in Single Cycle Found</span>`;
+
+    const stripDetailsHtml = isAlreadyRefunded
+      ? `
+          <div class="verify-detail-item"><span class="v-label">Customer ID:</span> <strong>${cust.customer_id}</strong> (${cust.customer_email})</div>
+          <div class="verify-detail-item"><span class="v-label">Plan & Cycle:</span> <strong>${cust.subscription_plan}</strong> (${cycle})</div>
+          <div class="verify-detail-item"><span class="v-label">Account Balance:</span> <span class="v-settled">$0.00 (Settled)</span> &middot; <code>${activeRefId}</code></div>
+          <div class="verify-detail-item"><span class="v-label">Agent Finding:</span> TXN-9012 already refunded; TXN-9011 active. No duplicate payout needed.</div>
+        `
+      : `
+          <div class="verify-detail-item"><span class="v-label">Customer ID:</span> <strong>${cust.customer_id}</strong> (${cust.customer_email})</div>
+          <div class="verify-detail-item"><span class="v-label">Plan & Cycle:</span> <strong>${cust.subscription_plan}</strong> (${cycle})</div>
+          <div class="verify-detail-item"><span class="v-label">Ledger Records:</span> <span class="v-alert">${chargesCount} transaction records in ${cycle} ($${totBilled})</span></div>
+          <div class="verify-detail-item"><span class="v-label">Agent Decision:</span> Refund redundant <strong>TXN-9012 ($${planRate})</strong> &amp; retain TXN-9011</div>
+        `;
+
+    const agentBtnText = isAlreadyRefunded ? "Verify &amp; Reconfirm Refund" : "Let agent resolve it";
+
+    actionBar.innerHTML = `
+      <div class="customer-verify-strip">
+        <div class="verify-strip-header">
+          <div class="verify-strip-title">
+            <svg class="verify-check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+              <polyline points="22 4 12 14.01 9 11.01"></polyline>
+            </svg>
+            <strong>Customer Transaction Ledger Analyzed:</strong>
+            <span class="verify-customer-highlight">${cust.customer_name}</span>
+            <span class="db-source-tag">data/transactions.csv</span>
+          </div>
+          ${stripPillHtml}
+        </div>
+        <div class="verify-strip-details">
+          ${stripDetailsHtml}
+        </div>
+      </div>
+      <div class="resolution-buttons-row">
+        <button class="resolution-btn btn-manual" id="btn-resolve-manually" type="button">
+          <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+            <circle cx="12" cy="7" r="4"></circle>
+          </svg>
+          <span>Resolve Manually</span>
+        </button>
+        <button class="resolution-btn btn-agent" id="btn-agent-resolve" type="button">
+          <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+          <span>${agentBtnText}</span>
+        </button>
+      </div>
+    `;
+  }
 
   deliberationList.appendChild(actionBar);
 
@@ -1260,31 +1308,47 @@ const renderResolutionActionButtons = async () => {
     if (btnManual) btnManual.disabled = true;
 
     // Progressive autonomous resolution steps
-    const autoSteps = isAlreadyRefunded
-      ? [
-          { text: "Accessing internal transaction ledger (data/transactions.csv)...", delay: 650 },
-          { text: `Locating customer account: ${cust.customer_name || "Alex Morgan"} (${cust.customer_id || "USR-10492"})...`, delay: 700 },
-          { text: `Auditing ledger: Accidental duplicate record TXN-9012 was ALREADY refunded under ${activeRefId}...`, delay: 750 },
-          { text: `Verifying account balance: Active renewal TXN-9011 ($${planRate}) valid; account balance is $0.00...`, delay: 750 },
-          { text: "Duplicate payout check: Secondary payout blocked to prevent duplicate billing credit...", delay: 700 },
-          { text: `Re-dispatching refund verification notice (${activeRefId}) to ${cust.customer_email || "alex.morgan@gmail.com"}...`, delay: 600 },
-        ]
-      : [
-          { text: "Accessing internal transaction ledger (data/transactions.csv)...", delay: 700 },
-          { text: `Found user transaction history: ${cust.customer_name || "Alex Morgan"} (${cust.customer_id || "USR-10492"})...`, delay: 750 },
-          { text: `Analyzing billing cycle ${cycle}: Found 2 settled transaction records ($${planRate} each)...`, delay: 800 },
-          { text: `Decision formulated: Refund redundant duplicate record TXN-9012 ($${planRate}) & retain valid renewal TXN-9011...`, delay: 850 },
-          { text: `Sending refund: Authorizing $${planRate} reversal via Stripe Gateway API (REF-88219-AUTO)...`, delay: 850 },
-          { text: "Making changes in database: Updating TXN-9012 status to 'Refunded' in data/transactions.csv...", delay: 800 },
-          { text: `Dispatching refund confirmation receipt to ${cust.customer_email || "alex.morgan@gmail.com"}...`, delay: 650 },
-        ];
+    let autoSteps = [];
+    if (!isRefundCategory) {
+      autoSteps = verifyData?.steps || [
+        { text: `Accessing ${verifyData?.system_label || "system directory"}...`, delay: 650 },
+        { text: `Locating account records for ${cust.customer_name || "customer"} (${cust.customer_id})...`, delay: 700 },
+        { text: `Diagnosing ${cat} issue: ${verifyData?.system_details || "analyzing telemetry"}...`, delay: 750 },
+        { text: `Formulating autonomous resolution: ${verifyData?.action_btn_text}...`, delay: 750 },
+        { text: `Updating database & system state under reference ${verifyData?.reference_id || activeRefId}...`, delay: 700 },
+        { text: `Dispatching confirmation notice to ${cust.customer_email}...`, delay: 600 },
+      ];
+    } else {
+      autoSteps = isAlreadyRefunded
+        ? [
+            { text: "Accessing internal transaction ledger (data/transactions.csv)...", delay: 650 },
+            { text: `Locating customer account: ${cust.customer_name || "Alex Morgan"} (${cust.customer_id || "USR-10492"})...`, delay: 700 },
+            { text: `Auditing ledger: Accidental duplicate record TXN-9012 was ALREADY refunded under ${activeRefId}...`, delay: 750 },
+            { text: `Verifying account balance: Active renewal TXN-9011 ($${planRate}) valid; account balance is $0.00...`, delay: 750 },
+            { text: "Duplicate payout check: Secondary payout blocked to prevent duplicate billing credit...", delay: 700 },
+            { text: `Re-dispatching refund verification notice (${activeRefId}) to ${cust.customer_email || "alex.morgan@gmail.com"}...`, delay: 600 },
+          ]
+        : [
+            { text: "Accessing internal transaction ledger (data/transactions.csv)...", delay: 700 },
+            { text: `Found user transaction history: ${cust.customer_name || "Alex Morgan"} (${cust.customer_id || "USR-10492"})...`, delay: 750 },
+            { text: `Analyzing billing cycle ${cycle}: Found 2 settled transaction records ($${planRate} each)...`, delay: 800 },
+            { text: `Decision formulated: Refund redundant duplicate record TXN-9012 ($${planRate}) & retain valid renewal TXN-9011...`, delay: 850 },
+            { text: `Sending refund: Authorizing $${planRate} reversal via Stripe Gateway API (REF-88219-AUTO)...`, delay: 850 },
+            { text: "Making changes in database: Updating TXN-9012 status to 'Refunded' in data/transactions.csv...", delay: 800 },
+            { text: `Dispatching refund confirmation receipt to ${cust.customer_email || "alex.morgan@gmail.com"}...`, delay: 650 },
+          ];
+    }
+
+    const engineTitle = !isRefundCategory
+      ? `Troy Autonomous ${cat} Engine`
+      : (isAlreadyRefunded ? "Troy Autonomous Audit Engine" : "Troy Autonomous Resolution Engine");
 
     actionBar.innerHTML = `
       <div class="agent-execution-box">
         <div class="execution-box-header">
           <div class="execution-title">
             <span class="pulse-dot-active"></span>
-            <strong>${isAlreadyRefunded ? "Troy Autonomous Audit Engine" : "Troy Autonomous Resolution Engine"}</strong>
+            <strong>${engineTitle}</strong>
           </div>
           <span class="execution-step-counter" id="auto-step-counter">Initializing...</span>
         </div>
@@ -1304,12 +1368,13 @@ const renderResolutionActionButtons = async () => {
         action: "agent_resolve",
         customer_id: cust.customer_id || "USR-10492",
         query: q,
-        action_details: isAlreadyRefunded
-          ? `Refund Verified & Confirmed (${activeRefId})`
-          : `Refund Initiated ($${planRate} via Stripe API)`,
-        notes: isAlreadyRefunded
-          ? `Autonomous audit verified that TXN-9012 was already refunded under ${activeRefId}. Duplicate payout blocked.`
-          : "Autonomous override executed by Troy. Accidental double renewal debit reversed in Stripe API.",
+        category: cat,
+        action_details: !isRefundCategory
+          ? (verifyData?.action_btn_text || `Resolved ${cat}`)
+          : (isAlreadyRefunded ? `Refund Verified & Confirmed (${activeRefId})` : `Refund Initiated ($${planRate} via Stripe API)`),
+        notes: !isRefundCategory
+          ? `Autonomous ${cat} resolution executed by Troy under reference ${verifyData?.reference_id || activeRefId}.`
+          : (isAlreadyRefunded ? `Autonomous audit verified that TXN-9012 was already refunded under ${activeRefId}. Duplicate payout blocked.` : "Autonomous override executed by Troy. Accidental double renewal debit reversed in Stripe API."),
       }),
     })
       .then((r) => r.json())
@@ -1359,7 +1424,30 @@ const renderResolutionActionButtons = async () => {
 
     // Render the final confirmation card
     const c = data?.customer || cust;
-    if (isAlreadyRefunded) {
+    if (!isRefundCategory) {
+      actionBar.innerHTML = `
+        <div class="resolution-result-card agent">
+          <div class="result-card-header">
+            <svg class="badge-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+              <polyline points="22 4 12 14.01 9 11.01"></polyline>
+            </svg>
+            <strong>Autonomous Resolution Executed: ${cat}</strong>
+            <span class="db-sync-tag agent">${verifyData?.system_label || "System Synchronized"}</span>
+          </div>
+          <div class="result-card-body">
+            <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || "Valued Customer"}</strong> (${c.customer_id} &middot; ${c.customer_email})</div>
+            <div><span class="res-meta-lbl">Subscription Plan:</span> ${c.subscription_plan || "Enterprise Tier"}</div>
+            <div><span class="res-meta-lbl">Category Audit:</span> <span class="status-badge verified">${cat} Reconciled</span></div>
+            <div><span class="res-meta-lbl">Autonomous Action:</span> <strong>${data?.resolution_action || verifyData?.action_btn_text}</strong></div>
+            <div><span class="res-meta-lbl">Reference ID:</span> <code>${data?.reference_id || verifyData?.reference_id || activeRefId}</code> | <span class="status-badge agent">Active - In Good Standing</span></div>
+            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Yes - Confirmation Dispatched</span> to ${c.customer_email}</div>
+            <div><span class="res-meta-lbl">Audit Log:</span> Recorded in <code>${data?.database_file || "data/customer_accounts.csv"}</code> at ${data?.timestamp || "Just now"} by Troy</div>
+          </div>
+        </div>
+      `;
+      updateLiveStatus(`Resolution autonomously executed by Troy for ${cat}. System updated.`, false);
+    } else if (isAlreadyRefunded) {
       actionBar.innerHTML = `
         <div class="resolution-result-card agent">
           <div class="result-card-header">
@@ -2084,6 +2172,98 @@ document.getElementById("troy-card")?.addEventListener("click", () => {
   }
 });
 
+// ── Category Presets from Training Dataset (11 Categories) ───────────────────
+
+const DATASET_CATEGORY_PRESETS = [
+  {
+    category: "Refunds",
+    icon: "💳",
+    text: "Order #88219: Double billed for Pro Tier renewal ($49 x 2). Retried payment on Oct 21 after pending notification.",
+  },
+  {
+    category: "Authentication & Access",
+    icon: "🔒",
+    text: "Two-factor authentication codes are not being delivered to my phone. Cannot login to dashboard.",
+  },
+  {
+    category: "Billing",
+    icon: "📋",
+    text: "I need to add my company VAT and Tax ID to my billing profile and receive an official tax invoice receipt.",
+  },
+  {
+    category: "Bugs & Errors",
+    icon: "🐛",
+    text: "App crashes every time I click export PDF on the Android mobile client. Getting an unhandled 500 error.",
+  },
+  {
+    category: "Data Sync",
+    icon: "🔄",
+    text: "The system is not syncing data across devices properly between the mobile app and desktop client.",
+  },
+  {
+    category: "Integrations & API",
+    icon: "⚡",
+    text: "Where can I find the API documentation? We are getting 429 rate limit errors on our webhook endpoint.",
+  },
+  {
+    category: "Onboarding & How-To",
+    icon: "📚",
+    text: "I am new to the workspace - how do I invite team members and set role-based permissions?",
+  },
+  {
+    category: "Performance",
+    icon: "🚀",
+    text: "Dashboard search queries take over 45 seconds to load for my entire team. Please investigate latency.",
+  },
+  {
+    category: "Security",
+    icon: "🛡️",
+    text: "Suspicious login attempt detected from an unknown IP address. Please terminate unauthorized sessions.",
+  },
+  {
+    category: "Subscription",
+    icon: "⭐",
+    text: "I was charged for an unexpected renewal after requesting a plan downgrade from Enterprise to Starter Tier.",
+  },
+  {
+    category: "Account Management",
+    icon: "👤",
+    text: "Can I merge two subsidiary workspace accounts into one and update our legal company name?",
+  },
+];
+
+const initCategoryPresets = () => {
+  const container = document.getElementById("category-preset-pills");
+  if (!container) return;
+  container.innerHTML = "";
+
+  DATASET_CATEGORY_PRESETS.forEach((item, index) => {
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className = `category-pill-btn ${index === 0 ? "active" : ""}`;
+    pill.innerHTML = `<span class="pill-icon">${item.icon}</span> <span>${item.category}</span>`;
+    pill.title = `Load real sample complaint for ${item.category}`;
+
+    pill.addEventListener("click", () => {
+      container.querySelectorAll(".category-pill-btn").forEach((b) => b.classList.remove("active"));
+      pill.classList.add("active");
+      if (topicInput) {
+        topicInput.value = item.text;
+        autoResizeTopicInput();
+        clearInputError(topicInput);
+      }
+    });
+
+    container.appendChild(pill);
+  });
+
+  // Pre-load the first preset if topicInput is empty
+  if (topicInput && !topicInput.value.trim()) {
+    topicInput.value = DATASET_CATEGORY_PRESETS[0].text;
+    autoResizeTopicInput();
+  }
+};
+
 // ── Application Bootstrap ───────────────────────────────────────────────────
 
 let appBootstrapped = false;
@@ -2094,6 +2274,7 @@ const bootstrapApp = () => {
   initTheme();
   initProviderConfig();
   initUserProfileMenu();
+  initCategoryPresets();
   autoResizeTopicInput();
   updateFeedEmptyState();
 

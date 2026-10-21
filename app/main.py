@@ -204,8 +204,40 @@ async def get_ticket(request: Request):
 
 
 @app.get("/api/customer/verify")
-async def verify_customer(query: Optional[str] = None, customer_id: Optional[str] = None):
-    """Analyzes customer transaction records in data/transactions.csv."""
+async def verify_customer(query: Optional[str] = None, customer_id: Optional[str] = None, category: Optional[str] = None):
+    """Analyzes customer transaction and account records across all 11 categories."""
+    from app.database import get_category_complaint_context
+    q = (query or "").lower()
+    is_refund_query = any(k in q for k in ["refund", "double", "49", "88219", "twice"])
+    
+    if (category and category != "Refunds") or (not is_refund_query and category):
+        ctx = get_category_complaint_context(category=category or "", query=query or "")
+        return {
+            "ok": True,
+            "category": ctx.get("category"),
+            "customer_id": ctx.get("customer_id"),
+            "customer_name": ctx.get("customer_name"),
+            "customer_email": ctx.get("customer_email"),
+            "subscription_plan": ctx.get("subscription_plan"),
+            "reference_id": ctx.get("reference_id"),
+            "system_label": ctx.get("system_label"),
+            "status_pill": ctx.get("status_pill"),
+            "action_btn_text": ctx.get("action_btn_text"),
+            "system_details": ctx.get("system_details"),
+            "steps": ctx.get("steps"),
+            "customer": {
+                "customer_id": ctx.get("customer_id"),
+                "customer_name": ctx.get("customer_name"),
+                "customer_email": ctx.get("customer_email"),
+                "subscription_plan": ctx.get("subscription_plan"),
+                "account_status": ctx.get("status_pill"),
+                "refund_status": "N/A",
+                "refund_id": ctx.get("reference_id"),
+                "account_balance": "$0.00 (Current)",
+            },
+            "is_already_refunded": False,
+        }
+
     res = analyze_customer_transactions(customer_id=customer_id, query=query)
     return res
 
@@ -228,13 +260,14 @@ async def post_resolve_action(request: Request):
     action = body.get("action", "agent_resolve")
     customer_id = body.get("customer_id") or body.get("ticket_id")
     query = body.get("query")
+    category = body.get("category")
     custom_action = body.get("action_details") or "Refund Initiated ($49.00 via Stripe API)"
     notes = body.get("notes")
 
     if action == "manual_resolve":
-        res = execute_manual_resolution(customer_id=customer_id, query=query, notes=notes)
+        res = execute_manual_resolution(customer_id=customer_id, query=query, notes=notes, category=category)
     else:
-        res = execute_agent_resolution(customer_id=customer_id, query=query, action=custom_action, notes=notes)
+        res = execute_agent_resolution(customer_id=customer_id, query=query, action=custom_action, notes=notes, category=category)
 
     # Broadcast event so UI or stream clients know database was updated
     session = get_active_session(request)
