@@ -1211,19 +1211,39 @@ const renderResolutionActionButtons = async () => {
     btnManual.disabled = true;
     if (btnAgent) btnAgent.disabled = true;
 
-    // Display progressive manual escalation steps
-    const manualSteps = [
-      { text: "Accessing internal customer transaction ledger (data/transactions.csv)...", delay: 650 },
-      { text: "Routing ticket #88219 and transaction TXN-9012 to Human Billing Specialist queue...", delay: 650 },
-      { text: "Logging escalation audit record in data/transactions.csv...", delay: 650 },
-    ];
+    const targetQueue = cachedCraReport?.recommended_team ? `${cachedCraReport.recommended_team} Specialist` : `${cat} Specialist`;
+    const targetRefId = verifyData?.reference_id || activeRefId;
+    const targetSystem = verifyData?.system_label || verifyData?.database_file || "Internal System Telemetry";
+
+    let manualSteps = [];
+    if (!isRefundCategory) {
+      manualSteps = [
+        { text: `Accessing ${targetSystem}...`, delay: 650 },
+        { text: `Routing ticket #${targetRefId} to ${targetQueue} queue...`, delay: 700 },
+        { text: `Attaching CRA diagnostic report and category context (${cat}) to operator dispatch...`, delay: 750 },
+        { text: `Logging escalation audit record in ${verifyData?.database_file || targetSystem}...`, delay: 700 },
+        { text: `Dispatching manual escalation advisory notice to ${cust.customer_email || "customer"}...`, delay: 600 },
+      ];
+    } else {
+      manualSteps = [
+        { text: "Accessing internal customer transaction ledger (data/transactions.csv)...", delay: 650 },
+        { text: `Routing ticket #${targetRefId} and transaction TXN-9012 to Human Billing Specialist queue...`, delay: 700 },
+        { text: "Flagging duplicate charge TXN-9012 for manual ledger review...", delay: 750 },
+        { text: "Logging escalation audit record in data/transactions.csv...", delay: 650 },
+        { text: `Dispatching escalation notice to ${cust.customer_email || "alex.morgan@gmail.com"}...`, delay: 600 },
+      ];
+    }
+
+    const engineTitle = !isRefundCategory
+      ? `Manual Escalation Router: ${cat}`
+      : "Manual Resolution Routing Engine";
 
     actionBar.innerHTML = `
       <div class="agent-execution-box">
         <div class="execution-box-header">
           <div class="execution-title">
             <span class="pulse-dot-active"></span>
-            <strong>Manual Resolution Routing Engine</strong>
+            <strong>${engineTitle}</strong>
           </div>
           <span class="execution-step-counter" id="manual-step-counter">Escalating...</span>
         </div>
@@ -1242,8 +1262,9 @@ const renderResolutionActionButtons = async () => {
       body: JSON.stringify({
         action: "manual_resolve",
         customer_id: cust.customer_id || "USR-10492",
+        category: cat,
         query: q,
-        notes: "Manual review requested by operator via CRA console.",
+        notes: `Manual escalation to ${targetQueue} requested by operator via CRA console.`,
       }),
     })
       .then((r) => r.json())
@@ -1282,25 +1303,55 @@ const renderResolutionActionButtons = async () => {
     await new Promise((r) => setTimeout(r, 400));
 
     const c = data?.customer || cust;
-    actionBar.innerHTML = `
-      <div class="resolution-result-card manual">
-        <div class="result-card-header">
-          <svg class="badge-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-            <circle cx="12" cy="7" r="4"></circle>
-          </svg>
-          <strong>Customer #${c.customer_id || "USR-10492"} Escalated for Manual Audit</strong>
-          <span class="db-sync-tag">data/transactions.csv Flagged</span>
+    const queueName = data?.assigned_queue || data?.ticket?.predicted_team || targetQueue;
+    const displaySysFile = data?.database_file || (isRefundCategory ? "data/transactions.csv" : (verifyData?.database_file || targetSystem));
+
+    if (!isRefundCategory) {
+      actionBar.innerHTML = `
+        <div class="resolution-result-card manual">
+          <div class="result-card-header">
+            <svg class="badge-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+            <strong>Customer #${c.customer_id} Escalated to ${queueName}</strong>
+            <span class="db-sync-tag manual">${displaySysFile}</span>
+          </div>
+          <div class="result-card-body">
+            <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || cust.customer_name}</strong> (${c.customer_id} &middot; ${c.customer_email || cust.customer_email})</div>
+            <div><span class="res-meta-lbl">Subscription Plan:</span> ${c.subscription_plan || cust.subscription_plan}</div>
+            <div><span class="res-meta-lbl">Account Status:</span> <span class="status-badge manual">${c.account_status || `Escalated - ${queueName} Review`}</span></div>
+            <div><span class="res-meta-lbl">Assigned Queue:</span> <strong>${queueName}</strong> (Target SLA: ${cachedCraReport?.predicted_sla_hours ? cachedCraReport.predicted_sla_hours + " hrs" : "Priority Routing"})</div>
+            <div><span class="res-meta-lbl">Ticket Reference:</span> <code>${data?.reference_id || targetRefId}</code> &middot; Escalation Action: <em>${data?.resolution_action || "Manual inspection pending"}</em></div>
+            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">${c.customer_notified || "Yes - Escalation Notice Sent"}</span> to ${c.customer_email || cust.customer_email}</div>
+            <div><span class="res-meta-lbl">System Audit:</span> Logged in <code>${displaySysFile}</code> at ${data?.timestamp || "Just now"}</div>
+          </div>
         </div>
-        <div class="result-card-body">
-          <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || "Alex Morgan"}</strong> (${c.customer_email || "alex.morgan@gmail.com"})</div>
-          <div><span class="res-meta-lbl">Account Status:</span> <span class="status-badge manual">${c.account_status || "Escalated - Billing Specialist Audit"}</span></div>
-          <div><span class="res-meta-lbl">Assigned Queue:</span> <strong>Billing Team Specialist</strong> (Target SLA: 18.13 hrs)</div>
-          <div><span class="res-meta-lbl">Transaction Reference:</span> <code>TXN-9012 ($49.00)</code> flagged for human review in <code>data/transactions.csv</code></div>
+      `;
+      updateLiveStatus(`Customer ticket #${data?.reference_id || targetRefId} routed to ${queueName}.`, false);
+    } else {
+      actionBar.innerHTML = `
+        <div class="resolution-result-card manual">
+          <div class="result-card-header">
+            <svg class="badge-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+            <strong>Customer #${c.customer_id || "USR-10492"} Escalated for Manual Audit</strong>
+            <span class="db-sync-tag manual">data/transactions.csv Flagged</span>
+          </div>
+          <div class="result-card-body">
+            <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || "Alex Morgan"}</strong> (${c.customer_id || "USR-10492"} &middot; ${c.customer_email || "alex.morgan@gmail.com"})</div>
+            <div><span class="res-meta-lbl">Account Status:</span> <span class="status-badge manual">${c.account_status || "Escalated - Billing Specialist Audit"}</span></div>
+            <div><span class="res-meta-lbl">Assigned Queue:</span> <strong>${queueName}</strong> (Target SLA: 18.13 hrs)</div>
+            <div><span class="res-meta-lbl">Transaction Reference:</span> <code>TXN-9012 ($${planRate})</code> flagged for human review in <code>data/transactions.csv</code></div>
+            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Yes - Escalation Notice Sent</span> to ${c.customer_email || "alex.morgan@gmail.com"}</div>
+            <div><span class="res-meta-lbl">Ledger Audit:</span> Flagged in <code>data/transactions.csv</code> at ${data?.timestamp || "Just now"}</div>
+          </div>
         </div>
-      </div>
-    `;
-    updateLiveStatus("Customer account routed for manual audit in data/transactions.csv.", false);
+      `;
+      updateLiveStatus("Customer account routed for manual audit in data/transactions.csv.", false);
+    }
   });
 
   btnAgent?.addEventListener("click", async () => {

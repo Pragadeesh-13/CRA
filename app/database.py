@@ -838,50 +838,195 @@ def execute_agent_resolution(
     }
 
 
+CATEGORY_TO_TEAM = {
+    "Billing": "Billing",
+    "Refunds": "Billing",
+    "Subscription": "Billing",
+    "Security": "Security",
+    "Authentication & Access": "Security",
+    "Bugs & Errors": "Engineering",
+    "Performance": "Engineering",
+    "Data Sync": "Engineering",
+    "Integrations & API": "Engineering",
+    "Account Management": "Tier 1 Support",
+    "Onboarding & How-To": "Tier 1 Support",
+}
+
+
+CATEGORY_MANUAL_ROUTING = {
+    "Refunds": {
+        "queue": "Billing Team Specialist",
+        "action": "Flagged for manual ledger audit and refund authorization by Human Billing Specialist.",
+        "status": "Escalated - Billing Specialist Audit",
+    },
+    "Billing": {
+        "queue": "Billing & Corporate Tax Specialist",
+        "action": "Routed to Corporate Accounting for VAT verification and custom invoice issuance.",
+        "status": "Escalated - Tax & Billing Audit",
+    },
+    "Subscription": {
+        "queue": "Subscription & Account Retention Specialist",
+        "action": "Assigned to Retention Team for manual plan tier adjustment and credit review.",
+        "status": "Escalated - Subscription Adjustment Review",
+    },
+    "Authentication & Access": {
+        "queue": "Security & IAM Access Specialist",
+        "action": "Routed to Identity & Access Management (IAM) for manual 2FA reset and credential recovery.",
+        "status": "Escalated - IAM Security Review",
+    },
+    "Security": {
+        "queue": "Security Operations Center (SOC) Specialist",
+        "action": "Escalated to SOC Incident Response for threat assessment, IP forensics, and session review.",
+        "status": "Escalated - Security Incident Review",
+    },
+    "Bugs & Errors": {
+        "queue": "Engineering Bug Triage & QA Specialist",
+        "action": "Logged in Engineering Priority Queue with client telemetry and stack trace for developer fix.",
+        "status": "Escalated - Engineering Bug Triage",
+    },
+    "Integrations & API": {
+        "queue": "API Platform & Developer Support Specialist",
+        "action": "Assigned to Developer Platform Engineers for webhook dead-letter analysis and rate-limit audit.",
+        "status": "Escalated - Developer Support Review",
+    },
+    "Performance": {
+        "queue": "Site Reliability Engineering (SRE) Specialist",
+        "action": "Assigned to Infrastructure & Database Team for query profiling and index optimization.",
+        "status": "Escalated - Infrastructure Review",
+    },
+    "Data Sync": {
+        "queue": "Distributed Systems & Cloud Sync Specialist",
+        "action": "Routed to Backend Engineering for manual database conflict reconciliation and queue replay.",
+        "status": "Escalated - Data Reconciliation Review",
+    },
+    "Onboarding & How-To": {
+        "queue": "Customer Success & Onboarding Specialist",
+        "action": "Assigned to Dedicated Customer Success Manager for guided workspace walkthrough.",
+        "status": "Escalated - Customer Success Outreach",
+    },
+    "Account Management": {
+        "queue": "Tier 1 Support & Account Administration Specialist",
+        "action": "Routed to Account Administration for organization consolidation and contract contact update.",
+        "status": "Escalated - Account Admin Review",
+    },
+}
+
+
 def execute_manual_resolution(
     customer_id: Optional[str] = None,
     query: Optional[str] = None,
     notes: Optional[str] = None,
+    category: Optional[str] = None,
     **kwargs,
 ) -> Dict[str, Any]:
     """
-    Escalates the transactions in data/transactions.csv for human review:
-    Flags the duplicate candidate transaction with a review note.
+    Escalates complaint for human intervention according to its specific category.
+    - For Refunds: Audits and flags duplicate transaction in data/transactions.csv.
+    - For all other categories: Routes ticket to the dedicated specialist queue without touching transactions.csv.
     """
-    all_txns = read_all_transactions()
-    analysis = analyze_customer_transactions(customer_id=customer_id, query=query)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    context = get_category_complaint_context(category=category or "", query=query or "")
+    cat_name = context.get("category", "General Support")
+    is_refund = context.get("is_refund", False)
 
-    dup_txn = analysis.get("duplicate_transaction")
-    target_txn_id = dup_txn.get("transaction_id") if dup_txn else "TXN-9012"
+    routing_info = CATEGORY_MANUAL_ROUTING.get(
+        cat_name,
+        {
+            "queue": f"{CATEGORY_TO_TEAM.get(cat_name, 'Support')} Specialist",
+            "action": f"Escalated to {cat_name} specialist queue for manual operator review.",
+            "status": f"Escalated - {cat_name} Specialist Review",
+        },
+    )
+    assigned_queue = routing_info["queue"]
+    escalation_action = routing_info["action"]
+    account_status = routing_info["status"]
 
-    for row in all_txns:
-        if row.get("transaction_id") == target_txn_id:
-            row["notes"] = notes or "Flagged for manual review by human billing specialist."
-            row["processed_by"] = "Escalated by Troy -> Human Agent"
-            break
+    if is_refund:
+        all_txns = read_all_transactions()
+        analysis = analyze_customer_transactions(customer_id=customer_id, query=query)
+        dup_txn = analysis.get("duplicate_transaction")
+        target_txn_id = dup_txn.get("transaction_id") if dup_txn else "TXN-9012"
 
-    write_all_transactions(all_txns)
-    logger.info(f"Database updated: Transaction {target_txn_id} flagged for manual review in data/transactions.csv.")
+        for row in all_txns:
+            if row.get("transaction_id") == target_txn_id:
+                row["notes"] = notes or f"Flagged for manual review by {assigned_queue}."
+                row["processed_by"] = f"Escalated by Troy -> {assigned_queue}"
+                break
+
+        write_all_transactions(all_txns)
+        logger.info(f"Database updated: Transaction {target_txn_id} flagged for manual review in data/transactions.csv.")
+
+        return {
+            "ok": True,
+            "action": "manual_resolve",
+            "category": "Refunds",
+            "assigned_queue": assigned_queue,
+            "resolution_action": escalation_action,
+            "customer": {
+                "customer_id": analysis.get("customer_id", "USR-10492"),
+                "customer_name": analysis.get("customer_name", "Alex Morgan"),
+                "customer_email": analysis.get("customer_email", "alex.morgan@gmail.com"),
+                "subscription_plan": analysis.get("subscription_plan", "Pro Tier ($49.00/mo)"),
+                "account_status": account_status,
+                "status": "Escalated",
+                "customer_notified": "Yes - Escalation Notice Sent",
+            },
+            "ticket": {
+                "ticket_id": "88219",
+                "order_id": "ORD-88219",
+                "status": "Escalated - Manual Review",
+                "predicted_team": assigned_queue,
+                "customer_notified": "Yes - Escalation Notice Sent",
+                "notes": notes or escalation_action,
+                "resolution_action": escalation_action,
+            },
+            "database_file": "data/transactions.csv",
+            "reference_id": target_txn_id,
+            "timestamp": now_str,
+        }
+
+    # Non-refund categories: strictly NO CSV access
+    ref_id = context.get("reference_id", "ESC-9901-REV")
+    cust_id = context.get("customer_id", customer_id or "USR-08914")
+    cust_name = context.get("customer_name", "Valued Customer")
+    cust_email = context.get("customer_email", "customer@enterprise.org")
+    plan = context.get("subscription_plan", "Enterprise Tier")
+    sys_file = context.get("database_file") or context.get("system_label", "System Directory")
+    system_label = context.get("system_label", sys_file)
+
+    logger.info(f"Manual intervention: Ticket {ref_id} for category [{cat_name}] routed to [{assigned_queue}] in {sys_file}.")
 
     return {
         "ok": True,
         "action": "manual_resolve",
+        "category": cat_name,
+        "reference_id": ref_id,
+        "assigned_queue": assigned_queue,
+        "resolution_action": escalation_action,
         "customer": {
-            "customer_id": analysis.get("customer_id", "USR-10492"),
-            "customer_name": analysis.get("customer_name", "Alex Morgan"),
-            "customer_email": analysis.get("customer_email", "alex.morgan@gmail.com"),
-            "subscription_plan": analysis.get("subscription_plan", "Pro Tier ($49.00/mo)"),
-            "account_status": "Escalated - Billing Specialist Audit",
+            "customer_id": cust_id,
+            "customer_name": cust_name,
+            "customer_email": cust_email,
+            "subscription_plan": plan,
+            "status": "Escalated",
+            "account_status": account_status,
+            "reference_id": ref_id,
+            "customer_notified": f"Yes - Escalation Notice Sent ({ref_id})",
         },
         "ticket": {
-            "ticket_id": "88219",
-            "order_id": "ORD-88219",
+            "ticket_id": ref_id,
+            "category": cat_name,
+            "order_id": ref_id,
+            "customer_name": cust_name,
+            "customer_email": cust_email,
             "status": "Escalated - Manual Review",
-            "predicted_team": "Billing Team Specialist",
-            "customer_notified": "Yes - Escalation Notice Sent",
+            "predicted_team": assigned_queue,
+            "customer_notified": f"Yes - Escalation Notice Sent ({ref_id})",
+            "notes": notes or escalation_action,
+            "resolution_action": escalation_action,
         },
-        "database_file": "data/transactions.csv",
+        "database_file": sys_file,
+        "system_label": system_label,
         "timestamp": now_str,
     }
 

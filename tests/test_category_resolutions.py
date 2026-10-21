@@ -1,6 +1,6 @@
 import pytest
 from app.cra import cra_engine
-from app.database import get_category_complaint_context, execute_agent_resolution
+from app.database import get_category_complaint_context, execute_agent_resolution, execute_manual_resolution
 from app.simulation.troy import Troy
 from app.config import settings
 from app.http.sse_manager import SseManager
@@ -144,3 +144,25 @@ def test_non_refund_categories_have_no_csv_references():
         assert "data/transactions.csv" not in fallback
         assert "Alex Morgan" not in fallback
         assert "$49.00" not in fallback
+
+
+@pytest.mark.parametrize("category", ALL_11_CATEGORIES)
+def test_manual_resolution_all_11_categories(category):
+    res = execute_manual_resolution(query=f"Issue requiring human intervention for {category}", category=category)
+    assert res["ok"] is True
+    assert res["action"] == "manual_resolve"
+    assert res["category"] == category
+    assert "assigned_queue" in res
+    assert "resolution_action" in res
+    assert "ticket" in res
+    assert "customer" in res
+
+    if category == "Refunds":
+        assert res["database_file"] == "data/transactions.csv"
+        assert "Billing" in res["assigned_queue"]
+    else:
+        assert res["database_file"] != "data/transactions.csv"
+        assert "data/transactions.csv" not in res.get("database_file", "")
+        assert res["ticket"]["predicted_team"] == res["assigned_queue"]
+        assert "Specialist" in res["assigned_queue"] or "Queue" in res["assigned_queue"]
+
