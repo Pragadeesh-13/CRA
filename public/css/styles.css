@@ -2811,8 +2811,8 @@ body {
 
 .cra-live-status.running .status-dot {
   background: #f59e0b;
-  box-shadow: 0 0 10px #f59e0b;
-  animation: pulse-dot 1.2s infinite;
+  box-shadow: none;
+  animation: none;
 }
 
 .cra-live-status.completed .status-dot {
