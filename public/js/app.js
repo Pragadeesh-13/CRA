@@ -1025,6 +1025,8 @@ const renderResolutionActionButtons = async () => {
   const totBilled = parseFloat(String(cust.total_billed_this_month || "98").split()[0].replace("$", "")).toFixed(2);
   const planRate = parseFloat(String(cust.monthly_rate || "49").split()[0].replace("$", "")).toFixed(2);
 
+  const cycle = verifyData?.billing_cycle || cust.billing_cycle || "October 2026";
+
   actionBar.innerHTML = `
     <div class="customer-verify-strip">
       <div class="verify-strip-header">
@@ -1033,17 +1035,17 @@ const renderResolutionActionButtons = async () => {
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
             <polyline points="22 4 12 14.01 9 11.01"></polyline>
           </svg>
-          <strong>Customer Database Verified:</strong>
+          <strong>Customer Transaction Ledger Analyzed:</strong>
           <span class="verify-customer-highlight">${cust.customer_name}</span>
-          <span class="db-source-tag">data/customer_accounts.csv</span>
+          <span class="db-source-tag">data/transactions.csv</span>
         </div>
-        <span class="verify-status-pill duplicate">Accidental 2x Charge Confirmed</span>
+        <span class="verify-status-pill duplicate">2 Charges in Single Cycle Found</span>
       </div>
       <div class="verify-strip-details">
         <div class="verify-detail-item"><span class="v-label">Customer ID:</span> <strong>${cust.customer_id}</strong> (${cust.customer_email})</div>
-        <div class="verify-detail-item"><span class="v-label">Plan & Rate:</span> <strong>${cust.subscription_plan}</strong></div>
-        <div class="verify-detail-item"><span class="v-label">Ledger Debits:</span> <span class="v-alert">${chargesCount}x charges this month ($${totBilled})</span></div>
-        <div class="verify-detail-item"><span class="v-label">Transactions:</span> Oct 20 ($${planRate}) + Oct 21 ($${planRate}) [Duplicate]</div>
+        <div class="verify-detail-item"><span class="v-label">Plan & Cycle:</span> <strong>${cust.subscription_plan}</strong> (${cycle})</div>
+        <div class="verify-detail-item"><span class="v-label">Ledger Records:</span> <span class="v-alert">${chargesCount} transaction records in ${cycle} ($${totBilled})</span></div>
+        <div class="verify-detail-item"><span class="v-label">Agent Decision:</span> Refund redundant <strong>TXN-9012 ($${planRate})</strong> &amp; retain TXN-9011</div>
       </div>
     </div>
     <div class="resolution-buttons-row">
@@ -1082,8 +1084,9 @@ const renderResolutionActionButtons = async () => {
 
     // Display progressive manual escalation steps
     const manualSteps = [
-      { text: "Routing ticket #88219 to Human Billing Specialist queue...", delay: 650 },
-      { text: "Updating account status in data/customer_accounts.csv to Escalated...", delay: 650 },
+      { text: "Accessing internal customer transaction ledger (data/transactions.csv)...", delay: 650 },
+      { text: "Routing ticket #88219 and transaction TXN-9012 to Human Billing Specialist queue...", delay: 650 },
+      { text: "Logging escalation audit record in data/transactions.csv...", delay: 650 },
     ];
 
     actionBar.innerHTML = `
@@ -1158,17 +1161,17 @@ const renderResolutionActionButtons = async () => {
             <circle cx="12" cy="7" r="4"></circle>
           </svg>
           <strong>Customer #${c.customer_id || "USR-10492"} Escalated for Manual Audit</strong>
-          <span class="db-sync-tag">customer_accounts.csv Updated</span>
+          <span class="db-sync-tag">data/transactions.csv Flagged</span>
         </div>
         <div class="result-card-body">
           <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || "Alex Morgan"}</strong> (${c.customer_email || "alex.morgan@gmail.com"})</div>
           <div><span class="res-meta-lbl">Account Status:</span> <span class="status-badge manual">${c.account_status || "Escalated - Billing Specialist Audit"}</span></div>
           <div><span class="res-meta-lbl">Assigned Queue:</span> <strong>Billing Team Specialist</strong> (Target SLA: 18.13 hrs)</div>
-          <div><span class="res-meta-lbl">Database Audit Log:</span> Recorded in <code>data/customer_accounts.csv</code> at ${data?.timestamp || "Just now"}</div>
+          <div><span class="res-meta-lbl">Transaction Reference:</span> <code>TXN-9012 ($49.00)</code> flagged for human review in <code>data/transactions.csv</code></div>
         </div>
       </div>
     `;
-    updateLiveStatus("Customer account routed for manual audit in customer_accounts.csv.", false);
+    updateLiveStatus("Customer account routed for manual audit in data/transactions.csv.", false);
   });
 
   btnAgent?.addEventListener("click", async () => {
@@ -1177,12 +1180,13 @@ const renderResolutionActionButtons = async () => {
 
     // Progressive autonomous resolution steps
     const autoSteps = [
-      { text: "Accessing internal customer database (data/customer_accounts.csv)...", delay: 700 },
-      { text: `Found user account: ${cust.customer_name || "Alex Morgan"} (${cust.customer_id || "USR-10492"})...`, delay: 750 },
-      { text: `Verifying ledger: Accidental duplicate renewal debit TXN-9012 ($${planRate}) confirmed...`, delay: 800 },
-      { text: `Sending refund: Authorizing $${planRate} reimbursement via Payment Gateway API...`, delay: 850 },
-      { text: "Making changes in database: Marking TXN-9012 as Refunded & balance restored to $0.00...", delay: 800 },
-      { text: `Dispatching refund receipt (REF-88219-AUTO) to ${cust.customer_email || "alex.morgan@gmail.com"}...`, delay: 650 },
+      { text: "Accessing internal transaction ledger (data/transactions.csv)...", delay: 700 },
+      { text: `Found user transaction history: ${cust.customer_name || "Alex Morgan"} (${cust.customer_id || "USR-10492"})...`, delay: 750 },
+      { text: `Analyzing billing cycle ${cycle}: Found 2 settled transaction records ($${planRate} each)...`, delay: 800 },
+      { text: `Decision formulated: Refund redundant duplicate record TXN-9012 ($${planRate}) & retain valid renewal TXN-9011...`, delay: 850 },
+      { text: `Sending refund: Authorizing $${planRate} reversal via Stripe Gateway API (REF-88219-AUTO)...`, delay: 850 },
+      { text: "Making changes in database: Updating TXN-9012 status to 'Refunded' in data/transactions.csv...", delay: 800 },
+      { text: `Dispatching refund confirmation receipt to ${cust.customer_email || "alex.morgan@gmail.com"}...`, delay: 650 },
     ];
 
     actionBar.innerHTML = `
@@ -1268,22 +1272,25 @@ const renderResolutionActionButtons = async () => {
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
             <polyline points="22 4 12 14.01 9 11.01"></polyline>
           </svg>
-          <strong>Autonomous Resolution Executed & CSV Updated</strong>
-          <span class="db-sync-tag agent">customer_accounts.csv Synced</span>
+          <strong>Autonomous Resolution Executed & Ledger Updated</strong>
+          <span class="db-sync-tag agent">data/transactions.csv Synced</span>
         </div>
         <div class="result-card-body">
           <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || "Alex Morgan"}</strong> (${c.customer_id || "USR-10492"} &middot; ${c.customer_email || "alex.morgan@gmail.com"})</div>
           <div><span class="res-meta-lbl">Subscription Plan:</span> ${c.subscription_plan || "Pro Tier ($49.00/mo)"}</div>
-          <div><span class="res-meta-lbl">Database Verification:</span> <span class="status-badge verified">Accidental 2x Debit Confirmed & Settled</span></div>
-          <div><span class="res-meta-lbl">CSV Update Action:</span> <strong>TXN-9012 Refunded ($${planRate}) &middot; Account Balance set to $0.00</strong></div>
-          <div><span class="res-meta-lbl">Account Status:</span> <span class="status-badge agent">${c.account_status || "Active - In Good Standing"}</span> | <span class="res-meta-lbl">Receipt ID:</span> <code>${c.refund_id || "REF-88219-AUTO"}</code></div>
+          <div><span class="res-meta-lbl">Ledger Audit:</span> <span class="status-badge verified">2 Charges in Single Cycle Reconciled</span></div>
+          <div><span class="res-meta-lbl">Reconciled Ledger Action:</span> <strong>TXN-9012 marked as Refunded ($${planRate}) in data/transactions.csv</strong></div>
+          <div><span class="res-meta-lbl">Active Renewal Retained:</span> <strong>TXN-9011 ($${planRate}) retained as settled monthly renewal</strong></div>
+          <div><span class="res-meta-lbl">Receipt & ID:</span> <code>${c.refund_id || "REF-88219-AUTO"}</code> | <span class="status-badge agent">Active - In Good Standing</span></div>
           <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Yes - Confirmation Dispatched</span> to ${c.customer_email || "alex.morgan@gmail.com"}</div>
-          <div><span class="res-meta-lbl">Audit Log:</span> Persisted to <code>data/customer_accounts.csv</code> at ${data?.timestamp || "Just now"} by Troy</div>
+          <div><span class="res-meta-lbl">Audit Log:</span> Row TXN-9012 updated in <code>data/transactions.csv</code> at ${data?.timestamp || "Just now"} by Troy</div>
         </div>
       </div>
     `;
 
-    updateLiveStatus("Resolution autonomously executed by Troy. customer_accounts.csv updated & account settled.", false);
+    updateLiveStatus("Resolution autonomously executed by Troy. data/transactions.csv updated & duplicate charge refunded.", false);
+    markFeedCardResolved();
+  });
     markFeedCardResolved();
   });
 };

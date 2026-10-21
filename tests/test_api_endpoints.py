@@ -179,7 +179,7 @@ def test_customer_verify_endpoint():
     assert data["customer_name"] == "Alex Morgan"
     assert data["customer_id"] == "USR-10492"
     assert data["has_duplicate"] is True
-    assert "data/customer_accounts.csv" in data["summary"]
+    assert "data/transactions.csv" in data["summary"]
 
 
 def test_database_customers_endpoint():
@@ -190,12 +190,27 @@ def test_database_customers_endpoint():
     assert "customers" in data
     assert isinstance(data["customers"], list)
     assert data["count"] >= 1
-    # Check customer schema
+    # Check customer & transaction ledger schema
     first = data["customers"][0]
     assert "customer_id" in first
     assert "customer_name" in first
     assert "subscription_plan" in first
-    assert "charges_this_month" in first
+    assert "transaction_id" in first
+
+
+def test_database_transactions_endpoint():
+    res = client.get("/api/database/transactions")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert "transactions" in data
+    assert isinstance(data["transactions"], list)
+    assert data["count"] >= 1
+    first = data["transactions"][0]
+    assert "transaction_id" in first
+    assert "billing_cycle" in first
+    assert "amount" in first
+    assert "status" in first
 
 
 def test_resolve_action_agent_and_manual():

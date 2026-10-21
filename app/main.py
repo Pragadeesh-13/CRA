@@ -15,9 +15,11 @@ from app.simulation import SimulationState, RoundBarrier, Troy, CouncilOrchestra
 from app.http.sse_manager import SseManager
 from app.auth import KeyVault, SessionGuard, requires_key
 from app.database import (
+    read_all_transactions,
     read_all_customers,
     read_all_tickets,
     verify_customer_billing,
+    analyze_customer_transactions,
     execute_agent_resolution,
     execute_manual_resolution,
     find_customer_by_id_or_query,
@@ -203,16 +205,17 @@ async def get_ticket(request: Request):
 
 @app.get("/api/customer/verify")
 async def verify_customer(query: Optional[str] = None, customer_id: Optional[str] = None):
-    """Verifies customer billing records in data/customer_accounts.csv."""
-    res = verify_customer_billing(customer_id=customer_id, query=query)
+    """Analyzes customer transaction records in data/transactions.csv."""
+    res = analyze_customer_transactions(customer_id=customer_id, query=query)
     return res
 
 
+@app.get("/api/database/transactions")
 @app.get("/api/database/customers")
 @app.get("/api/database/tickets")
-async def get_database_customers():
-    customers = read_all_customers()
-    return {"ok": True, "customers": customers, "count": len(customers), "database_file": "data/customer_accounts.csv"}
+async def get_database_transactions():
+    transactions = read_all_transactions()
+    return {"ok": True, "transactions": transactions, "customers": transactions, "count": len(transactions), "database_file": "data/transactions.csv"}
 
 
 @app.post("/api/resolve/action")

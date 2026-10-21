@@ -1,6 +1,7 @@
 """
-Customer Accounts & Billing Ledger Database for Complaint Resolution Agent (CRA).
-Manages customer subscription data, billing transactions, and autonomous updates in data/customer_accounts.csv.
+Customer Billing Transactions Database & Agent Ledger Analysis Engine.
+Manages transaction records in data/transactions.csv.
+Troy analyzes transaction history per billing cycle to detect multiple debits and executes refunds on specific records.
 """
 
 from __future__ import annotations
@@ -9,303 +10,365 @@ import csv
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-DATABASE_FILE = DATA_DIR / "customer_accounts.csv"
+DATABASE_FILE = DATA_DIR / "transactions.csv"
 
 FIELDNAMES = [
+    "transaction_id",
     "customer_id",
     "customer_name",
     "customer_email",
-    "reference_order_id",
-    "subscription_plan",
+    "order_id",
+    "transaction_date",
     "billing_cycle",
-    "monthly_rate",
-    "total_billed_this_month",
-    "charges_this_month",
-    "transaction_1",
-    "transaction_2",
-    "duplicate_verified",
-    "refund_status",
+    "subscription_plan",
+    "amount",
+    "currency",
+    "payment_method",
+    "status",
     "refund_id",
-    "account_balance",
-    "account_status",
-    "last_verified_by",
-    "updated_by",
-    "last_updated",
+    "refund_amount",
+    "refunded_at",
+    "processed_by",
     "notes",
 ]
 
-DEFAULT_CUSTOMERS = [
+DEFAULT_TRANSACTIONS = [
     {
+        "transaction_id": "TXN-9011",
         "customer_id": "USR-10492",
         "customer_name": "Alex Morgan",
         "customer_email": "alex.morgan@gmail.com",
-        "reference_order_id": "ORD-88219",
+        "order_id": "ORD-88219",
+        "transaction_date": "2026-10-20 08:14:22",
+        "billing_cycle": "October 2026",
         "subscription_plan": "Pro Tier ($49.00/mo)",
-        "billing_cycle": "Monthly (20th)",
-        "monthly_rate": "49.00",
-        "total_billed_this_month": "98.00",
-        "charges_this_month": "2",
-        "transaction_1": "TXN-9011 ($49.00 on 2026-10-20) [Settled Renewal]",
-        "transaction_2": "TXN-9012 ($49.00 on 2026-10-21) [Accidental Duplicate Debit]",
-        "duplicate_verified": "Yes - Accidental Double Charge Detected",
-        "refund_status": "Pending Refund",
+        "amount": "49.00",
+        "currency": "USD",
+        "payment_method": "Visa ending in 4242",
+        "status": "Settled",
         "refund_id": "",
-        "account_balance": "$-49.00 (Overcharged)",
-        "account_status": "Flagged - Accidental Double Charge",
-        "last_verified_by": "Troy AI",
-        "updated_by": "System Billing Daemon",
-        "last_updated": "2026-10-21 12:00:00",
-        "notes": "Accidental duplicate renewal charge debited twice within 24 hours. Awaiting agent resolution.",
+        "refund_amount": "",
+        "refunded_at": "",
+        "processed_by": "Stripe Gateway",
+        "notes": "Monthly subscription renewal debit",
     },
     {
+        "transaction_id": "TXN-9012",
+        "customer_id": "USR-10492",
+        "customer_name": "Alex Morgan",
+        "customer_email": "alex.morgan@gmail.com",
+        "order_id": "ORD-88219",
+        "transaction_date": "2026-10-21 09:30:15",
+        "billing_cycle": "October 2026",
+        "subscription_plan": "Pro Tier ($49.00/mo)",
+        "amount": "49.00",
+        "currency": "USD",
+        "payment_method": "Visa ending in 4242",
+        "status": "Settled",
+        "refund_id": "",
+        "refund_amount": "",
+        "refunded_at": "",
+        "processed_by": "Stripe Gateway",
+        "notes": "Subscription renewal retry debit",
+    },
+    {
+        "transaction_id": "TXN-8801",
         "customer_id": "USR-08914",
         "customer_name": "Sarah Jenkins",
         "customer_email": "sarah.j@enterprise.org",
-        "reference_order_id": "ORD-79110",
+        "order_id": "ORD-79110",
+        "transaction_date": "2026-10-01 00:00:00",
+        "billing_cycle": "October 2026",
         "subscription_plan": "Enterprise Tier ($299.00/mo)",
-        "billing_cycle": "Monthly (1st)",
-        "monthly_rate": "299.00",
-        "total_billed_this_month": "299.00",
-        "charges_this_month": "1",
-        "transaction_1": "TXN-8801 ($299.00 on 2026-10-01) [Settled]",
-        "transaction_2": "None",
-        "duplicate_verified": "No",
-        "refund_status": "N/A",
+        "amount": "299.00",
+        "currency": "USD",
+        "payment_method": "Mastercard ending in 1098",
+        "status": "Settled",
         "refund_id": "",
-        "account_balance": "$0.00 (Current)",
-        "account_status": "Locked - 2FA SMS Gateway Failure",
-        "last_verified_by": "Tier 1 Support",
-        "updated_by": "Auth Service",
-        "last_updated": "2026-10-21 09:30:00",
-        "notes": "Account locked after 3 failed 2FA SMS attempts. Awaiting gateway reset.",
+        "refund_amount": "",
+        "refunded_at": "",
+        "processed_by": "Stripe Gateway",
+        "notes": "Monthly enterprise plan renewal",
     },
     {
+        "transaction_id": "TXN-8450",
         "customer_id": "USR-12053",
         "customer_name": "David Chen",
         "customer_email": "d.chen@fintech.io",
-        "reference_order_id": "ORD-93041",
+        "order_id": "ORD-93041",
+        "transaction_date": "2026-10-15 12:00:00",
+        "billing_cycle": "October 2026",
         "subscription_plan": "Developer API Tier ($199.00/mo)",
-        "billing_cycle": "Monthly (15th)",
-        "monthly_rate": "199.00",
-        "total_billed_this_month": "199.00",
-        "charges_this_month": "1",
-        "transaction_1": "TXN-8450 ($199.00 on 2026-10-15) [Settled]",
-        "transaction_2": "None",
-        "duplicate_verified": "No",
-        "refund_status": "N/A",
+        "amount": "199.00",
+        "currency": "USD",
+        "payment_method": "Amex ending in 3004",
+        "status": "Settled",
         "refund_id": "",
-        "account_balance": "$0.00 (Current)",
-        "account_status": "Degraded - Webhook Gateway 504 Timeout",
-        "last_verified_by": "Engineering Bot",
-        "updated_by": "API Monitor",
-        "last_updated": "2026-10-21 10:15:00",
-        "notes": "Webhook retry queue flooded. Engineering investigation underway.",
+        "refund_amount": "",
+        "refunded_at": "",
+        "processed_by": "Stripe Gateway",
+        "notes": "Monthly developer API tier billing",
     },
     {
+        "transaction_id": "TXN-8201",
         "customer_id": "USR-14309",
         "customer_name": "Elena Rostova",
         "customer_email": "elena@globaltrade.de",
-        "reference_order_id": "ORD-85420",
+        "order_id": "ORD-85420",
+        "transaction_date": "2026-10-05 14:10:00",
+        "billing_cycle": "Q4 2026",
         "subscription_plan": "Team Tier ($120.00/mo)",
-        "billing_cycle": "Quarterly ($360.00)",
-        "monthly_rate": "120.00",
-        "total_billed_this_month": "360.00",
-        "charges_this_month": "1",
-        "transaction_1": "TXN-8201 ($360.00 on 2026-10-05) [Settled]",
-        "transaction_2": "None",
-        "duplicate_verified": "No",
-        "refund_status": "N/A",
+        "amount": "360.00",
+        "currency": "EUR",
+        "payment_method": "SEPA Direct Debit",
+        "status": "Settled",
         "refund_id": "",
-        "account_balance": "$0.00 (Current)",
-        "account_status": "Active - Pending VAT Invoice Receipt",
-        "last_verified_by": "Billing Team",
-        "updated_by": "Invoicing Engine",
-        "last_updated": "2026-10-20 16:40:00",
-        "notes": "Formal German VAT tax invoice and receipt requested for accounting records.",
+        "refund_amount": "",
+        "refunded_at": "",
+        "processed_by": "Payment Gateway",
+        "notes": "Quarterly team subscription renewal",
     },
     {
+        "transaction_id": "TXN-8902",
         "customer_id": "USR-09148",
         "customer_name": "Michael Scott",
         "customer_email": "m.scott@dunder.com",
-        "reference_order_id": "ORD-86102",
+        "order_id": "ORD-86102",
+        "transaction_date": "2026-10-18 10:05:00",
+        "billing_cycle": "October 2026",
         "subscription_plan": "Starter Tier ($29.00/mo)",
-        "billing_cycle": "Monthly (18th)",
-        "monthly_rate": "29.00",
-        "total_billed_this_month": "79.00",
-        "charges_this_month": "1",
-        "transaction_1": "TXN-8902 ($79.00 on 2026-10-18) [Settled - Old Plan]",
-        "transaction_2": "None",
-        "duplicate_verified": "No",
-        "refund_status": "Partial Refund Pending ($50.00)",
+        "amount": "79.00",
+        "currency": "USD",
+        "payment_method": "Visa ending in 9921",
+        "status": "Settled",
         "refund_id": "",
-        "account_balance": "$-50.00 (Credit Due)",
-        "account_status": "Pending Downgrade Adjustment",
-        "last_verified_by": "Billing Bot",
-        "updated_by": "Subscription Manager",
-        "last_updated": "2026-10-20 18:00:00",
-        "notes": "User requested downgrade prior to renewal. $50 prorated refund due.",
+        "refund_amount": "",
+        "refunded_at": "",
+        "processed_by": "Stripe Gateway",
+        "notes": "Renewal billed at legacy tier before downgrade processed",
     },
     {
+        "transaction_id": "TXN-7711",
         "customer_id": "USR-07231",
         "customer_name": "Emily Watson",
         "customer_email": "emily.w@consulting.co",
-        "reference_order_id": "ORD-81094",
+        "order_id": "ORD-81094",
+        "transaction_date": "2026-09-18 09:00:00",
+        "billing_cycle": "September 2026",
         "subscription_plan": "Pro Tier ($49.00/mo)",
-        "billing_cycle": "Monthly (18th)",
-        "monthly_rate": "49.00",
-        "total_billed_this_month": "49.00",
-        "charges_this_month": "2",
-        "transaction_1": "TXN-7711 ($49.00 on 2026-09-18) [Settled Renewal]",
-        "transaction_2": "TXN-7712 ($49.00 on 2026-09-18) [Refunded: REF-7712-AUTO]",
-        "duplicate_verified": "Yes - Double Debit on Sep 18",
-        "refund_status": "Refunded ($49.00 via Stripe API)",
+        "amount": "49.00",
+        "currency": "USD",
+        "payment_method": "Visa ending in 5543",
+        "status": "Settled",
+        "refund_id": "",
+        "refund_amount": "",
+        "refunded_at": "",
+        "processed_by": "Stripe Gateway",
+        "notes": "Annual renewal fee",
+    },
+    {
+        "transaction_id": "TXN-7712",
+        "customer_id": "USR-07231",
+        "customer_name": "Emily Watson",
+        "customer_email": "emily.w@consulting.co",
+        "order_id": "ORD-81094",
+        "transaction_date": "2026-09-18 09:01:15",
+        "billing_cycle": "September 2026",
+        "subscription_plan": "Pro Tier ($49.00/mo)",
+        "amount": "49.00",
+        "currency": "USD",
+        "payment_method": "Visa ending in 5543",
+        "status": "Refunded",
         "refund_id": "REF-7712-AUTO",
-        "account_balance": "$0.00 (Settled)",
-        "account_status": "Active - In Good Standing",
-        "last_verified_by": "Troy (Autonomous Resolution Agent)",
-        "updated_by": "Troy (Autonomous Resolution Agent)",
-        "last_updated": "2026-09-18 14:22:10",
-        "notes": "Precedent Case: Accidental double renewal refunded autonomously by Troy.",
+        "refund_amount": "49.00",
+        "refunded_at": "2026-09-18 14:22:10",
+        "processed_by": "Troy (Autonomous Resolution Agent)",
+        "notes": "Precedent Case: Duplicate renewal debit refunded autonomously by Troy",
     },
 ]
 
 
 def ensure_database_file() -> Path:
-    """Ensures data directory and customer accounts CSV file exist."""
+    """Ensures data directory and transactions CSV file exist."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not DATABASE_FILE.exists():
         with open(DATABASE_FILE, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
             writer.writeheader()
-            writer.writerows(DEFAULT_CUSTOMERS)
-        logger.info(f"Initialized customer accounts database at {DATABASE_FILE}")
+            writer.writerows(DEFAULT_TRANSACTIONS)
+        logger.info(f"Initialized transactions database at {DATABASE_FILE}")
     return DATABASE_FILE
 
 
-def read_all_customers() -> List[Dict[str, str]]:
-    """Reads all customer rows from customer_accounts.csv."""
+def read_all_transactions() -> List[Dict[str, str]]:
+    """Reads all transaction rows from data/transactions.csv."""
     db_path = ensure_database_file()
-    customers: List[Dict[str, str]] = []
+    records: List[Dict[str, str]] = []
     try:
         with open(db_path, "r", newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                customers.append(dict(row))
+                records.append(dict(row))
     except Exception as e:
         logger.error(f"Error reading {db_path}: {e}")
-    return customers
+    return records
 
 
-def write_all_customers(customers: List[Dict[str, str]]) -> bool:
-    """Writes customer rows to customer_accounts.csv."""
+def write_all_transactions(records: List[Dict[str, str]]) -> bool:
+    """Writes all transaction rows to data/transactions.csv."""
     db_path = ensure_database_file()
     try:
         with open(db_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
             writer.writeheader()
-            writer.writerows(customers)
+            writer.writerows(records)
         return True
     except Exception as e:
         logger.error(f"Error writing to {db_path}: {e}")
         return False
 
 
-def find_customer_by_id_or_query(
+def find_transactions_for_query(
     customer_id: Optional[str] = None,
     query: Optional[str] = None,
-) -> Optional[Dict[str, str]]:
-    """Finds a customer record by ID, order reference, or matching tokens in query text."""
-    customers = read_all_customers()
+) -> List[Dict[str, str]]:
+    """
+    Finds all transaction records in data/transactions.csv matching the customer ID,
+    order reference, email, name, or keywords in the complaint query.
+    """
+    transactions = read_all_transactions()
     target_id = str(customer_id).strip() if customer_id else None
 
-    # 1. Direct customer_id match (e.g. USR-10492 or 10492)
+    # 1. Search by customer_id match
     if target_id:
-        for c in customers:
-            if c.get("customer_id") == target_id or target_id in c.get("customer_id", ""):
-                return c
+        matched = [t for t in transactions if t.get("customer_id") == target_id or target_id in t.get("customer_id", "")]
+        if matched:
+            return matched
 
     # 2. Extract reference from query text (e.g. #88219 or ORD-88219)
     if query:
-        # Check order ID regex
         match = re.search(r"#?(\d{5,})", query)
         if match:
             ref_num = match.group(1)
-            for c in customers:
-                if ref_num in c.get("reference_order_id", "") or ref_num in c.get("customer_id", ""):
-                    return c
+            matched = [t for t in transactions if ref_num in t.get("order_id", "") or ref_num in t.get("transaction_id", "")]
+            if matched:
+                return matched
 
-        # Match name or email
         query_lower = query.lower()
-        for c in customers:
-            name = c.get("customer_name", "").lower()
-            email = c.get("customer_email", "").lower()
+        # Match name or email in records
+        for t in transactions:
+            name = t.get("customer_name", "").lower()
+            email = t.get("customer_email", "").lower()
             if (name and name in query_lower) or (email and email in query_lower):
-                return c
+                return [row for row in transactions if row.get("customer_id") == t.get("customer_id")]
 
-        # Check keywords for duplicate charge / subscription
+        # Match subscription / twice / duplicate
         if "twice" in query_lower or "duplicate" in query_lower or "49" in query_lower:
-            for c in customers:
-                if c.get("customer_id") == "USR-10492":
-                    return c
+            return [t for t in transactions if t.get("customer_id") == "USR-10492"]
 
-    # Default to Alex Morgan for demo complaints
-    for c in customers:
-        if c.get("customer_id") == "USR-10492":
-            return c
-
-    return customers[0] if customers else None
+    # Default to Alex Morgan's transactions for primary demo
+    return [t for t in transactions if t.get("customer_id") == "USR-10492"]
 
 
-def verify_customer_billing(
+def analyze_customer_transactions(
     customer_id: Optional[str] = None,
     query: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Agent verifies customer account data in data/customer_accounts.csv:
-    Checks if customer was debited twice in a month and confirms overcharge.
+    Troy / Agent analyzes raw transaction records from data/transactions.csv:
+    - Groups records by customer and billing_cycle (e.g. 'October 2026').
+    - If a single billing cycle contains > 1 settled transaction for a subscription plan,
+      flags the redundant transaction as a duplicate that should be refunded.
     """
-    customer = find_customer_by_id_or_query(customer_id, query)
-    if not customer:
-        return {"ok": False, "error": "Customer not found in database"}
+    txns = find_transactions_for_query(customer_id=customer_id, query=query)
+    if not txns:
+        return {"ok": False, "error": "No transaction records found"}
 
-    total_billed = float(customer.get("total_billed_this_month", "0").split()[0].replace("$", ""))
-    monthly_rate = float(customer.get("monthly_rate", "0").split()[0].replace("$", ""))
-    charges_count = int(customer.get("charges_this_month", "1"))
-    has_duplicate = charges_count > 1 or "Yes" in customer.get("duplicate_verified", "")
+    first = txns[0]
+    cust_id = first.get("customer_id", "USR-10492")
+    cust_name = first.get("customer_name", "Alex Morgan")
+    cust_email = first.get("customer_email", "alex.morgan@gmail.com")
+    plan = first.get("subscription_plan", "Pro Tier ($49.00/mo)")
+    cycle = first.get("billing_cycle", "October 2026")
 
-    overcharged = max(0.0, total_billed - monthly_rate) if has_duplicate else 0.0
+    # Group transactions by billing cycle
+    cycle_txns = [t for t in txns if t.get("billing_cycle") == cycle]
+    settled_txns = [t for t in cycle_txns if t.get("status") == "Settled"]
+    refunded_txns = [t for t in cycle_txns if t.get("status") == "Refunded"]
+
+    total_billed = sum(float(t.get("amount", "0")) for t in cycle_txns)
+    settled_amount = sum(float(t.get("amount", "0")) for t in settled_txns)
+
+    # Detect if multiple settled transactions exist in the same month
+    has_multiple_in_cycle = len(cycle_txns) > 1
+    has_duplicate_settled = len(settled_txns) > 1
+
+    # Candidate for refund: the later transaction in the cycle
+    candidate_to_refund: Optional[Dict[str, str]] = None
+    retained_valid_txn: Optional[Dict[str, str]] = None
+
+    if has_duplicate_settled:
+        # Sort by transaction_date ascending: first is valid renewal, second is duplicate
+        sorted_settled = sorted(settled_txns, key=lambda x: x.get("transaction_date", ""))
+        retained_valid_txn = sorted_settled[0]
+        candidate_to_refund = sorted_settled[1]
+    elif len(cycle_txns) > 1 and refunded_txns:
+        # Already refunded in earlier resolution
+        retained_valid_txn = settled_txns[0] if settled_txns else cycle_txns[0]
+        candidate_to_refund = refunded_txns[0]
+
+    overcharged_amount = float(candidate_to_refund.get("amount", "0")) if candidate_to_refund else 0.0
+
+    summary_text = (
+        f"Analyzed data/transactions.csv: Found {len(cycle_txns)} transaction records in {cycle} for {cust_name} ({cust_id}). "
+        f"Records: {', '.join([f'{t.get('transaction_id')} (${t.get('amount')}, {t.get('status')})' for t in cycle_txns])}. "
+        f"{'Multiple settled debits detected in a single monthly cycle.' if has_duplicate_settled else 'Ledger reconciled.'} "
+        f"Candidate transaction for refund: {candidate_to_refund.get('transaction_id') if candidate_to_refund else 'None'}."
+    )
 
     return {
         "ok": True,
         "verified": True,
-        "customer": customer,
-        "customer_id": customer.get("customer_id"),
-        "customer_name": customer.get("customer_name"),
-        "customer_email": customer.get("customer_email"),
-        "subscription_plan": customer.get("subscription_plan"),
-        "monthly_rate": f"${monthly_rate:.2f}",
-        "total_billed_this_month": f"${total_billed:.2f}",
-        "charges_this_month": charges_count,
-        "has_duplicate": has_duplicate,
-        "overcharge_amount": f"${overcharged:.2f}",
-        "transaction_1": customer.get("transaction_1"),
-        "transaction_2": customer.get("transaction_2"),
-        "refund_status": customer.get("refund_status"),
-        "account_status": customer.get("account_status"),
-        "summary": (
-            f"Verified {customer.get('customer_name')} ({customer.get('customer_email')}) in data/customer_accounts.csv: "
-            f"Debited {charges_count} times in current billing cycle (${total_billed:.2f} total vs. ${monthly_rate:.2f} plan fee). "
-            f"Accidental duplicate charge of ${overcharged:.2f} CONFIRMED."
-            if has_duplicate
-            else f"Customer {customer.get('customer_name')} account verified in data/customer_accounts.csv."
-        ),
+        "customer_id": cust_id,
+        "customer_name": cust_name,
+        "customer_email": cust_email,
+        "subscription_plan": plan,
+        "billing_cycle": cycle,
+        "charges_this_month": len(cycle_txns),
+        "total_billed_this_month": f"{total_billed:.2f}",
+        "settled_count": len(settled_txns),
+        "has_duplicate": has_duplicate_settled or len(refunded_txns) > 0,
+        "overcharge_amount": f"${overcharged_amount:.2f}",
+        "retained_transaction": retained_valid_txn,
+        "duplicate_transaction": candidate_to_refund,
+        "transactions": cycle_txns,
+        "summary": summary_text,
+        # Backward compatibility fields for UI components
+        "customer": {
+            "customer_id": cust_id,
+            "customer_name": cust_name,
+            "customer_email": cust_email,
+            "reference_order_id": first.get("order_id", "ORD-88219"),
+            "subscription_plan": plan,
+            "billing_cycle": cycle,
+            "monthly_rate": str(first.get("amount", "49.00")),
+            "total_billed_this_month": f"{total_billed:.2f}",
+            "charges_this_month": str(len(cycle_txns)),
+            "transaction_1": f"{txns[0].get('transaction_id')} (${txns[0].get('amount')} on {txns[0].get('transaction_date')[:10]}) [{txns[0].get('status')}]" if len(txns) > 0 else "",
+            "transaction_2": f"{txns[1].get('transaction_id')} (${txns[1].get('amount')} on {txns[1].get('transaction_date')[:10]}) [{txns[1].get('status')}]" if len(txns) > 1 else "None",
+            "duplicate_verified": "Yes - 2 Transaction Records in Same Cycle" if has_multiple_in_cycle else "No",
+            "refund_status": "Refunded" if refunded_txns else ("Pending Refund" if has_duplicate_settled else "N/A"),
+            "refund_id": refunded_txns[0].get("refund_id", "") if refunded_txns else "",
+            "account_balance": "$0.00 (Settled)" if not has_duplicate_settled else f"$-{overcharged_amount:.2f} (Overcharged)",
+            "account_status": "Active - In Good Standing" if not has_duplicate_settled else "Flagged - Multiple Charges in Cycle",
+        },
     }
 
 
@@ -317,64 +380,64 @@ def execute_agent_resolution(
     **kwargs,
 ) -> Dict[str, Any]:
     """
-    Agent executes autonomous refund and updates data/customer_accounts.csv:
-    - Marks transaction_2 as Refunded
-    - Updates total_billed_this_month to net rate ($49.00)
-    - Sets refund_status to Refunded ($49.00)
-    - Stamps refund_id REF-88219-AUTO
-    - Sets account_balance to $0.00 (Settled)
-    - Sets account_status to Active - In Good Standing
-    - Stamps Troy as the updater with current timestamp
+    Troy (LLM Agent) executes the refund on the specific duplicate transaction row in data/transactions.csv:
+    - Finds the redundant transaction record (e.g. TXN-9012).
+    - Updates that record: status='Refunded', refund_id='REF-88219-AUTO', refund_amount=amount, refunded_at=timestamp.
+    - Leaves the first transaction (TXN-9011) intact as 'Settled'.
     """
-    customers = read_all_customers()
+    all_txns = read_all_transactions()
+    analysis = analyze_customer_transactions(customer_id=customer_id, query=query)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    target = find_customer_by_id_or_query(customer_id, query)
-    target_id = target.get("customer_id") if target else "USR-10492"
+    dup_txn = analysis.get("duplicate_transaction")
+    target_txn_id = dup_txn.get("transaction_id") if dup_txn else "TXN-9012"
 
-    updated_record: Optional[Dict[str, str]] = None
+    updated_txn: Optional[Dict[str, str]] = None
 
-    for c in customers:
-        if c.get("customer_id") == target_id:
-            c["transaction_2"] = "TXN-9012 ($49.00 on 2026-10-21) [Refunded: REF-88219-AUTO]"
-            c["total_billed_this_month"] = "49.00 (Net after $49.00 refund)"
-            c["refund_status"] = "Refunded ($49.00 via Stripe API)"
-            c["refund_id"] = "REF-88219-AUTO"
-            c["account_balance"] = "$0.00 (Settled)"
-            c["account_status"] = "Active - In Good Standing"
-            c["last_verified_by"] = "Troy (Autonomous Resolution Agent)"
-            c["updated_by"] = "Troy (Autonomous Resolution Agent)"
-            c["last_updated"] = now_str
-            c["notes"] = notes or "Autonomous refund executed by Troy. Accidental double renewal debit reversed in Stripe API."
-            updated_record = c
+    for row in all_txns:
+        if row.get("transaction_id") == target_txn_id:
+            row["status"] = "Refunded"
+            row["refund_id"] = "REF-88219-AUTO"
+            row["refund_amount"] = row.get("amount", "49.00")
+            row["refunded_at"] = now_str
+            row["processed_by"] = "Troy (Autonomous Resolution Agent)"
+            row["notes"] = notes or "Refunded by Troy: Duplicate subscription charge in October 2026 billing cycle."
+            updated_txn = row
             break
 
-    if not updated_record and customers:
-        updated_record = customers[0]
+    write_all_transactions(all_txns)
+    logger.info(f"Database updated: Transaction {target_txn_id} marked as Refunded in data/transactions.csv.")
 
-    write_all_customers(customers)
-    logger.info(f"Customer account CSV updated: {target_id} refund executed and account settled by Troy.")
+    plan_rate = analysis.get("retained_transaction", {}).get("amount", "49.00")
 
     return {
         "ok": True,
         "action": "agent_resolve",
-        "customer": updated_record,
-        "ticket": {
-            # Backward-compat shim for frontend components expecting ticket structure
-            "ticket_id": target.get("reference_order_id", "ORD-88219").replace("ORD-", "") if target else "88219",
-            "order_id": target.get("reference_order_id", "ORD-88219") if target else "ORD-88219",
-            "customer_id": updated_record.get("customer_id") if updated_record else "USR-10492",
-            "customer_name": updated_record.get("customer_name") if updated_record else "Alex Morgan",
-            "customer_email": updated_record.get("customer_email") if updated_record else "alex.morgan@gmail.com",
-            "subscription_plan": updated_record.get("subscription_plan") if updated_record else "Pro Tier ($49.00/mo)",
+        "refunded_transaction": updated_txn,
+        "retained_transaction": analysis.get("retained_transaction"),
+        "customer": {
+            "customer_id": analysis.get("customer_id", "USR-10492"),
+            "customer_name": analysis.get("customer_name", "Alex Morgan"),
+            "customer_email": analysis.get("customer_email", "alex.morgan@gmail.com"),
+            "subscription_plan": analysis.get("subscription_plan", "Pro Tier ($49.00/mo)"),
             "status": "Resolved",
-            "resolution_action": action,
-            "refund_id": updated_record.get("refund_id", "REF-88219-AUTO") if updated_record else "REF-88219-AUTO",
-            "account_status": updated_record.get("account_status", "Active - In Good Standing") if updated_record else "Active - In Good Standing",
-            "account_balance": updated_record.get("account_balance", "$0.00 (Settled)") if updated_record else "$0.00 (Settled)",
+            "account_status": "Active - In Good Standing",
+            "refund_status": "Refunded ($49.00 via Stripe API)",
+            "refund_id": "REF-88219-AUTO",
+            "account_balance": "$0.00 (Settled)",
+            "customer_notified": "Yes - Confirmation Dispatched (REF-88219-AUTO)",
+        },
+        "ticket": {
+            "ticket_id": "88219",
+            "order_id": "ORD-88219",
+            "customer_name": analysis.get("customer_name", "Alex Morgan"),
+            "customer_email": analysis.get("customer_email", "alex.morgan@gmail.com"),
+            "status": "Resolved",
+            "resolution_action": f"Transaction {target_txn_id} Refunded ($49.00 via Stripe Gateway API)",
+            "refund_id": "REF-88219-AUTO",
             "customer_notified": "Yes - Email Dispatched (REF-88219-AUTO)",
         },
-        "database_file": "data/customer_accounts.csv",
+        "database_file": "data/transactions.csv",
         "timestamp": now_str,
     }
 
@@ -386,56 +449,52 @@ def execute_manual_resolution(
     **kwargs,
 ) -> Dict[str, Any]:
     """
-    Escalates the customer account in data/customer_accounts.csv for human manual review:
-    Updates account_status to 'Escalated - Billing Specialist Audit'.
+    Escalates the transactions in data/transactions.csv for human review:
+    Flags the duplicate candidate transaction with a review note.
     """
-    customers = read_all_customers()
+    all_txns = read_all_transactions()
+    analysis = analyze_customer_transactions(customer_id=customer_id, query=query)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    target = find_customer_by_id_or_query(customer_id, query)
-    target_id = target.get("customer_id") if target else "USR-10492"
+    dup_txn = analysis.get("duplicate_transaction")
+    target_txn_id = dup_txn.get("transaction_id") if dup_txn else "TXN-9012"
 
-    updated_record: Optional[Dict[str, str]] = None
-
-    for c in customers:
-        if c.get("customer_id") == target_id:
-            c["account_status"] = "Escalated - Billing Specialist Audit"
-            c["last_verified_by"] = "Troy AI (Pre-verification complete)"
-            c["updated_by"] = "Escalated by Troy -> Human Agent"
-            c["last_updated"] = now_str
-            c["notes"] = notes or "Flagged for manual audit by human billing specialist. High priority queue."
-            updated_record = c
+    for row in all_txns:
+        if row.get("transaction_id") == target_txn_id:
+            row["notes"] = notes or "Flagged for manual review by human billing specialist."
+            row["processed_by"] = "Escalated by Troy -> Human Agent"
             break
 
-    if not updated_record and customers:
-        updated_record = customers[0]
-
-    write_all_customers(customers)
-    logger.info(f"Customer account CSV updated: {target_id} escalated for manual review.")
+    write_all_transactions(all_txns)
+    logger.info(f"Database updated: Transaction {target_txn_id} flagged for manual review in data/transactions.csv.")
 
     return {
         "ok": True,
         "action": "manual_resolve",
-        "customer": updated_record,
-        "ticket": {
-            "ticket_id": target.get("reference_order_id", "ORD-88219").replace("ORD-", "") if target else "88219",
-            "order_id": target.get("reference_order_id", "ORD-88219") if target else "ORD-88219",
-            "customer_id": updated_record.get("customer_id") if updated_record else "USR-10492",
-            "customer_name": updated_record.get("customer_name") if updated_record else "Alex Morgan",
-            "customer_email": updated_record.get("customer_email") if updated_record else "alex.morgan@gmail.com",
-            "subscription_plan": updated_record.get("subscription_plan") if updated_record else "Pro Tier ($49.00/mo)",
-            "predicted_team": "Billing Team Specialist",
-            "status": "Escalated - Manual Review",
+        "customer": {
+            "customer_id": analysis.get("customer_id", "USR-10492"),
+            "customer_name": analysis.get("customer_name", "Alex Morgan"),
+            "customer_email": analysis.get("customer_email", "alex.morgan@gmail.com"),
+            "subscription_plan": analysis.get("subscription_plan", "Pro Tier ($49.00/mo)"),
             "account_status": "Escalated - Billing Specialist Audit",
-            "sla_hours": "18.13",
+        },
+        "ticket": {
+            "ticket_id": "88219",
+            "order_id": "ORD-88219",
+            "status": "Escalated - Manual Review",
+            "predicted_team": "Billing Team Specialist",
             "customer_notified": "Yes - Escalation Notice Sent",
         },
-        "database_file": "data/customer_accounts.csv",
+        "database_file": "data/transactions.csv",
         "timestamp": now_str,
     }
 
 
 # Backwards compatibility aliases
-read_all_tickets = read_all_customers
-write_all_tickets = write_all_customers
-find_ticket_by_id_or_query = find_customer_by_id_or_query
+verify_customer_billing = analyze_customer_transactions
+read_all_customers = read_all_transactions
+read_all_tickets = read_all_transactions
+write_all_customers = write_all_transactions
+write_all_tickets = write_all_transactions
+find_customer_by_id_or_query = find_transactions_for_query
+find_ticket_by_id_or_query = find_transactions_for_query

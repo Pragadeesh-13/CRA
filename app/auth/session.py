@@ -13,6 +13,7 @@ PUBLIC_API_PATHS = {
     "/api/cra/resolve",
     "/api/cra/classify",
     "/api/customer/verify",
+    "/api/database/transactions",
     "/api/database/customers",
     "/api/database/tickets",
     "/api/resolve/action",
