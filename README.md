@@ -1,127 +1,143 @@
 # Complaint Resolution Agent (CRA) — Troy
 
-An autonomous AI-powered complaint resolution system built with Python (FastAPI, AsyncIO, PyTorch, Transformers) and an interactive web interface. The platform classifies incoming customer complaints, retrieves historical precedent resolutions from vector storage, extracts critical entities, routes tickets to target departments, and streams real-time formal resolution assessments via **Troy**, the Lead Autonomous Complaint Resolution Agent.
+**Troy** is an autonomous AI agent designed to investigate, triage, and resolve customer complaints end-to-end. 
+
+Rather than functioning as a traditional chatbot that offers generic canned responses or links to FAQs, Troy acts as an autonomous resolution specialist: he diagnoses issues, verifies live customer records, retrieves precedent solutions from hundreds of thousands of past tickets, and executes concrete remediations (such as issuing refunds, adjusting account balances, resetting locked accounts, or dispatching invoices) in real time.
 
 ---
 
-## Overview
+## What Problem Does CRA Solve?
 
-When a customer complaint ticket is submitted, CRA Troy executes a unified intelligence pipeline:
+Customer support teams face a recurring challenge: high ticket volumes filled with predictable, actionable issues (double billing, proration disputes, account lockouts, API webhook timeouts). Human agents spend hours manually cross-referencing customer IDs, checking payment gateways, copying past precedents, and applying standard fixes.
 
-1. **Category Classification**: Fine-tuned **DistilBERT** classifier determines complaint intent across multiple categories with calibrated confidence scores.
-2. **Precedent Retrieval**: **Sentence-BERT (SBERT)** semantic vector search performs memory-mapped dot product similarity search across over 248,000 historical resolved tickets.
-3. **Entity Extraction**: Rule-based and regular expression parsing identifies order IDs, reference numbers, dates, monetary amounts, and product names.
-4. **Automated Department Routing & SLA Prediction**: Predicts target department assignment (Billing, Shipping, Technical Support, Hardware, etc.) and resolution time window.
-5. **Troy's Resolution Assessment**: Troy streams a structured, empathetic, and actionable resolution plan directly to the agent console in real-time.
+CRA transforms this workflow into an **autonomous resolution pipeline**:
+- **Zero-touch remediation for standard issues:** Troy identifies the root problem, inspects transactional databases, and applies the necessary fixes autonomously.
+- **Institutional memory at scale:** Every new complaint is cross-referenced with 248,000+ historical precedents to ensure consistency and compliance with company policies.
+- **Auditable and safe:** Troy verifies database states before taking action, enforces idempotency to prevent duplicate refunds, and documents every decision transparently for human operators.
 
 ---
 
-## System Architecture
+## How It Works: The Resolution Lifecycle
+
+When a customer submits a complaint, Troy guides the ticket through a 5-stage resolution process:
 
 ```
-Complaint-Resolution-Agent/
-├── app/
-│   ├── auth/           # AES-256-GCM encrypted credential vault and Firebase auth
-│   ├── cra/            # CRA Machine Learning inference engine (DistilBERT, SBERT vector search)
-│   ├── http/           # Server-Sent Events (SSE) broadcast engine
-│   ├── prompts/        # Complaint title, summary, and Troy resolution prompt templates
-│   ├── providers/      # OpenRouter, OpenAI, Anthropic, Groq, LM Studio, and Mock drivers
-│   ├── reference/      # Reference reasoning and output streaming architecture
-│   ├── simulation/     # Troy orchestrator and session management
-│   ├── utils/          # Thought buffer parsing, content sanitization, and JSON extraction
-│   ├── config.py       # Pydantic settings schema and environment parsing
-│   └── main.py         # FastAPI application exposing REST and SSE streaming endpoints
-├── CRA_Models/         # Trained model assets (DistilBERT weights, vector embeddings, XGBoost models)
-├── public/             # Single-page web interface (Dark/Light theme, live SSE streaming)
-├── tests/              # Pytest automated test suite
-├── run.py              # Application launch entry point
-└── requirements.txt    # Project runtime dependencies
+Customer Complaint
+       │
+       ▼
+1. Triage & Classification ──► Identifies complaint category, urgency & department
+       │
+       ▼
+2. Precedent Retrieval   ──► Searches 248,000+ historical cases for proven resolutions
+       │
+       ▼
+3. Account Verification  ──► Inspects live transactions, order IDs & account status
+       │
+       ▼
+4. Autonomous Execution  ──► Issues refunds, updates ledger, resets access, or syncs data
+       │
+       ▼
+5. Customer Resolution   ──► Streams an empathetic, detailed resolution report to the user
 ```
 
+1. **Intelligent Triage & Categorization**  
+   Analyzes the customer's text to determine intent across 11 key operational domains (Billing, Refunds, Subscriptions, Security, Authentication, Bugs, System Performance, Data Sync, Integrations & APIs, Account Management, and Onboarding).
+
+2. **Precedent Retrieval & Institutional Memory**  
+   Semantically compares the incoming complaint against a vector database of **248,000+ historically resolved complaints**, identifying institutional precedents and benchmark resolution strategies with similarity confidence scores.
+
+3. **System of Record & Ledger Investigation**  
+   Extracts key references (Order numbers, User IDs, dates, monetary amounts) and queries live customer databases. Troy determines whether the customer actually experienced an erroneous charge, a system lock, or a service outage before taking action.
+
+4. **Autonomous Remediation & Execution**  
+   Executes real state updates directly against databases and service APIs:
+   - Identifies duplicate debits and issues automated refunds via payment gateways.
+   - Recalculates subscription tiers and credits prorated differences.
+   - Clears failed login counters and initiates backup authentication codes.
+   - Flushes message queues and adjusts API timeout thresholds.
+   - *All actions are state-aware and idempotent: if a refund was already processed, Troy detects the existing refund ID rather than double-crediting.*
+
+5. **Live Transparent Communication**  
+   Troy live-streams his analytical thought process, data findings, and final empathetic resolution letter directly into an interactive console for real-time customer or operator visibility.
+
 ---
 
-## Key Features
+## Supported Complaint Scenarios
 
-- **End-to-End Machine Learning Pipeline**: Integrated DistilBERT category classifier, SBERT vector similarity search, and entity extractors.
-- **Multi-Provider LLM Integration**: Pluggable provider architecture supporting local models via **LM Studio** (`http://127.0.0.1:1235/v1`), OpenRouter, OpenAI, Anthropic, and Groq.
-- **Real-Time Token Streaming**: Server-Sent Events (SSE) stream tokens directly into Troy's resolution console with live auto-scroll.
-- **Secure Key Management**: Client-provided API credentials are protected via AES-256-GCM encryption with per-session isolation (`KeyVault`).
-- **Flexible Authentication**: Configurable authentication supporting standard credentials, optional guest modes, and Firebase OAuth.
-- **Theme-Aware Interface**: Modern responsive UI with dark/light themes, glowing AI orb canvas, and ticket feed.
+Troy comes pre-configured with resolution playbooks across multiple domains:
+
+| Scenario | What Troy Investigates | Autonomous Action Executed |
+|---|---|---|
+| **Duplicate Subscription Debit** | Audits customer billing ledger across dates and order IDs | Detects duplicate settled transactions, initiates gateway refund, and updates ledger to clean standing. |
+| **Prorated Tier Downgrade** | Compares active subscription tier with requested tier and invoice amount | Calculates proration delta ($50.00 difference) and credits customer account balance. |
+| **2FA / SMS Gateway Lockout** | Checks user authentication logs for gateway delivery failures | Flushes SMS session locks and dispatches emergency backup OTP. |
+| **API Webhook 504 Timeouts** | Inspects endpoint logs and delivery retry queues | Triggers webhook queue re-delivery and adjusts gateway retry thresholds. |
+| **Corporate Tax & VAT Invoicing** | Checks enterprise customer tax ID and jurisdiction status | Generates compliant EU VAT reverse-charge tax invoice and attaches receipt. |
+| **Department Routing & SLA Tracking** | Evaluates issue complexity, product line, and urgency | Routes ticket to Engineering, Billing, Security, or Tier 1 Support with SLA resolution timeframes. |
 
 ---
 
-## Getting Started
+## The Interactive Operator Console
+
+The CRA interface offers a complete command center for managing and observing complaints:
+
+- **Live Streaming Resolution:** Watch Troy's reasoning unfold token-by-token as he verifies data, compares precedents, and formulates customer responses.
+- **Customer Verification & Ledger Card:** Displays live before-and-after database records, customer metadata, and audit logs showing the exact timestamp and ID of actions taken.
+- **Autonomous & Manual Modes:** Choose between full autonomous remediation by Troy or human-in-the-loop approval where operators review recommendations before executing changes.
+- **Precedent Comparison Panel:** Review the exact historical tickets Troy referenced, including their match scores and original resolution notes.
+- **Theme & Interface Controls:** Modern light and dark themes with real-time status indicators.
+
+---
+
+## Quickstart
 
 ### Prerequisites
 
-- Python 3.11 or higher (verified on Python 3.14)
-- Git
-- (Optional) [LM Studio](https://lmstudio.ai/) for running local LLMs (e.g. `qwen/qwen3.5-9b` on port 1235)
+- Python 3.11+
+- (Optional) [LM Studio](https://lmstudio.ai/) for running local LLMs, or an API key for cloud providers (OpenAI, Anthropic, OpenRouter, Groq).
 
-### Installation
+### 1. Installation
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/Pragadeesh-13/CRA.git
-   cd CRA
-   ```
+```bash
+# Clone the repository
+git clone https://github.com/Pragadeesh-13/CRA.git
+cd CRA
 
-2. Create and activate a virtual environment:
-   ```bash
-   python -m venv .venv
-   # Windows:
-   .venv\Scripts\activate
-   # Linux / macOS:
-   source .venv/bin/activate
-   ```
+# Create virtual environment
+python -m venv .venv
+.venv\Scripts\activate      # On Windows
+# source .venv/bin/activate  # On Linux/macOS
 
-3. Install required dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+# Install dependencies
+pip install -r requirements.txt
+```
 
-### Configuration
+### 2. Configuration
 
-Create a `.env` file based on `.env.example`:
+Create your `.env` file (or copy from `.env.example`):
 ```bash
 cp .env.example .env
 ```
 
-| Variable | Description | Default |
-|---|---|---|
-| `PORT` | HTTP server port | `3000` |
-| `LLM_PROVIDER` | LLM service provider (`lmstudio`, `openrouter`, `openai`, `anthropic`, `groq`) | `lmstudio` |
-| `LLM_MODEL` | Model identifier string (e.g., `qwen/qwen3.5-9b`, `gpt-4o`) | `qwen/qwen3.5-9b` |
-| `LLM_API_KEY` | Server-level default API key (not required for LM Studio) | `""` |
-| `AUTH_MODE` | Authentication level (`optional`, `required`, `disabled`) | `optional` |
-| `PUBLIC_URL` | Base public URL for the server instance | `http://localhost:3000` |
+Configure your preferred LLM provider in `.env` (defaults to local LM Studio on port 1235, or set `LLM_PROVIDER=openai` / `anthropic` with your API key).
 
-### Running the Application
+### 3. Launch the Application
 
-Launch the server using the entry point script:
 ```bash
 python run.py
 ```
 
-Once running, navigate to [http://localhost:3000](http://localhost:3000) (or the port displayed in terminal) in your browser.
+Open your browser at **http://localhost:3000** to enter the Complaint Resolution Agent console.
 
 ---
 
-## Testing
+## Running Tests
 
-Execute the test suite using `pytest`:
+Run the test suite to verify classification, precedent matching, database actions, and resolution workflows:
+
 ```bash
 pytest
 ```
-
-The test suite covers:
-- CRA model inference and intelligence reporting
-- Thought buffer token streaming and tag extraction
-- Sanitization and content filtering
-- Session security and credential encryption
-- REST API and Server-Sent Event streaming endpoints
-- Troy complaint resolution pipeline execution
 
 ---
 
