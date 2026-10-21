@@ -1,7 +1,4 @@
 
-
-https://github.com/user-attachments/assets/a54769be-e2e2-4f77-818a-992695f4c85f
-
 # Complaint Resolution Agent (CRA) — Troy
 
 **Troy** is an autonomous AI agent designed to investigate, triage, and resolve customer complaints end-to-end. 
@@ -14,16 +11,7 @@ Rather than functioning as a traditional chatbot that offers generic canned resp
 
 > Watch Troy autonomously triage a live complaint, verify customer transactional ledgers, cross-reference institutional precedents, and execute remediation in real time.
 
-<div align="center">
-  <a href="https://github.com/Pragadeesh-13/CRA/blob/master/docs/assets/About_Troy.mp4">
-    <img src="docs/assets/demo_preview.gif" alt="Troy Walkthrough Demo" width="100%" style="border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" />
-  </a>
-  <p align="center">
-    🎬 <strong><a href="https://github.com/Pragadeesh-13/CRA/blob/master/docs/assets/About_Troy.mp4">Click to Watch Full HD Walkthrough (About_Troy.mp4)</a></strong>
-  </p>
-</div>
-
----
+https://github.com/user-attachments/assets/a54769be-e2e2-4f77-818a-992695f4c85f
 
 ## What Problem Does CRA Solve?
 
