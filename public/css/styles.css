@@ -2505,8 +2505,7 @@ body {
 }
 
 .user-avatar-initial {
-  display: block;
-  line-height: 1;
+  display: none !important;
 }
 
 .user-dropdown {

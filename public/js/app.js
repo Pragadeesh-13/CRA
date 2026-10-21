@@ -431,11 +431,6 @@ const initUserProfileMenu = () => {
     if (emailEl) emailEl.textContent = email;
     const firstLetter = fullName.trim().charAt(0).toUpperCase() || "A";
     if (avatarInitial) avatarInitial.textContent = firstLetter;
-    const topbarInitial = document.getElementById("user-avatar-initial");
-    if (topbarInitial) {
-      topbarInitial.textContent = firstLetter;
-      topbarInitial.style.display = "block";
-    }
   };
 
   fetch("/api/auth/me", { headers: authHeaders() })
