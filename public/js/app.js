@@ -902,22 +902,111 @@ const executeStreamAction = (action, container) => {
   }
 };
 
+// ── Split Resolution Sections into 3 Dedicated Chatboxes ───────────────────
+const splitResolutionSections = (fullText) => {
+  if (!fullText) return { part1: "", part2: "", part3: "" };
+
+  const text = fullText.trim();
+
+  // Pattern matching Section 3: "3. Customer Communication Strategy" or similar
+  const p3Match = text.match(/(?:\n|^)(?:[#*]{0,4}\s*)?(?:3[\.:\)]\s*(?:\*{0,2})Customer|Customer\s+Communication)/i);
+
+  // Pattern matching Section 4: "4. Internal Routing & Next Action Steps" or similar
+  const p4Match = text.match(/(?:\n|^)(?:[#*]{0,4}\s*)?(?:4[\.:\)]\s*(?:\*{0,2})Internal|Internal\s+Routing)/i);
+
+  const idx3 = p3Match ? p3Match.index : -1;
+  const idx4 = p4Match ? p4Match.index : -1;
+
+  if (idx3 !== -1 && idx4 !== -1 && idx3 < idx4) {
+    return {
+      part1: text.slice(0, idx3).trim(),
+      part2: text.slice(idx3, idx4).trim(),
+      part3: text.slice(idx4).trim(),
+    };
+  } else if (idx3 !== -1 && idx4 === -1) {
+    return {
+      part1: text.slice(0, idx3).trim(),
+      part2: text.slice(idx3).trim(),
+      part3: "",
+    };
+  } else if (idx4 !== -1 && idx3 === -1) {
+    return {
+      part1: text.slice(0, idx4).trim(),
+      part2: "",
+      part3: text.slice(idx4).trim(),
+    };
+  }
+
+  return { part1: text, part2: "", part3: "" };
+};
+
+const createTroyChatbox = (cardId, speechId) => {
+  let card = document.getElementById(cardId);
+  const deliberationList = document.getElementById("deliberation-list");
+  if (!card) {
+    card = document.createElement("div");
+    card.id = cardId;
+    card.className = "agent-card troy";
+    card.innerHTML = `
+      <div class="agent-avatar">
+        <video class="agent-avatar-video" autoplay loop muted playsinline>
+          <source src="/assets/images/AI_spin.webm" type="video/webm" />
+        </video>
+        <canvas class="agent-avatar-canvas" width="96" height="96"></canvas>
+      </div>
+      <div>
+        <div class="agent-name">Troy</div>
+        <div class="agent-speech troy-speech" id="${speechId}"></div>
+      </div>
+    `;
+    deliberationList?.appendChild(card);
+    const avatarEl = card.querySelector(".agent-avatar");
+    if (avatarEl) {
+      initTransparentVideoCanvas(avatarEl);
+    }
+  }
+  return card;
+};
+
+let resolutionStages = [];
+let currentStageIndex = 0;
+let cachedSplitParts = { part1: "", part2: "", part3: "" };
+
 const finishTransformedStream = (fullText = "") => {
   stopTransformedStreamTicker();
+
+  if (fullText && !cachedSplitParts.part1) {
+    cachedSplitParts = splitResolutionSections(fullText);
+  }
+
+  // Complete Chatbox 1: Executive Assessment & Root Cause Analysis (1 & 2)
   const troySpeech = document.getElementById("troy-speech");
   const troyCard = document.getElementById("troy-card") || document.getElementById("booting-card");
-
   if (troyCard) troyCard.classList.remove("speaking");
-  if (troySpeech) {
+  if (troySpeech && cachedSplitParts.part1) {
     troySpeech.className = "agent-speech troy-speech";
-    // Execute all remaining queued actions instantly
-    if (streamActionQueue.length > 0) {
-      while (streamActionQueue.length > 0) {
-        const action = streamActionQueue.shift();
-        executeStreamAction(action, troySpeech);
-      }
-    } else if (fullText) {
-      troySpeech.innerHTML = renderMarkdown(fullText);
+    troySpeech.innerHTML = renderMarkdown(cachedSplitParts.part1);
+  }
+
+  // Complete Chatbox 2: Customer Communication Strategy (3)
+  if (cachedSplitParts.part2) {
+    const commCard = createTroyChatbox("troy-card-communication", "troy-communication-speech");
+    commCard.classList.remove("speaking");
+    const commSpeech = document.getElementById("troy-communication-speech");
+    if (commSpeech) {
+      commSpeech.className = "agent-speech troy-speech";
+      commSpeech.innerHTML = renderMarkdown(cachedSplitParts.part2);
+    }
+  }
+
+  // Complete Chatbox 3: Internal Routing & Next Action Steps (4)
+  if (cachedSplitParts.part3) {
+    const routingCard = createTroyChatbox("troy-card-routing", "troy-routing-speech");
+    routingCard.classList.remove("speaking");
+    const routingSpeech = document.getElementById("troy-routing-speech");
+    if (routingSpeech) {
+      routingSpeech.className = "agent-speech troy-speech";
+      routingSpeech.innerHTML = renderMarkdown(cachedSplitParts.part3);
     }
   }
 
@@ -934,6 +1023,75 @@ const finishTransformedStream = (fullText = "") => {
       fetchNextBtn.textContent = "Begin Resolution";
     }
   }
+};
+
+const startStage = (index) => {
+  if (index >= resolutionStages.length) {
+    finishTransformedStream();
+    return;
+  }
+
+  currentStageIndex = index;
+  const stage = resolutionStages[index];
+
+  // If stage container element is not yet created, create the chatbox now
+  if (!stage.container) {
+    const card = createTroyChatbox(stage.cardId, stage.speechId);
+    card.classList.add("speaking");
+    stage.container = document.getElementById(stage.speechId);
+    if (stage.container) {
+      stage.container.className = "agent-speech troy-speech streaming";
+      stage.container.innerHTML = "";
+    }
+    const items = parseMarkdownToStreamItems(stage.rawText);
+    stage.actions = buildStreamingActions(items);
+  }
+
+  currentBlockEl = null;
+  currentInlineEl = null;
+  currentLiEl = null;
+  streamActionQueue = stage.actions || [];
+
+  const totalActions = streamActionQueue.length;
+  const actionsPerTick = totalActions > 250 ? 4 : totalActions > 100 ? 3 : 2;
+  const tickIntervalMs = 15;
+
+  streamTickerTimer = setInterval(() => {
+    if (!isTypingTransformed || streamActionQueue.length === 0) {
+      stopTransformedStreamTicker();
+      const curCard = document.getElementById(stage.cardId);
+      if (curCard) curCard.classList.remove("speaking");
+      if (stage.container) stage.container.className = "agent-speech troy-speech";
+
+      // Proceed to next chatbox stage
+      startStage(index + 1);
+      return;
+    }
+
+    for (let i = 0; i < actionsPerTick && streamActionQueue.length > 0; i++) {
+      const action = streamActionQueue.shift();
+      executeStreamAction(action, stage.container);
+    }
+
+    const deliberationList = document.getElementById("deliberation-list");
+    if (deliberationList) {
+      const isNearBottom =
+        deliberationList.scrollHeight - deliberationList.scrollTop - deliberationList.clientHeight < 160;
+      if (isNearBottom) {
+        deliberationList.scrollTop = deliberationList.scrollHeight;
+      }
+    }
+
+    if (streamActionQueue.length === 0) {
+      stopTransformedStreamTicker();
+      const curCard = document.getElementById(stage.cardId);
+      if (curCard) curCard.classList.remove("speaking");
+      if (stage.container) stage.container.className = "agent-speech troy-speech";
+
+      // Proceed to next chatbox stage
+      startStage(index + 1);
+    }
+  }, tickIntervalMs);
 };
 
 const startTransformedStream = (rawText) => {
@@ -956,47 +1114,60 @@ const startTransformedStream = (rawText) => {
     deliverPreliminaryAssessment(cachedCraReport);
   }
 
+  const parts = splitResolutionSections(textToParse);
+  cachedSplitParts = parts;
+
+  // Prepare Chatbox 1
   const troySpeech = document.getElementById("troy-speech");
   const troyCard = document.getElementById("troy-card") || document.getElementById("booting-card");
   if (!troySpeech) return;
 
-  if (troyCard) troyCard.classList.add("speaking");
+  if (troyCard) {
+    troyCard.id = "troy-card";
+    troyCard.classList.add("speaking");
+  }
   troySpeech.className = "agent-speech troy-speech streaming";
   troySpeech.innerHTML = "";
 
-  const items = parseMarkdownToStreamItems(textToParse);
-  streamActionQueue = buildStreamingActions(items);
+  // Prepare the 3 chatbox stages:
+  // Stage 1: Assessment & Root Cause (1 & 2) in Chatbox 1
+  // Stage 2: Customer Communication Strategy (3) in Chatbox 2
+  // Stage 3: Internal Routing & Next Action Steps (4) in Chatbox 3
+  resolutionStages = [];
+
+  if (parts.part1) {
+    const items1 = parseMarkdownToStreamItems(parts.part1);
+    resolutionStages.push({
+      cardId: "troy-card",
+      container: troySpeech,
+      actions: buildStreamingActions(items1),
+      fullText: parts.part1,
+    });
+  }
+
+  if (parts.part2) {
+    resolutionStages.push({
+      cardId: "troy-card-communication",
+      speechId: "troy-communication-speech",
+      rawText: parts.part2,
+      fullText: parts.part2,
+    });
+  }
+
+  if (parts.part3) {
+    resolutionStages.push({
+      cardId: "troy-card-routing",
+      speechId: "troy-routing-speech",
+      rawText: parts.part3,
+      fullText: parts.part3,
+    });
+  }
+
+  currentStageIndex = 0;
   isTypingTransformed = true;
   updateLiveStatus("Troy is delivering resolution assessment...", true);
 
-  // Speed adjustments: faster for longer texts so users never wait more than ~4 seconds
-  const totalActions = streamActionQueue.length;
-  const actionsPerTick = totalActions > 300 ? 3 : totalActions > 140 ? 2 : 1;
-  const tickIntervalMs = 15;
-
-  streamTickerTimer = setInterval(() => {
-    if (!isTypingTransformed || streamActionQueue.length === 0) {
-      finishTransformedStream();
-      return;
-    }
-
-    for (let i = 0; i < actionsPerTick && streamActionQueue.length > 0; i++) {
-      const action = streamActionQueue.shift();
-      executeStreamAction(action, troySpeech);
-    }
-
-    if (deliberationList) {
-      const isNearBottom =
-        deliberationList.scrollHeight - deliberationList.scrollTop - deliberationList.clientHeight < 160;
-      if (isNearBottom) {
-        deliberationList.scrollTop = deliberationList.scrollHeight;
-      }
-    }
-
-    if (streamActionQueue.length === 0) {
-      finishTransformedStream();
-    }
-  }, tickIntervalMs);
+  startStage(0);
 };
 
 // ── ML Model Analyzing Animation & Preliminary Assessment ──────────────────
@@ -1200,11 +1371,17 @@ const resetTroyConsole = () => {
   statusBanner.className = "cra-live-status running";
   statusBanner.innerHTML = `<span class="status-dot"></span><span>Processing Complaint with CRA ML Engine...</span>`;
 
-  // Remove old preliminary card and ML card if any
+  // Remove old preliminary card, communication card, and routing card if any
   const oldPrelim = document.getElementById("troy-preliminary-card");
   if (oldPrelim) oldPrelim.remove();
   const oldMlCard = document.getElementById("cra-ml-card");
   if (oldMlCard) oldMlCard.remove();
+  const oldComm = document.getElementById("troy-card-communication");
+  if (oldComm) oldComm.remove();
+  const oldRouting = document.getElementById("troy-card-routing");
+  if (oldRouting) oldRouting.remove();
+  cachedSplitParts = { part1: "", part2: "", part3: "" };
+  resolutionStages = [];
 
   // Reset Troy's card
   const troySpeech = document.getElementById("troy-speech");
