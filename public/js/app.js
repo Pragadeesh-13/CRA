@@ -533,42 +533,198 @@ const initTransparentVideoCanvas = (avatarEl) => {
   animId = requestAnimationFrame(render);
 };
 
-// ── Markdown Parser (Lightweight, Robust) ───────────────────────────────────
+// ── Markdown Parser & Progressive DOM Streamer ──────────────────────────────
 
 const renderMarkdown = (text) => {
   if (!text) return "";
-  let html = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
 
-  // Bold
-  html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+  let src = text.replace(/\r\n/g, "\n").trim();
+  src = src.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  src = src.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  src = src.replace(/`([^`]+)`/g, "<code>$1</code>");
 
-  // Headers
-  html = html.replace(/^### (.*$)/gim, "<h4>$1</h4>");
-  html = html.replace(/^## (.*$)/gim, "<h3>$1</h3>");
-  html = html.replace(/^# (.*$)/gim, "<h2>$1</h2>");
+  // Normalize headings by ensuring double newlines around them
+  src = src.replace(/^(#{1,6}\s+[^\n]+)/gm, "\n\n$1\n\n").trim();
 
-  // Bullet items
-  html = html.replace(/^\s*[-*]\s+(.*)$/gim, "<li>$1</li>");
-  html = html.replace(/(<li>.*<\/li>)/gims, "<ul>$1</ul>");
+  const rawBlocks = src.split(/\n{2,}/);
+  const formattedBlocks = [];
 
-  // Numbered list items
-  html = html.replace(/^\s*(\d+)\.\s+(.*)$/gim, "<li>$2</li>");
+  for (const block of rawBlocks) {
+    const trimmed = block.trim();
+    if (!trimmed) continue;
 
-  // Paragraph breaks
-  html = html.replace(/\n\n+/g, "</p><p>");
-  html = `<p>${html}</p>`;
+    if (/^###\s+(.*)$/.test(trimmed)) {
+      formattedBlocks.push(`<h4>${trimmed.replace(/^###\s+/, "")}</h4>`);
+      continue;
+    }
+    if (/^##\s+(.*)$/.test(trimmed)) {
+      formattedBlocks.push(`<h3>${trimmed.replace(/^##\s+/, "")}</h3>`);
+      continue;
+    }
+    if (/^#\s+(.*)$/.test(trimmed)) {
+      formattedBlocks.push(`<h2>${trimmed.replace(/^#\s+/, "")}</h2>`);
+      continue;
+    }
 
-  // Clean empty paragraphs
-  html = html.replace(/<p>\s*<\/p>/g, "");
-  return html;
+    if (/^[-*]\s+/m.test(trimmed)) {
+      const items = trimmed
+        .split(/\n/)
+        .map((line) => line.replace(/^[-*]\s+/, "").trim())
+        .filter(Boolean)
+        .map((item) => `<li>${item}</li>`)
+        .join("");
+      formattedBlocks.push(`<ul>${items}</ul>`);
+      continue;
+    }
+
+    if (/^\d+\.\s+/m.test(trimmed)) {
+      const items = trimmed
+        .split(/\n/)
+        .map((line) => line.replace(/^\d+\.\s+/, "").trim())
+        .filter(Boolean)
+        .map((item) => `<li>${item}</li>`)
+        .join("");
+      formattedBlocks.push(`<ol>${items}</ol>`);
+      continue;
+    }
+
+    const paragraphContent = trimmed.replace(/\n/g, "<br/>");
+    formattedBlocks.push(`<p>${paragraphContent}</p>`);
+  }
+
+  return formattedBlocks.join("\n");
+};
+
+const parseInlineSpans = (line) => {
+  const spans = [];
+  const regex = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|[^*`]+)/g;
+  let match;
+  while ((match = regex.exec(line)) !== null) {
+    const token = match[0];
+    if (token.startsWith("**") && token.endsWith("**")) {
+      spans.push({ type: "strong", text: token.slice(2, -2) });
+    } else if (token.startsWith("*") && token.endsWith("*")) {
+      spans.push({ type: "em", text: token.slice(1, -1) });
+    } else if (token.startsWith("`") && token.endsWith("`")) {
+      spans.push({ type: "code", text: token.slice(1, -1) });
+    } else {
+      spans.push({ type: "text", text: token });
+    }
+  }
+  return spans;
+};
+
+const parseMarkdownToStreamItems = (text) => {
+  if (!text) return [];
+  const src = text.replace(/\r\n/g, "\n").trim();
+  const normalized = src.replace(/^(#{1,6}\s+[^\n]+)/gm, "\n\n$1\n\n").trim();
+  const rawBlocks = normalized.split(/\n{2,}/);
+  const items = [];
+
+  for (const block of rawBlocks) {
+    const trimmed = block.trim();
+    if (!trimmed) continue;
+
+    if (/^###\s+(.*)$/.test(trimmed)) {
+      items.push({ tag: "h4", text: trimmed.replace(/^###\s+/, "").trim() });
+      continue;
+    }
+    if (/^##\s+(.*)$/.test(trimmed)) {
+      items.push({ tag: "h3", text: trimmed.replace(/^##\s+/, "").trim() });
+      continue;
+    }
+    if (/^#\s+(.*)$/.test(trimmed)) {
+      items.push({ tag: "h2", text: trimmed.replace(/^#\s+/, "").trim() });
+      continue;
+    }
+
+    if (/^[-*]\s+/m.test(trimmed)) {
+      const listLines = trimmed.split(/\n/).map((l) => l.replace(/^[-*]\s+/, "").trim()).filter(Boolean);
+      items.push({ tag: "ul", listItems: listLines.map(parseInlineSpans) });
+      continue;
+    }
+
+    if (/^\d+\.\s+/m.test(trimmed)) {
+      const listLines = trimmed.split(/\n/).map((l) => l.replace(/^\d+\.\s+/, "").trim()).filter(Boolean);
+      items.push({ tag: "ol", listItems: listLines.map(parseInlineSpans) });
+      continue;
+    }
+
+    const lines = trimmed.split(/\n/);
+    const paraSpans = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0) paraSpans.push({ type: "br" });
+      const inlineParts = parseInlineSpans(lines[i]);
+      paraSpans.push(...inlineParts);
+    }
+    items.push({ tag: "p", spans: paraSpans });
+  }
+
+  return items;
+};
+
+const buildStreamingActions = (items) => {
+  const actions = [];
+
+  for (const item of items) {
+    actions.push({ type: "create_block", tag: item.tag });
+
+    if (item.text) {
+      const words = item.text.split(/\s+/).filter(Boolean);
+      for (let i = 0; i < words.length; i++) {
+        actions.push({ type: "append_text", text: (i > 0 ? " " : "") + words[i] });
+      }
+    } else if (item.spans) {
+      for (const span of item.spans) {
+        if (span.type === "br") {
+          actions.push({ type: "append_br" });
+        } else if (span.type === "strong" || span.type === "em" || span.type === "code") {
+          actions.push({ type: "enter_inline", tag: span.type });
+          const words = span.text.split(/\s+/).filter(Boolean);
+          for (let i = 0; i < words.length; i++) {
+            actions.push({ type: "append_text", text: (i > 0 ? " " : "") + words[i] });
+          }
+          actions.push({ type: "exit_inline" });
+        } else {
+          const words = span.text.split(/(\s+)/).filter(Boolean);
+          for (const w of words) {
+            actions.push({ type: "append_text", text: w });
+          }
+        }
+      }
+    } else if (item.listItems) {
+      for (const liSpans of item.listItems) {
+        actions.push({ type: "enter_li" });
+        for (const span of liSpans) {
+          if (span.type === "strong" || span.type === "em" || span.type === "code") {
+            actions.push({ type: "enter_inline", tag: span.type });
+            const words = span.text.split(/\s+/).filter(Boolean);
+            for (let i = 0; i < words.length; i++) {
+              actions.push({ type: "append_text", text: (i > 0 ? " " : "") + words[i] });
+            }
+            actions.push({ type: "exit_inline" });
+          } else {
+            const words = span.text.split(/(\s+)/).filter(Boolean);
+            for (const w of words) {
+              actions.push({ type: "append_text", text: w });
+            }
+          }
+        }
+        actions.push({ type: "exit_li" });
+      }
+    }
+  }
+
+  return actions;
 };
 
 // ── CRA Troy UI State & Console ─────────────────────────────────────────────
 
 let isResolving = false;
+let isTypingTransformed = false;
+let pendingResolutionEnd = false;
+let streamActionQueue = [];
+let streamTickerTimer = null;
 let streamedSpeechText = "";
 
 const deliberationList = document.getElementById("deliberation-list");
@@ -647,7 +803,152 @@ const markFeedCardResolved = () => {
 
 // ── Troy Deliberation / Resolution Panel ────────────────────────────────────
 
+let currentBlockEl = null;
+let currentInlineEl = null;
+let currentLiEl = null;
+
+const stopTransformedStreamTicker = () => {
+  if (streamTickerTimer) {
+    clearInterval(streamTickerTimer);
+    streamTickerTimer = null;
+  }
+};
+
+const executeStreamAction = (action, container) => {
+  if (!action || !container) return;
+
+  switch (action.type) {
+    case "create_block":
+      currentBlockEl = document.createElement(action.tag);
+      currentInlineEl = null;
+      currentLiEl = null;
+      container.appendChild(currentBlockEl);
+      break;
+
+    case "enter_inline":
+      if (currentBlockEl) {
+        currentInlineEl = document.createElement(action.tag);
+        const parent = currentLiEl || currentBlockEl;
+        parent.appendChild(currentInlineEl);
+      }
+      break;
+
+    case "exit_inline":
+      currentInlineEl = null;
+      break;
+
+    case "enter_li":
+      if (currentBlockEl) {
+        currentLiEl = document.createElement("li");
+        currentInlineEl = null;
+        currentBlockEl.appendChild(currentLiEl);
+      }
+      break;
+
+    case "exit_li":
+      currentLiEl = null;
+      currentInlineEl = null;
+      break;
+
+    case "append_br":
+      const brParent = currentLiEl || currentBlockEl || container;
+      brParent.appendChild(document.createElement("br"));
+      break;
+
+    case "append_text":
+      const textParent = currentInlineEl || currentLiEl || currentBlockEl || container;
+      textParent.appendChild(document.createTextNode(action.text));
+      break;
+  }
+};
+
+const finishTransformedStream = (fullText = "") => {
+  stopTransformedStreamTicker();
+  const troySpeech = document.getElementById("troy-speech");
+  const troyCard = document.getElementById("troy-card") || document.getElementById("booting-card");
+
+  if (troyCard) troyCard.classList.remove("speaking");
+  if (troySpeech) {
+    troySpeech.className = "agent-speech troy-speech";
+    // Execute all remaining queued actions instantly
+    if (streamActionQueue.length > 0) {
+      while (streamActionQueue.length > 0) {
+        const action = streamActionQueue.shift();
+        executeStreamAction(action, troySpeech);
+      }
+    } else if (fullText) {
+      troySpeech.innerHTML = renderMarkdown(fullText);
+    }
+  }
+
+  isTypingTransformed = false;
+  updateLiveStatus("Resolution complete & formulated by Troy.", false);
+
+  if (pendingResolutionEnd || !isResolving) {
+    pendingResolutionEnd = false;
+    isResolving = false;
+    markFeedCardResolved();
+    if (fetchNextBtn) {
+      fetchNextBtn.disabled = false;
+      fetchNextBtn.classList.remove("is-loading");
+      fetchNextBtn.textContent = "Begin Resolution";
+    }
+  }
+};
+
+const startTransformedStream = (rawText) => {
+  stopTransformedStreamTicker();
+
+  const troySpeech = document.getElementById("troy-speech");
+  const troyCard = document.getElementById("troy-card") || document.getElementById("booting-card");
+  if (!troySpeech) return;
+
+  if (troyCard) troyCard.classList.add("speaking");
+  troySpeech.className = "agent-speech troy-speech streaming";
+  troySpeech.innerHTML = "";
+
+  const textToParse = (rawText || streamedSpeechText || "").trim();
+  if (!textToParse) {
+    finishTransformedStream("");
+    return;
+  }
+
+  const items = parseMarkdownToStreamItems(textToParse);
+  streamActionQueue = buildStreamingActions(items);
+  isTypingTransformed = true;
+  updateLiveStatus("Troy is delivering resolution assessment...", true);
+
+  // Speed adjustments: faster for longer texts so users never wait more than ~4 seconds
+  const totalActions = streamActionQueue.length;
+  const actionsPerTick = totalActions > 300 ? 3 : totalActions > 140 ? 2 : 1;
+  const tickIntervalMs = 15;
+
+  streamTickerTimer = setInterval(() => {
+    if (!isTypingTransformed || streamActionQueue.length === 0) {
+      finishTransformedStream();
+      return;
+    }
+
+    for (let i = 0; i < actionsPerTick && streamActionQueue.length > 0; i++) {
+      const action = streamActionQueue.shift();
+      executeStreamAction(action, troySpeech);
+    }
+
+    if (deliberationList) {
+      deliberationList.scrollTop = deliberationList.scrollHeight;
+    }
+
+    if (streamActionQueue.length === 0) {
+      finishTransformedStream();
+    }
+  }, tickIntervalMs);
+};
+
 const resetTroyConsole = () => {
+  stopTransformedStreamTicker();
+  isTypingTransformed = false;
+  pendingResolutionEnd = false;
+  streamActionQueue = [];
   streamedSpeechText = "";
 
   // Ensure live status banner exists
@@ -673,8 +974,13 @@ const resetTroyConsole = () => {
     troyCard.classList.add("speaking");
   }
   if (troySpeech) {
-    troySpeech.className = "agent-speech troy-speech streaming";
-    troySpeech.innerHTML = `<span style="color:var(--muted); font-style:italic;">Analyzing complaint precedents & formulating optimal resolution...</span>`;
+    troySpeech.className = "agent-speech troy-speech formulating";
+    troySpeech.innerHTML = `
+      <div class="troy-deliberating">
+        <span class="troy-pulse-orb"></span>
+        <span>Analyzing complaint precedents & formulating optimal resolution...</span>
+      </div>
+    `;
   }
 };
 
@@ -754,37 +1060,6 @@ const renderMlIntelligenceCard = (report) => {
   if (troyRole) {
     troyRole.textContent = `Assigned: ${team} | Lead Resolution Agent`;
   }
-};
-
-const appendTroySpeechDelta = (delta) => {
-  if (!delta) return;
-  const troySpeech = document.getElementById("troy-speech");
-  if (!troySpeech) return;
-
-  // Clear initial placeholder on first delta
-  if (streamedSpeechText === "") {
-    troySpeech.textContent = "";
-  }
-  streamedSpeechText += delta;
-  troySpeech.textContent = streamedSpeechText;
-
-  // Auto-scroll
-  if (deliberationList) {
-    deliberationList.scrollTop = deliberationList.scrollHeight;
-  }
-};
-
-const finalizeTroySpeech = (fullText) => {
-  const troySpeech = document.getElementById("troy-speech");
-  const troyCard = document.getElementById("troy-card") || document.getElementById("booting-card");
-  if (troyCard) troyCard.classList.remove("speaking");
-
-  const textToRender = fullText || streamedSpeechText;
-  if (troySpeech && textToRender) {
-    troySpeech.className = "agent-speech troy-speech";
-    troySpeech.innerHTML = renderMarkdown(textToRender);
-  }
-  updateLiveStatus("Resolution complete & formulated by Troy.", false);
 };
 
 // ── Resolution Execution Flow ───────────────────────────────────────────────
@@ -931,11 +1206,16 @@ const connectLiveStream = () => {
       }
       const troySpeech = document.getElementById("troy-speech");
       if (troySpeech) {
-        troySpeech.className = "agent-speech troy-speech streaming";
-        troySpeech.textContent = "";
+        troySpeech.className = "agent-speech troy-speech formulating";
+        troySpeech.innerHTML = `
+          <div class="troy-deliberating">
+            <span class="troy-pulse-orb"></span>
+            <span>Analyzing complaint precedents & formulating optimal resolution...</span>
+          </div>
+        `;
       }
       streamedSpeechText = "";
-      updateLiveStatus("Troy is delivering resolution assessment...", true);
+      updateLiveStatus("Troy is analyzing precedents with LM Studio...", true);
     } catch (_) {}
   });
 
@@ -943,7 +1223,8 @@ const connectLiveStream = () => {
     try {
       const data = JSON.parse(e.data);
       if (data.delta) {
-        appendTroySpeechDelta(data.delta);
+        // Accumulate tokens silently while LM Studio finishes generating
+        streamedSpeechText += data.delta;
       }
     } catch (_) {}
   });
@@ -951,17 +1232,23 @@ const connectLiveStream = () => {
   stream.addEventListener("agent", (e) => {
     try {
       const data = JSON.parse(e.data);
-      finalizeTroySpeech(data.message);
+      const fullText = data.message || streamedSpeechText;
+      // Start transformed progressive streaming after LM Studio text has finished
+      startTransformedStream(fullText);
     } catch (_) {}
   });
 
   const onComplete = () => {
-    isResolving = false;
-    markFeedCardResolved();
-    if (fetchNextBtn) {
-      fetchNextBtn.disabled = false;
-      fetchNextBtn.classList.remove("is-loading");
-      fetchNextBtn.textContent = "Begin Resolution";
+    if (isTypingTransformed) {
+      pendingResolutionEnd = true;
+    } else {
+      isResolving = false;
+      markFeedCardResolved();
+      if (fetchNextBtn) {
+        fetchNextBtn.disabled = false;
+        fetchNextBtn.classList.remove("is-loading");
+        fetchNextBtn.textContent = "Begin Resolution";
+      }
     }
   };
 
@@ -998,6 +1285,13 @@ topicInput?.addEventListener("keydown", (e) => {
 
 fetchNextBtn?.addEventListener("click", () => {
   startResolutionFlow();
+});
+
+// Click Troy's card while streaming to instantly reveal the full formatted text
+document.getElementById("troy-card")?.addEventListener("click", () => {
+  if (isTypingTransformed) {
+    finishTransformedStream();
+  }
 });
 
 // ── Application Bootstrap ───────────────────────────────────────────────────
