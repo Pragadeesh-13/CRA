@@ -1122,7 +1122,7 @@ const deliverPreliminaryAssessment = (report) => {
       <canvas class="agent-avatar-canvas" width="96" height="96"></canvas>
     </div>
     <div>
-      <div class="agent-name">Troy <span class="troy-role-tag preliminary-tag">Preliminary Case Assessment</span></div>
+      <div class="agent-name">Troy</div>
       <div class="agent-speech troy-speech preliminary-speech" id="troy-preliminary-speech">
         <div class="preliminary-assessment-card">
           <div class="preliminary-header">
@@ -1168,12 +1168,6 @@ const deliverPreliminaryAssessment = (report) => {
   const avatarEl = prelimCard.querySelector(".agent-avatar");
   if (avatarEl) {
     initTransparentVideoCanvas(avatarEl);
-  }
-
-  // Update Troy's role tag on resolution card
-  const troyRole = document.getElementById("troy-role");
-  if (troyRole) {
-    troyRole.textContent = `Assigned: ${team} | Lead Resolution Agent`;
   }
 };
 
@@ -1379,11 +1373,6 @@ const connectLiveStream = () => {
 
   stream.addEventListener("agent_start", (e) => {
     try {
-      const data = JSON.parse(e.data);
-      const troyRole = document.getElementById("troy-role");
-      if (troyRole && data.state) {
-        troyRole.textContent = `${data.state} | Lead Resolution Agent`;
-      }
       streamedSpeechText = "";
     } catch (_) {}
   });
