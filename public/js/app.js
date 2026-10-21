@@ -1025,6 +1025,7 @@ const startMlAnalyzingCycle = () => {
     troySpeech.className = "agent-speech troy-speech formulating";
     troySpeech.innerHTML = `
       <div class="troy-deliberating">
+        <span class="troy-pulse-orb"></span>
         <span class="troy-analyzing-text" id="troy-analyzing-msg">${ML_ANALYZING_STEPS[0]}${getThinkingDotsHtml()}</span>
       </div>
     `;
@@ -1074,6 +1075,7 @@ const onMlCycleComplete = () => {
       troySpeech.className = "agent-speech troy-speech formulating";
       troySpeech.innerHTML = `
         <div class="troy-deliberating">
+          <span class="troy-pulse-orb"></span>
           <span>Synthesizing formal resolution assessment & customer communication${getThinkingDotsHtml()}</span>
         </div>
       `;
@@ -1211,6 +1213,7 @@ const resetTroyConsole = () => {
     troySpeech.className = "agent-speech troy-speech formulating";
     troySpeech.innerHTML = `
       <div class="troy-deliberating">
+        <span class="troy-pulse-orb"></span>
         <span class="troy-analyzing-text" id="troy-analyzing-msg">Initializing Fine-Tuned DistilBERT Category Classifier${getThinkingDotsHtml()}</span>
       </div>
     `;
