@@ -903,41 +903,56 @@ const executeStreamAction = (action, container) => {
 };
 
 // ── Split Resolution Sections into 3 Dedicated Chatboxes ───────────────────
+const stripSectionNumbers = (text) => {
+  if (!text) return "";
+  let src = text;
+  // Strip numbers from 1. Executive Assessment, 2. Root Cause Analysis, 3. Customer Communication, 4. Internal Routing
+  src = src.replace(/(^|\n)([#*]{0,4}\s*)1[\.:\)]\s*(\*{0,2}Executive\s+Assessment)/gi, "$1$2$3");
+  src = src.replace(/(^|\n)([#*]{0,4}\s*)2[\.:\)]\s*(\*{0,2}Root\s+Cause)/gi, "$1$2$3");
+  src = src.replace(/(^|\n)([#*]{0,4}\s*)3[\.:\)]\s*(\*{0,2}Customer\s+Communication)/gi, "$1$2$3");
+  src = src.replace(/(^|\n)([#*]{0,4}\s*)4[\.:\)]\s*(\*{0,2}Internal\s+Routing)/gi, "$1$2$3");
+  return src;
+};
+
 const splitResolutionSections = (fullText) => {
   if (!fullText) return { part1: "", part2: "", part3: "" };
 
   const text = fullText.trim();
 
-  // Pattern matching Section 3: "3. Customer Communication Strategy" or similar
-  const p3Match = text.match(/(?:\n|^)(?:[#*]{0,4}\s*)?(?:3[\.:\)]\s*(?:\*{0,2})Customer|Customer\s+Communication)/i);
+  // Pattern matching Section 3: "Customer Communication Strategy" (with or without 3.)
+  const p3Match = text.match(/(?:\n|^)(?:[#*]{0,4}\s*)?(?:(?:3[\.:\)]\s*)?(?:\*{0,2})Customer\s+Communication)/i);
 
-  // Pattern matching Section 4: "4. Internal Routing & Next Action Steps" or similar
-  const p4Match = text.match(/(?:\n|^)(?:[#*]{0,4}\s*)?(?:4[\.:\)]\s*(?:\*{0,2})Internal|Internal\s+Routing)/i);
+  // Pattern matching Section 4: "Internal Routing & Next Action Steps" (with or without 4.)
+  const p4Match = text.match(/(?:\n|^)(?:[#*]{0,4}\s*)?(?:(?:4[\.:\)]\s*)?(?:\*{0,2})Internal\s+Routing)/i);
 
   const idx3 = p3Match ? p3Match.index : -1;
   const idx4 = p4Match ? p4Match.index : -1;
 
+  let part1 = "";
+  let part2 = "";
+  let part3 = "";
+
   if (idx3 !== -1 && idx4 !== -1 && idx3 < idx4) {
-    return {
-      part1: text.slice(0, idx3).trim(),
-      part2: text.slice(idx3, idx4).trim(),
-      part3: text.slice(idx4).trim(),
-    };
+    part1 = text.slice(0, idx3).trim();
+    part2 = text.slice(idx3, idx4).trim();
+    part3 = text.slice(idx4).trim();
   } else if (idx3 !== -1 && idx4 === -1) {
-    return {
-      part1: text.slice(0, idx3).trim(),
-      part2: text.slice(idx3).trim(),
-      part3: "",
-    };
+    part1 = text.slice(0, idx3).trim();
+    part2 = text.slice(idx3).trim();
+    part3 = "";
   } else if (idx4 !== -1 && idx3 === -1) {
-    return {
-      part1: text.slice(0, idx4).trim(),
-      part2: "",
-      part3: text.slice(idx4).trim(),
-    };
+    part1 = text.slice(0, idx4).trim();
+    part2 = "";
+    part3 = text.slice(idx4).trim();
+  } else {
+    part1 = text;
   }
 
-  return { part1: text, part2: "", part3: "" };
+  return {
+    part1: stripSectionNumbers(part1),
+    part2: stripSectionNumbers(part2),
+    part3: stripSectionNumbers(part3),
+  };
 };
 
 const createTroyChatbox = (cardId, speechId) => {

@@ -256,11 +256,11 @@ class ComplaintResolutionOrchestrator:
             prompt_lines.append("")
 
         prompt_lines.append(
-            "Please deliver your formal Complaint Resolution Assessment as Troy, Lead Complaint Resolution Agent. Structure your response with:\n"
-            "1. Executive Assessment & Category Confirmation\n"
-            "2. Root Cause Analysis & Precedent Alignment\n"
-            "3. Customer Communication Strategy (exact empathetic message to send to the customer)\n"
-            "4. Internal Routing & Next Action Steps"
+            "Please deliver your formal Complaint Resolution Assessment as Troy, Lead Complaint Resolution Agent. Structure your response under these clear section titles (do NOT prefix with numbers like 1, 2, 3, 4):\n"
+            "- Executive Assessment & Category Confirmation\n"
+            "- Root Cause Analysis & Precedent Alignment\n"
+            "- Customer Communication Strategy (exact empathetic message to send to the customer)\n"
+            "- Internal Routing & Next Action Steps"
         )
 
         prompt_content = "\n".join(prompt_lines)
