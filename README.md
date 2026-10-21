@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/a54769be-e2e2-4f77-818a-992695f4c85f
+
 # Complaint Resolution Agent (CRA) — Troy
 
 **Troy** is an autonomous AI agent designed to investigate, triage, and resolve customer complaints end-to-end. 
