@@ -1,0 +1,81 @@
+================================================================================
+COMPLAINT RESOLUTION AGENT (CRA) - DEMO TEST SCENARIOS
+Internal Database: data/customer_accounts.csv
+================================================================================
+
+--------------------------------------------------------------------------------
+SCENARIO 1: Accidental Duplicate Subscription Renewal (PRIMARY DEMO)
+--------------------------------------------------------------------------------
+Customer Record : Alex Morgan (USR-10492 | alex.morgan@gmail.com)
+Subscription    : Pro Tier ($49.00/mo) | Order #88219
+Database Status : Flagged - Accidental Double Charge (2 debits: $49 on Oct 20 & Oct 21)
+Expected Team   : Billing Team
+Expected Action : Autonomous refund of $49.00 via Stripe API, account balance set to $0.00
+
+PROMPT:
+I was charged twice for my subscription renewal this month. Order #88219 was debited for $49.00 yesterday and again this morning. Please investigate and refund the duplicate charge immediately.
+
+
+--------------------------------------------------------------------------------
+SCENARIO 2: Subscription Downgrade Proration Adjustment
+--------------------------------------------------------------------------------
+Customer Record : Michael Scott (USR-09148 | m.scott@dunder.com)
+Subscription    : Starter Tier ($29.00/mo) | Order #86102
+Database Status : Pending Downgrade Adjustment (Charged $79.00 old plan instead of $29.00)
+Expected Team   : Billing Team
+Expected Action : Prorated credit of $50.00 difference applied to account balance
+
+PROMPT:
+I submitted a request to downgrade to Starter tier before my billing renewal date, but Order #86102 was charged at the full $79.00 rate instead of $29.00. Please credit the difference.
+
+
+--------------------------------------------------------------------------------
+SCENARIO 3: Two-Factor Authentication (2FA) SMS Gateway Lockout
+--------------------------------------------------------------------------------
+Customer Record : Sarah Jenkins (USR-08914 | sarah.j@enterprise.org)
+Subscription    : Enterprise Tier ($299.00/mo) | Order #79110
+Database Status : Locked - 2FA SMS Gateway Failure (3 failed attempts)
+Expected Team   : Tier 1 Support / Security
+Expected Action : SMS gateway session reset, temporary emergency backup OTP dispatch
+
+PROMPT:
+Two-factor authentication codes are not arriving on my phone. Order #79110. Account is locked after three attempts and I cannot log into my enterprise dashboard.
+
+
+--------------------------------------------------------------------------------
+SCENARIO 4: Webhook Gateway 504 Timeout & Batch Sync Failure
+--------------------------------------------------------------------------------
+Customer Record : David Chen (USR-12053 | d.chen@fintech.io)
+Subscription    : Developer API Tier ($199.00/mo) | Order #93041
+Database Status : Degraded - Webhook Gateway 504 Timeout
+Expected Team   : Engineering
+Expected Action : Webhook retry queue flush, endpoint timeout threshold increase
+
+PROMPT:
+Webhook delivery is failing with 504 gateway timeout on /v1/payments endpoint during our batch synchronization. Order #93041. Please check if there is an active incident.
+
+
+--------------------------------------------------------------------------------
+SCENARIO 5: International VAT Tax Invoice & Accounting Compliance
+--------------------------------------------------------------------------------
+Customer Record : Elena Rostova (USR-14309 | elena@globaltrade.de)
+Subscription    : Team Tier ($120.00/mo) | Order #85420
+Database Status : Active - Pending VAT Invoice Receipt
+Expected Team   : Billing Team
+Expected Action : Automated generation of compliant EU VAT reverse-charge tax invoice
+
+PROMPT:
+Need formal tax invoice and VAT receipt for Q3 enterprise subscription renewal Order #85420 for our German corporate accounting records.
+
+
+--------------------------------------------------------------------------------
+SCENARIO 6: Annual Renewal Double Debit Precedent Test
+--------------------------------------------------------------------------------
+Customer Record : Emily Watson (USR-07231 | emily.w@consulting.co)
+Subscription    : Pro Tier ($49.00/mo) | Order #81094
+Database Status : Active - In Good Standing (Historical Precedent Match)
+Expected Team   : Billing Team
+Expected Action : Precedent retrieval match (~98.4%) validating immediate refund protocol
+
+PROMPT:
+Double charged on annual renewal fee due to payment gateway retry for Order #81094. Debited $49.00 twice on renewal date.
