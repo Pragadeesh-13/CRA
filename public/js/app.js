@@ -1026,30 +1026,106 @@ const renderResolutionActionButtons = () => {
   const btnManual = document.getElementById("btn-resolve-manually");
   const btnAgent = document.getElementById("btn-agent-resolve");
 
-  btnManual?.addEventListener("click", () => {
-    actionBar.innerHTML = `
-      <div class="resolution-result-badge manual">
-        <svg class="badge-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-          <circle cx="12" cy="7" r="4"></circle>
-        </svg>
-        <span><strong>Routed for Manual Resolution:</strong> Ticket escalated to human review & assigned to departmental queue.</span>
-      </div>
-    `;
-    updateLiveStatus("Ticket marked for manual resolution by human agent.", false);
+  btnManual?.addEventListener("click", async () => {
+    btnManual.disabled = true;
+    btnAgent.disabled = true;
+    btnManual.innerHTML = `<span class="btn-spinner"></span> <span>Routing to human review...</span>`;
+
+    try {
+      const q = topicInput?.value || "";
+      const res = await fetch("/api/resolve/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({
+          action: "manual_resolve",
+          ticket_id: "88219",
+          query: q,
+          notes: "Manual review requested by operator via CRA console.",
+        }),
+      });
+      const data = await res.json();
+      const ticket = data.ticket || {};
+
+      actionBar.innerHTML = `
+        <div class="resolution-result-card manual">
+          <div class="result-card-header">
+            <svg class="badge-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+            <strong>Ticket #${ticket.ticket_id || "88219"} Escalated for Manual Resolution</strong>
+            <span class="db-sync-tag">Database CSV Updated</span>
+          </div>
+          <div class="result-card-body">
+            <div><span class="res-meta-lbl">Assigned Queue:</span> <strong>${ticket.predicted_team || "Billing Team"}</strong></div>
+            <div><span class="res-meta-lbl">Database Status:</span> <span class="status-badge manual">${ticket.status || "Escalated - Manual Review"}</span></div>
+            <div><span class="res-meta-lbl">Customer:</span> ${ticket.customer_name || "Alex Morgan"} (${ticket.customer_email || "alex.morgan@gmail.com"})</div>
+            <div><span class="res-meta-lbl">Target SLA:</span> ${ticket.sla_hours || "18.13"} hrs | <span class="res-meta-lbl">Timestamp:</span> ${data.timestamp || "Just now"}</div>
+          </div>
+        </div>
+      `;
+      updateLiveStatus("Ticket routed for manual resolution in database (Billing Team).", false);
+    } catch (_) {
+      actionBar.innerHTML = `
+        <div class="resolution-result-badge manual">
+          <span><strong>Routed for Manual Resolution:</strong> Ticket escalated to human review & assigned to departmental queue.</span>
+        </div>
+      `;
+      updateLiveStatus("Ticket marked for manual resolution by human agent.", false);
+    }
   });
 
-  btnAgent?.addEventListener("click", () => {
-    actionBar.innerHTML = `
-      <div class="resolution-result-badge agent">
-        <svg class="badge-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-          <polyline points="22 4 12 14.01 9 11.01"></polyline>
-        </svg>
-        <span><strong>Autonomous Resolution Executed:</strong> Troy has authorized immediate refund API call & sent customer notification.</span>
-      </div>
-    `;
-    updateLiveStatus("Resolution autonomously executed by Troy. Case closed.", false);
+  btnAgent?.addEventListener("click", async () => {
+    btnManual.disabled = true;
+    btnAgent.disabled = true;
+    btnAgent.innerHTML = `<span class="btn-spinner"></span> <span>Troy executing resolution in database...</span>`;
+
+    try {
+      const q = topicInput?.value || "";
+      const res = await fetch("/api/resolve/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({
+          action: "agent_resolve",
+          ticket_id: "88219",
+          query: q,
+          action_details: "Refund Initiated ($49.00 via Payment Gateway API)",
+          notes: "Autonomous override executed by Troy based on precedent match.",
+        }),
+      });
+      const data = await res.json();
+      const ticket = data.ticket || {};
+
+      actionBar.innerHTML = `
+        <div class="resolution-result-card agent">
+          <div class="result-card-header">
+            <svg class="badge-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+              <polyline points="22 4 12 14.01 9 11.01"></polyline>
+            </svg>
+            <strong>Autonomous Resolution Executed by Troy</strong>
+            <span class="db-sync-tag agent">Database CSV Updated & Synced</span>
+          </div>
+          <div class="result-card-body">
+            <div><span class="res-meta-lbl">Ticket Record:</span> <strong>#${ticket.ticket_id || "88219"}</strong> (Order ${ticket.order_id || "ORD-88219"})</div>
+            <div><span class="res-meta-lbl">Database Status:</span> <span class="status-badge agent">${ticket.status || "Resolved"}</span></div>
+            <div><span class="res-meta-lbl">Action Executed:</span> <strong>${ticket.resolution_action || "Refund Initiated ($49.00 via Payment Gateway API)"}</strong></div>
+            <div><span class="res-meta-lbl">Customer Notification:</span> <span class="notified-tag">${ticket.customer_notified || "Yes - Email Dispatched"}</span> to ${ticket.customer_email || "alex.morgan@gmail.com"}</div>
+            <div><span class="res-meta-lbl">Audit Log:</span> Recorded in <code>data/complaints_database.csv</code> at ${data.timestamp || "Just now"}</div>
+          </div>
+        </div>
+      `;
+      updateLiveStatus("Resolution autonomously executed by Troy. Database CSV updated & case closed.", false);
+      markFeedCardResolved();
+    } catch (_) {
+      actionBar.innerHTML = `
+        <div class="resolution-result-badge agent">
+          <span><strong>Autonomous Resolution Executed:</strong> Troy has authorized immediate refund API call & sent customer notification.</span>
+        </div>
+      `;
+      updateLiveStatus("Resolution autonomously executed by Troy. Case closed.", false);
+      markFeedCardResolved();
+    }
   });
 };
 

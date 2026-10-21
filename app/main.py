@@ -14,6 +14,12 @@ from app.providers import create_driver, provider_base_url, PROVIDER_REGISTRY
 from app.simulation import SimulationState, RoundBarrier, Troy, CouncilOrchestrator, SessionRegistry
 from app.http.sse_manager import SseManager
 from app.auth import KeyVault, SessionGuard, requires_key
+from app.database import (
+    read_all_tickets,
+    execute_agent_resolution,
+    execute_manual_resolution,
+    find_ticket_by_id_or_query,
+)
 
 START_TIME = time.time()
 
@@ -191,6 +197,37 @@ async def get_ticket(request: Request):
     session = get_active_session(request)
     story = session.orchestrator.get_latest_story()
     return {"story": story or None, "ticket": story or None}
+
+
+@app.get("/api/database/tickets")
+async def get_database_tickets():
+    tickets = read_all_tickets()
+    return {"ok": True, "tickets": tickets, "count": len(tickets), "database_file": "data/complaints_database.csv"}
+
+
+@app.post("/api/resolve/action")
+async def post_resolve_action(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    action = body.get("action", "agent_resolve")
+    ticket_id = body.get("ticket_id")
+    query = body.get("query")
+    custom_action = body.get("action_details") or "Refund Initiated ($49.00 via Payment Gateway API)"
+    notes = body.get("notes")
+
+    if action == "manual_resolve":
+        res = execute_manual_resolution(ticket_id=ticket_id, query=query, notes=notes)
+    else:
+        res = execute_agent_resolution(ticket_id=ticket_id, query=query, action=custom_action, notes=notes)
+
+    # Broadcast event so UI or stream clients know database was updated
+    session = get_active_session(request)
+    session.sse_manager.broadcast("database_updated", res)
+
+    return res
 
 
 @app.get("/api/trigger")

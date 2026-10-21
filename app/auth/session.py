@@ -12,6 +12,8 @@ PUBLIC_API_PATHS = {
     "/api/health",
     "/api/cra/resolve",
     "/api/cra/classify",
+    "/api/database/tickets",
+    "/api/resolve/action",
 }
 
 

@@ -170,3 +170,60 @@ def test_cra_model_endpoints():
     assert "extracted_entities" in res_data["report"]
 
 
+def test_database_tickets_endpoint():
+    res = client.get("/api/database/tickets")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert "tickets" in data
+    assert isinstance(data["tickets"], list)
+    assert data["count"] >= 1
+    # Check ticket schema
+    first = data["tickets"][0]
+    assert "ticket_id" in first
+    assert "customer_name" in first
+    assert "status" in first
+
+
+def test_resolve_action_agent_and_manual():
+    from app.database import DATABASE_FILE
+    original_content = DATABASE_FILE.read_text(encoding="utf-8") if DATABASE_FILE.exists() else None
+    try:
+        # 1. Test Agent Resolve
+        res_agent = client.post(
+            "/api/resolve/action",
+            json={
+                "action": "agent_resolve",
+                "ticket_id": "88219",
+                "action_details": "Refund Initiated ($49.00 via Payment Gateway API)",
+                "notes": "Automated test resolution by Troy",
+            },
+        )
+        assert res_agent.status_code == 200
+        data_agent = res_agent.json()
+        assert data_agent["ok"] is True
+        assert data_agent["action"] == "agent_resolve"
+        assert data_agent["ticket"]["status"] == "Resolved"
+        assert data_agent["ticket"]["resolved_by"] == "Troy (Lead Autonomous Resolution Agent)"
+        assert "Refund Initiated" in data_agent["ticket"]["resolution_action"]
+
+        # 2. Test Manual Resolve
+        res_manual = client.post(
+            "/api/resolve/action",
+            json={
+                "action": "manual_resolve",
+                "ticket_id": "88220",
+                "notes": "Escalated for human operator review in automated test",
+            },
+        )
+        assert res_manual.status_code == 200
+        data_manual = res_manual.json()
+        assert data_manual["ok"] is True
+        assert data_manual["action"] == "manual_resolve"
+        assert data_manual["ticket"]["status"] == "Escalated - Manual Review"
+    finally:
+        if original_content is not None:
+            DATABASE_FILE.write_text(original_content, encoding="utf-8")
+
+
+
