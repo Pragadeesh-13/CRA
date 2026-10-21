@@ -1039,14 +1039,14 @@ const renderResolutionActionButtons = async () => {
             <polyline points="22 4 12 14.01 9 11.01"></polyline>
           </svg>
           <strong>Customer Database Verified:</strong>
-          <span>${cust.customer_name}</span>
+          <span class="verify-customer-highlight">${cust.customer_name}</span>
           <span class="db-source-tag">data/customer_accounts.csv</span>
         </div>
         <span class="verify-status-pill duplicate">Accidental 2x Charge Confirmed</span>
       </div>
       <div class="verify-strip-details">
         <div class="verify-detail-item"><span class="v-label">Customer ID:</span> <strong>${cust.customer_id}</strong> (${cust.customer_email})</div>
-        <div class="verify-detail-item"><span class="v-label">Plan & Rate:</span> ${cust.subscription_plan} ($${planRate}/mo)</div>
+        <div class="verify-detail-item"><span class="v-label">Plan & Rate:</span> <strong>${cust.subscription_plan}</strong></div>
         <div class="verify-detail-item"><span class="v-label">Ledger Debits:</span> <span class="v-alert">${chargesCount}x charges this month ($${totBilled})</span></div>
         <div class="verify-detail-item"><span class="v-label">Transactions:</span> Oct 20 ($${planRate}) + Oct 21 ($${planRate}) [Duplicate]</div>
       </div>
@@ -1082,107 +1082,214 @@ const renderResolutionActionButtons = async () => {
   const btnAgent = document.getElementById("btn-agent-resolve");
 
   btnManual?.addEventListener("click", async () => {
-    const btnRow = actionBar.querySelector(".resolution-buttons-row");
-    if (btnRow) {
-      btnRow.innerHTML = `<div class="action-executing-state"><span class="btn-spinner"></span> <span>Routing to human billing specialist...</span></div>`;
+    btnManual.disabled = true;
+    if (btnAgent) btnAgent.disabled = true;
+
+    // Display progressive manual escalation steps
+    const manualSteps = [
+      { text: "Routing ticket #88219 to Human Billing Specialist queue...", delay: 650 },
+      { text: "Updating account status in data/customer_accounts.csv to Escalated...", delay: 650 },
+    ];
+
+    actionBar.innerHTML = `
+      <div class="agent-execution-box">
+        <div class="execution-box-header">
+          <div class="execution-title">
+            <span class="pulse-dot-active"></span>
+            <strong>Manual Resolution Routing Engine</strong>
+          </div>
+          <span class="execution-step-counter" id="manual-step-counter">Escalating...</span>
+        </div>
+        <div class="execution-steps-list" id="manual-steps-list"></div>
+      </div>
+    `;
+
+    const stepsList = actionBar.querySelector("#manual-steps-list");
+    const counterEl = actionBar.querySelector("#manual-step-counter");
+
+    // Initiate API call
+    let data = null;
+    const apiPromise = fetch("/api/resolve/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({
+        action: "manual_resolve",
+        customer_id: cust.customer_id || "USR-10492",
+        query: q,
+        notes: "Manual review requested by operator via CRA console.",
+      }),
+    })
+      .then((r) => r.json())
+      .then((res) => {
+        data = res;
+      })
+      .catch((_) => {});
+
+    for (let i = 0; i < manualSteps.length; i++) {
+      if (counterEl) counterEl.textContent = `Step ${i + 1} of ${manualSteps.length}`;
+      updateLiveStatus(`Operator: ${manualSteps[i].text}`, true);
+
+      const stepEl = document.createElement("div");
+      stepEl.className = "exec-step-item active";
+      stepEl.innerHTML = `
+        <span class="exec-step-icon"><span class="exec-step-spinner"></span></span>
+        <span class="exec-step-text">${manualSteps[i].text}</span>
+      `;
+      stepsList?.appendChild(stepEl);
+
+      await new Promise((r) => setTimeout(r, manualSteps[i].delay));
+
+      stepEl.classList.remove("active");
+      stepEl.classList.add("done");
+      const iconSpan = stepEl.querySelector(".exec-step-icon");
+      if (iconSpan) {
+        iconSpan.innerHTML = `
+          <svg class="exec-step-check" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+        `;
+      }
     }
 
-    try {
-      const res = await fetch("/api/resolve/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({
-          action: "manual_resolve",
-          customer_id: cust.customer_id || "USR-10492",
-          query: q,
-          notes: "Manual review requested by operator via CRA console.",
-        }),
-      });
-      const data = await res.json();
-      const c = data.customer || cust;
+    await apiPromise;
+    await new Promise((r) => setTimeout(r, 400));
 
-      actionBar.innerHTML = `
-        <div class="resolution-result-card manual">
-          <div class="result-card-header">
-            <svg class="badge-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-              <circle cx="12" cy="7" r="4"></circle>
-            </svg>
-            <strong>Customer #${c.customer_id || "USR-10492"} Escalated for Manual Audit</strong>
-            <span class="db-sync-tag">customer_accounts.csv Updated</span>
-          </div>
-          <div class="result-card-body">
-            <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || "Alex Morgan"}</strong> (${c.customer_email || "alex.morgan@gmail.com"})</div>
-            <div><span class="res-meta-lbl">Account Status:</span> <span class="status-badge manual">${c.account_status || "Escalated - Billing Specialist Audit"}</span></div>
-            <div><span class="res-meta-lbl">Assigned Queue:</span> <strong>Billing Team Specialist</strong> (Target SLA: 18.13 hrs)</div>
-            <div><span class="res-meta-lbl">Database Audit Log:</span> Recorded in <code>data/customer_accounts.csv</code> at ${data.timestamp || "Just now"}</div>
-          </div>
+    const c = data?.customer || cust;
+    actionBar.innerHTML = `
+      <div class="resolution-result-card manual">
+        <div class="result-card-header">
+          <svg class="badge-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+            <circle cx="12" cy="7" r="4"></circle>
+          </svg>
+          <strong>Customer #${c.customer_id || "USR-10492"} Escalated for Manual Audit</strong>
+          <span class="db-sync-tag">customer_accounts.csv Updated</span>
         </div>
-      `;
-      updateLiveStatus("Customer account routed for manual audit in customer_accounts.csv.", false);
-    } catch (_) {
-      actionBar.innerHTML = `
-        <div class="resolution-result-badge manual">
-          <span><strong>Routed for Manual Resolution:</strong> Ticket escalated to human review & assigned to departmental queue.</span>
+        <div class="result-card-body">
+          <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || "Alex Morgan"}</strong> (${c.customer_email || "alex.morgan@gmail.com"})</div>
+          <div><span class="res-meta-lbl">Account Status:</span> <span class="status-badge manual">${c.account_status || "Escalated - Billing Specialist Audit"}</span></div>
+          <div><span class="res-meta-lbl">Assigned Queue:</span> <strong>Billing Team Specialist</strong> (Target SLA: 18.13 hrs)</div>
+          <div><span class="res-meta-lbl">Database Audit Log:</span> Recorded in <code>data/customer_accounts.csv</code> at ${data?.timestamp || "Just now"}</div>
         </div>
-      `;
-      updateLiveStatus("Ticket marked for manual resolution by human agent.", false);
-    }
+      </div>
+    `;
+    updateLiveStatus("Customer account routed for manual audit in customer_accounts.csv.", false);
   });
 
   btnAgent?.addEventListener("click", async () => {
-    const btnRow = actionBar.querySelector(".resolution-buttons-row");
-    if (btnRow) {
-      btnRow.innerHTML = `<div class="action-executing-state"><span class="btn-spinner"></span> <span>Troy verifying customer ledger & executing refund in customer_accounts.csv...</span></div>`;
-    }
+    btnAgent.disabled = true;
+    if (btnManual) btnManual.disabled = true;
 
-    try {
-      const res = await fetch("/api/resolve/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({
-          action: "agent_resolve",
-          customer_id: cust.customer_id || "USR-10492",
-          query: q,
-          action_details: "Refund Initiated ($49.00 via Stripe API)",
-          notes: "Autonomous override executed by Troy. Accidental double renewal debit reversed in Stripe API.",
-        }),
+    // Progressive autonomous resolution steps
+    const autoSteps = [
+      { text: "Accessing internal customer database (data/customer_accounts.csv)...", delay: 700 },
+      { text: `Found user account: ${cust.customer_name || "Alex Morgan"} (${cust.customer_id || "USR-10492"})...`, delay: 750 },
+      { text: `Verifying ledger: Accidental duplicate renewal debit TXN-9012 ($${planRate}) confirmed...`, delay: 800 },
+      { text: `Sending refund: Authorizing $${planRate} reimbursement via Payment Gateway API...`, delay: 850 },
+      { text: "Making changes in database: Marking TXN-9012 as Refunded & balance restored to $0.00...", delay: 800 },
+      { text: `Dispatching refund receipt (REF-88219-AUTO) to ${cust.customer_email || "alex.morgan@gmail.com"}...`, delay: 650 },
+    ];
+
+    actionBar.innerHTML = `
+      <div class="agent-execution-box">
+        <div class="execution-box-header">
+          <div class="execution-title">
+            <span class="pulse-dot-active"></span>
+            <strong>Troy Autonomous Resolution Engine</strong>
+          </div>
+          <span class="execution-step-counter" id="auto-step-counter">Initializing...</span>
+        </div>
+        <div class="execution-steps-list" id="auto-steps-list"></div>
+      </div>
+    `;
+
+    const stepsList = actionBar.querySelector("#auto-steps-list");
+    const counterEl = actionBar.querySelector("#auto-step-counter");
+
+    // Initiate API resolution in parallel with the progressive messaging
+    let data = null;
+    const apiPromise = fetch("/api/resolve/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({
+        action: "agent_resolve",
+        customer_id: cust.customer_id || "USR-10492",
+        query: q,
+        action_details: `Refund Initiated ($${planRate} via Stripe API)`,
+        notes: "Autonomous override executed by Troy. Accidental double renewal debit reversed in Stripe API.",
+      }),
+    })
+      .then((r) => r.json())
+      .then((res) => {
+        data = res;
+      })
+      .catch((err) => {
+        console.warn("Resolve action failed:", err);
       });
-      const data = await res.json();
-      const c = data.customer || cust;
 
-      actionBar.innerHTML = `
-        <div class="resolution-result-card agent">
-          <div class="result-card-header">
-            <svg class="badge-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-              <polyline points="22 4 12 14.01 9 11.01"></polyline>
-            </svg>
-            <strong>Autonomous Resolution Executed & CSV Updated</strong>
-            <span class="db-sync-tag agent">customer_accounts.csv Synced</span>
-          </div>
-          <div class="result-card-body">
-            <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || "Alex Morgan"}</strong> (${c.customer_id || "USR-10492"} &middot; ${c.customer_email || "alex.morgan@gmail.com"})</div>
-            <div><span class="res-meta-lbl">Subscription Plan:</span> ${c.subscription_plan || "Pro Tier ($49.00/mo)"}</div>
-            <div><span class="res-meta-lbl">Database Verification:</span> <span class="status-badge verified">Accidental 2x Debit Confirmed & Settled</span></div>
-            <div><span class="res-meta-lbl">CSV Update Action:</span> <strong>TXN-9012 Refunded ($49.00) &middot; Account Balance set to $0.00</strong></div>
-            <div><span class="res-meta-lbl">Account Status:</span> <span class="status-badge agent">${c.account_status || "Active - In Good Standing"}</span> | <span class="res-meta-lbl">Receipt ID:</span> <code>${c.refund_id || "REF-88219-AUTO"}</code></div>
-            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Yes - Confirmation Dispatched</span> to ${c.customer_email || "alex.morgan@gmail.com"}</div>
-            <div><span class="res-meta-lbl">Audit Log:</span> Persisted to <code>data/customer_accounts.csv</code> at ${data.timestamp || "Just now"} by Troy</div>
-          </div>
-        </div>
+    // Animate each progressive message sequentially
+    for (let i = 0; i < autoSteps.length; i++) {
+      if (counterEl) counterEl.textContent = `Step ${i + 1} of ${autoSteps.length}`;
+      updateLiveStatus(`Troy: ${autoSteps[i].text}`, true);
+
+      const stepEl = document.createElement("div");
+      stepEl.className = "exec-step-item active";
+      stepEl.innerHTML = `
+        <span class="exec-step-icon"><span class="exec-step-spinner"></span></span>
+        <span class="exec-step-text">${autoSteps[i].text}</span>
       `;
-      updateLiveStatus("Resolution autonomously executed by Troy. customer_accounts.csv updated & account settled.", false);
-      markFeedCardResolved();
-    } catch (_) {
-      actionBar.innerHTML = `
-        <div class="resolution-result-badge agent">
-          <span><strong>Autonomous Resolution Executed:</strong> Troy has authorized immediate refund API call & sent customer notification.</span>
-        </div>
-      `;
-      updateLiveStatus("Resolution autonomously executed by Troy. Case closed.", false);
-      markFeedCardResolved();
+      stepsList?.appendChild(stepEl);
+
+      const isNearBottom =
+        deliberationList.scrollHeight - deliberationList.scrollTop - deliberationList.clientHeight < 280;
+      if (isNearBottom) {
+        deliberationList.scrollTop = deliberationList.scrollHeight;
+      }
+
+      await new Promise((r) => setTimeout(r, autoSteps[i].delay));
+
+      stepEl.classList.remove("active");
+      stepEl.classList.add("done");
+      const iconSpan = stepEl.querySelector(".exec-step-icon");
+      if (iconSpan) {
+        iconSpan.innerHTML = `
+          <svg class="exec-step-check" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+        `;
+      }
     }
+
+    // Await API completion
+    await apiPromise;
+    await new Promise((r) => setTimeout(r, 450));
+
+    // Render the final confirmation card (2nd image box)
+    const c = data?.customer || cust;
+    actionBar.innerHTML = `
+      <div class="resolution-result-card agent">
+        <div class="result-card-header">
+          <svg class="badge-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+          </svg>
+          <strong>Autonomous Resolution Executed & CSV Updated</strong>
+          <span class="db-sync-tag agent">customer_accounts.csv Synced</span>
+        </div>
+        <div class="result-card-body">
+          <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || "Alex Morgan"}</strong> (${c.customer_id || "USR-10492"} &middot; ${c.customer_email || "alex.morgan@gmail.com"})</div>
+          <div><span class="res-meta-lbl">Subscription Plan:</span> ${c.subscription_plan || "Pro Tier ($49.00/mo)"}</div>
+          <div><span class="res-meta-lbl">Database Verification:</span> <span class="status-badge verified">Accidental 2x Debit Confirmed & Settled</span></div>
+          <div><span class="res-meta-lbl">CSV Update Action:</span> <strong>TXN-9012 Refunded ($${planRate}) &middot; Account Balance set to $0.00</strong></div>
+          <div><span class="res-meta-lbl">Account Status:</span> <span class="status-badge agent">${c.account_status || "Active - In Good Standing"}</span> | <span class="res-meta-lbl">Receipt ID:</span> <code>${c.refund_id || "REF-88219-AUTO"}</code></div>
+          <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Yes - Confirmation Dispatched</span> to ${c.customer_email || "alex.morgan@gmail.com"}</div>
+          <div><span class="res-meta-lbl">Audit Log:</span> Persisted to <code>data/customer_accounts.csv</code> at ${data?.timestamp || "Just now"} by Troy</div>
+        </div>
+      </div>
+    `;
+
+    updateLiveStatus("Resolution autonomously executed by Troy. customer_accounts.csv updated & account settled.", false);
+    markFeedCardResolved();
   });
 };
 

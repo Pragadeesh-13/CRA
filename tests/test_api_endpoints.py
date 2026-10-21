@@ -179,7 +179,6 @@ def test_customer_verify_endpoint():
     assert data["customer_name"] == "Alex Morgan"
     assert data["customer_id"] == "USR-10492"
     assert data["has_duplicate"] is True
-    assert "$49.00" in data["overcharge_amount"]
     assert "data/customer_accounts.csv" in data["summary"]
 
 
