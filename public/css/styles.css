@@ -2943,9 +2943,7 @@ body {
 }
 
 .troy-deliberating {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  display: block;
   padding: 4px 0;
   color: var(--text-secondary, #94a3b8);
   font-style: italic;
@@ -2953,13 +2951,7 @@ body {
 }
 
 .troy-pulse-orb {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #38bdf8;
-  box-shadow: 0 0 6px rgba(56, 189, 248, 0.75);
-  animation: pulse-dot 1.2s infinite ease-in-out;
-  flex-shrink: 0;
+  display: none !important;
 }
 
 .troy-analyzing-text {
