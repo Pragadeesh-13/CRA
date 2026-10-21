@@ -987,6 +987,72 @@ let resolutionStages = [];
 let currentStageIndex = 0;
 let cachedSplitParts = { part1: "", part2: "", part3: "" };
 
+const renderResolutionActionButtons = () => {
+  const deliberationList = document.getElementById("deliberation-list");
+  if (!deliberationList) return;
+
+  const existingBar = document.getElementById("resolution-action-bar");
+  if (existingBar) existingBar.remove();
+
+  const actionBar = document.createElement("div");
+  actionBar.id = "resolution-action-bar";
+  actionBar.className = "resolution-action-bar";
+  actionBar.innerHTML = `
+    <button class="resolution-btn btn-manual" id="btn-resolve-manually" type="button">
+      <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+        <circle cx="12" cy="7" r="4"></circle>
+      </svg>
+      <span>Resolve Manually</span>
+    </button>
+    <button class="resolution-btn btn-agent" id="btn-agent-resolve" type="button">
+      <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+      </svg>
+      <span>Let agent resolve it</span>
+    </button>
+  `;
+
+  deliberationList.appendChild(actionBar);
+
+  // Smoothly scroll to reveal action buttons
+  const isNearBottom =
+    deliberationList.scrollHeight - deliberationList.scrollTop - deliberationList.clientHeight < 240;
+  if (isNearBottom) {
+    deliberationList.scrollTop = deliberationList.scrollHeight;
+  }
+
+  // Interactive Click Handlers
+  const btnManual = document.getElementById("btn-resolve-manually");
+  const btnAgent = document.getElementById("btn-agent-resolve");
+
+  btnManual?.addEventListener("click", () => {
+    actionBar.innerHTML = `
+      <div class="resolution-result-badge manual">
+        <svg class="badge-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+          <circle cx="12" cy="7" r="4"></circle>
+        </svg>
+        <span><strong>Routed for Manual Resolution:</strong> Ticket escalated to human review & assigned to departmental queue.</span>
+      </div>
+    `;
+    updateLiveStatus("Ticket marked for manual resolution by human agent.", false);
+  });
+
+  btnAgent?.addEventListener("click", () => {
+    actionBar.innerHTML = `
+      <div class="resolution-result-badge agent">
+        <svg class="badge-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+          <polyline points="22 4 12 14.01 9 11.01"></polyline>
+        </svg>
+        <span><strong>Autonomous Resolution Executed:</strong> Troy has authorized immediate refund API call & sent customer notification.</span>
+      </div>
+    `;
+    updateLiveStatus("Resolution autonomously executed by Troy. Case closed.", false);
+  });
+};
+
 const finishTransformedStream = (fullText = "") => {
   stopTransformedStreamTicker();
 
@@ -1024,6 +1090,9 @@ const finishTransformedStream = (fullText = "") => {
       routingSpeech.innerHTML = renderMarkdown(cachedSplitParts.part3);
     }
   }
+
+  // Render action buttons after internal routing and next action steps
+  renderResolutionActionButtons();
 
   isTypingTransformed = false;
   updateLiveStatus("Resolution complete & formulated by Troy.", false);
@@ -1395,6 +1464,8 @@ const resetTroyConsole = () => {
   if (oldComm) oldComm.remove();
   const oldRouting = document.getElementById("troy-card-routing");
   if (oldRouting) oldRouting.remove();
+  const oldActionBar = document.getElementById("resolution-action-bar");
+  if (oldActionBar) oldActionBar.remove();
   cachedSplitParts = { part1: "", part2: "", part3: "" };
   resolutionStages = [];
 
