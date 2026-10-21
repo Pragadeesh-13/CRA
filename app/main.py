@@ -15,10 +15,12 @@ from app.simulation import SimulationState, RoundBarrier, Troy, CouncilOrchestra
 from app.http.sse_manager import SseManager
 from app.auth import KeyVault, SessionGuard, requires_key
 from app.database import (
+    read_all_customers,
     read_all_tickets,
+    verify_customer_billing,
     execute_agent_resolution,
     execute_manual_resolution,
-    find_ticket_by_id_or_query,
+    find_customer_by_id_or_query,
 )
 
 START_TIME = time.time()
@@ -199,10 +201,18 @@ async def get_ticket(request: Request):
     return {"story": story or None, "ticket": story or None}
 
 
+@app.get("/api/customer/verify")
+async def verify_customer(query: Optional[str] = None, customer_id: Optional[str] = None):
+    """Verifies customer billing records in data/customer_accounts.csv."""
+    res = verify_customer_billing(customer_id=customer_id, query=query)
+    return res
+
+
+@app.get("/api/database/customers")
 @app.get("/api/database/tickets")
-async def get_database_tickets():
-    tickets = read_all_tickets()
-    return {"ok": True, "tickets": tickets, "count": len(tickets), "database_file": "data/complaints_database.csv"}
+async def get_database_customers():
+    customers = read_all_customers()
+    return {"ok": True, "customers": customers, "count": len(customers), "database_file": "data/customer_accounts.csv"}
 
 
 @app.post("/api/resolve/action")
@@ -213,15 +223,15 @@ async def post_resolve_action(request: Request):
         body = {}
 
     action = body.get("action", "agent_resolve")
-    ticket_id = body.get("ticket_id")
+    customer_id = body.get("customer_id") or body.get("ticket_id")
     query = body.get("query")
-    custom_action = body.get("action_details") or "Refund Initiated ($49.00 via Payment Gateway API)"
+    custom_action = body.get("action_details") or "Refund Initiated ($49.00 via Stripe API)"
     notes = body.get("notes")
 
     if action == "manual_resolve":
-        res = execute_manual_resolution(ticket_id=ticket_id, query=query, notes=notes)
+        res = execute_manual_resolution(customer_id=customer_id, query=query, notes=notes)
     else:
-        res = execute_agent_resolution(ticket_id=ticket_id, query=query, action=custom_action, notes=notes)
+        res = execute_agent_resolution(customer_id=customer_id, query=query, action=custom_action, notes=notes)
 
     # Broadcast event so UI or stream clients know database was updated
     session = get_active_session(request)

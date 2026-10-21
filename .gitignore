@@ -17,7 +17,7 @@ firebase_creds.json
 *.npy
 *.safetensors
 *.csv
-!data/complaints_database.csv
+!data/customer_accounts.csv
 CRA_Models/bert_category_classifier/model.safetensors
 CRA_Models/faiss_index.bin
 CRA_Models/sbert_embeddings.npy

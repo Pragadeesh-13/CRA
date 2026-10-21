@@ -170,32 +170,47 @@ def test_cra_model_endpoints():
     assert "extracted_entities" in res_data["report"]
 
 
-def test_database_tickets_endpoint():
-    res = client.get("/api/database/tickets")
+def test_customer_verify_endpoint():
+    res = client.get("/api/customer/verify?query=88219")
     assert res.status_code == 200
     data = res.json()
     assert data["ok"] is True
-    assert "tickets" in data
-    assert isinstance(data["tickets"], list)
+    assert data["verified"] is True
+    assert data["customer_name"] == "Alex Morgan"
+    assert data["customer_id"] == "USR-10492"
+    assert data["has_duplicate"] is True
+    assert "$49.00" in data["overcharge_amount"]
+    assert "data/customer_accounts.csv" in data["summary"]
+
+
+def test_database_customers_endpoint():
+    res = client.get("/api/database/customers")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert "customers" in data
+    assert isinstance(data["customers"], list)
     assert data["count"] >= 1
-    # Check ticket schema
-    first = data["tickets"][0]
-    assert "ticket_id" in first
+    # Check customer schema
+    first = data["customers"][0]
+    assert "customer_id" in first
     assert "customer_name" in first
-    assert "status" in first
+    assert "subscription_plan" in first
+    assert "charges_this_month" in first
 
 
 def test_resolve_action_agent_and_manual():
     from app.database import DATABASE_FILE
     original_content = DATABASE_FILE.read_text(encoding="utf-8") if DATABASE_FILE.exists() else None
     try:
-        # 1. Test Agent Resolve
+        # 1. Test Agent Resolve (updates customer account in CSV)
         res_agent = client.post(
             "/api/resolve/action",
             json={
                 "action": "agent_resolve",
-                "ticket_id": "88219",
-                "action_details": "Refund Initiated ($49.00 via Payment Gateway API)",
+                "customer_id": "USR-10492",
+                "query": "Order #88219 charged twice",
+                "action_details": "Refund Initiated ($49.00 via Stripe API)",
                 "notes": "Automated test resolution by Troy",
             },
         )
@@ -203,16 +218,17 @@ def test_resolve_action_agent_and_manual():
         data_agent = res_agent.json()
         assert data_agent["ok"] is True
         assert data_agent["action"] == "agent_resolve"
-        assert data_agent["ticket"]["status"] == "Resolved"
-        assert data_agent["ticket"]["resolved_by"] == "Troy (Lead Autonomous Resolution Agent)"
-        assert "Refund Initiated" in data_agent["ticket"]["resolution_action"]
+        assert data_agent["customer"]["account_status"] == "Active - In Good Standing"
+        assert "Refunded" in data_agent["customer"]["refund_status"]
+        assert data_agent["customer"]["refund_id"] == "REF-88219-AUTO"
+        assert "$0.00" in data_agent["customer"]["account_balance"]
 
         # 2. Test Manual Resolve
         res_manual = client.post(
             "/api/resolve/action",
             json={
                 "action": "manual_resolve",
-                "ticket_id": "88220",
+                "customer_id": "USR-08914",
                 "notes": "Escalated for human operator review in automated test",
             },
         )
@@ -220,7 +236,7 @@ def test_resolve_action_agent_and_manual():
         data_manual = res_manual.json()
         assert data_manual["ok"] is True
         assert data_manual["action"] == "manual_resolve"
-        assert data_manual["ticket"]["status"] == "Escalated - Manual Review"
+        assert "Escalated" in data_manual["customer"]["account_status"]
     finally:
         if original_content is not None:
             DATABASE_FILE.write_text(original_content, encoding="utf-8")
