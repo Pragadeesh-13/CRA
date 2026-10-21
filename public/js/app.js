@@ -179,11 +179,17 @@ const initProviderConfig = () => {
   const modelCache = {};
   let activeLoadSeq = 0;
 
-  const getActiveModel = () => {
-    if (providerSelect?.value === "lmstudio") {
+  const getActiveModel = (providerKey) => {
+    const key = providerKey || providerSelect?.value || "";
+    if (key === "lmstudio") {
       return modelInput?.value?.trim() || PROVIDERS.lmstudio.defaultModel;
     }
-    return modelSelect?.value?.trim() || "";
+    const val = modelSelect?.value?.trim() || "";
+    const list = modelCache[key] || PROVIDERS[key]?.exampleModels || [];
+    if (val && list.length > 0 && !list.includes(val)) {
+      return PROVIDERS[key]?.defaultModel || val;
+    }
+    return val || PROVIDERS[key]?.defaultModel || "";
   };
 
   const setActiveModel = (val) => {
@@ -228,8 +234,14 @@ const initProviderConfig = () => {
   };
 
   const updateModelOptions = (providerKey, models, preferredModel) => {
-    if (!modelSelect) return;
-    const targetModel = preferredModel || modelSelect.value || PROVIDERS[providerKey]?.defaultModel || "";
+    if (!modelSelect || providerKey === "lmstudio") return;
+    const defaultForProv = PROVIDERS[providerKey]?.defaultModel || "";
+    const list = models && models.length > 0 ? models : PROVIDERS[providerKey]?.exampleModels || [];
+
+    let targetModel = preferredModel || "";
+    if (!targetModel || (list.length > 0 && !list.includes(targetModel))) {
+      targetModel = defaultForProv;
+    }
 
     modelSelect.innerHTML = "";
     const placeholderOpt = document.createElement("option");
@@ -239,7 +251,6 @@ const initProviderConfig = () => {
     if (!targetModel) placeholderOpt.selected = true;
     modelSelect.appendChild(placeholderOpt);
 
-    const list = models && models.length > 0 ? models : PROVIDERS[providerKey]?.exampleModels || [];
     list.forEach((m) => {
       const opt = document.createElement("option");
       opt.value = m;
@@ -254,10 +265,6 @@ const initProviderConfig = () => {
       opt.textContent = targetModel;
       opt.selected = true;
       modelSelect.appendChild(opt);
-    }
-
-    if (modelInput && targetModel) {
-      modelInput.value = targetModel;
     }
   };
 
@@ -1336,8 +1343,6 @@ const renderResolutionActionButtons = async () => {
     `;
 
     updateLiveStatus("Resolution autonomously executed by Troy. data/transactions.csv updated & duplicate charge refunded.", false);
-    markFeedCardResolved();
-  });
     markFeedCardResolved();
   });
 };
