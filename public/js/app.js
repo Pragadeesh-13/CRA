@@ -588,6 +588,7 @@ const renderMarkdown = (text) => {
   if (!text) return "";
 
   let src = text.replace(/\r\n/g, "\n").trim();
+  src = src.replace(/^[ \t]*[•\u2022][ \t]*/gm, "- ");
   src = src.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   src = src.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   src = src.replace(/`([^`]+)`/g, "<code>$1</code>");
@@ -619,22 +620,22 @@ const renderMarkdown = (text) => {
     }
 
     if (/^###\s+(.*)$/.test(trimmed)) {
-      formattedBlocks.push(`<h4>${trimmed.replace(/^###\s+/, "")}</h4>`);
+      formattedBlocks.push(`<h4 class="troy-section-heading">${trimmed.replace(/^###\s+/, "")}</h4>`);
       continue;
     }
     if (/^##\s+(.*)$/.test(trimmed)) {
-      formattedBlocks.push(`<h3>${trimmed.replace(/^##\s+/, "")}</h3>`);
+      formattedBlocks.push(`<h3 class="troy-section-heading">${trimmed.replace(/^##\s+/, "")}</h3>`);
       continue;
     }
     if (/^#\s+(.*)$/.test(trimmed)) {
-      formattedBlocks.push(`<h2>${trimmed.replace(/^#\s+/, "")}</h2>`);
+      formattedBlocks.push(`<h2 class="troy-section-heading">${trimmed.replace(/^#\s+/, "")}</h2>`);
       continue;
     }
 
-    if (/^[-*]\s+/m.test(trimmed)) {
+    if (/^[-*•]\s+/m.test(trimmed)) {
       const items = trimmed
         .split(/\n/)
-        .map((line) => line.replace(/^[-*]\s+/, "").trim())
+        .map((line) => line.replace(/^[-*•]\s+/, "").trim())
         .filter(Boolean)
         .map((item) => `<li>${item}</li>`)
         .join("");
@@ -685,7 +686,8 @@ const parseInlineSpans = (line) => {
 
 const parseMarkdownToStreamItems = (text) => {
   if (!text) return [];
-  const src = text.replace(/\r\n/g, "\n").trim();
+  let src = text.replace(/\r\n/g, "\n").trim();
+  src = src.replace(/^[ \t]*[•\u2022][ \t]*/gm, "- ");
   // Ensure double newlines around blockquotes and headings
   let normalized = src.replace(/((?:^|\n)(?:>[^\n]*\n?)+)/g, "\n\n$1\n\n");
   normalized = normalized.replace(/^(#{1,6}\s+[^\n]+)/gm, "\n\n$1\n\n").trim();
@@ -697,15 +699,18 @@ const parseMarkdownToStreamItems = (text) => {
     if (!trimmed) continue;
 
     if (/^###\s+(.*)$/.test(trimmed)) {
-      items.push({ tag: "h4", text: trimmed.replace(/^###\s+/, "").trim() });
+      const headingContent = trimmed.replace(/^###\s+/, "").trim();
+      items.push({ tag: "h4", className: "troy-section-heading", spans: parseInlineSpans(headingContent) });
       continue;
     }
     if (/^##\s+(.*)$/.test(trimmed)) {
-      items.push({ tag: "h3", text: trimmed.replace(/^##\s+/, "").trim() });
+      const headingContent = trimmed.replace(/^##\s+/, "").trim();
+      items.push({ tag: "h3", className: "troy-section-heading", spans: parseInlineSpans(headingContent) });
       continue;
     }
     if (/^#\s+(.*)$/.test(trimmed)) {
-      items.push({ tag: "h2", text: trimmed.replace(/^#\s+/, "").trim() });
+      const headingContent = trimmed.replace(/^#\s+/, "").trim();
+      items.push({ tag: "h2", className: "troy-section-heading", spans: parseInlineSpans(headingContent) });
       continue;
     }
 
@@ -724,8 +729,8 @@ const parseMarkdownToStreamItems = (text) => {
       continue;
     }
 
-    if (/^[-*]\s+/m.test(trimmed)) {
-      const listLines = trimmed.split(/\n/).map((l) => l.replace(/^[-*]\s+/, "").trim()).filter(Boolean);
+    if (/^[-*•]\s+/m.test(trimmed)) {
+      const listLines = trimmed.split(/\n/).map((l) => l.replace(/^[-*•]\s+/, "").trim()).filter(Boolean);
       items.push({ tag: "ul", listItems: listLines.map(parseInlineSpans) });
       continue;
     }
@@ -848,8 +853,8 @@ const showSummarizingFeedCard = (complaintText) => {
     <div class="feed-card__header">
       <span class="badge processing">Processing${getThinkingDotsHtml()}</span>
     </div>
-    <h3 class="summarizing-pulse">Analyzing complaint ticket${getThinkingDotsHtml()}</h3>
-    <p>${complaintText ? complaintText.slice(0, 140) + "..." : "Extracting intent & details..."}</p>
+    <h3 class="ticket-title summarizing-pulse">Analyzing Complaint Ticket${getThinkingDotsHtml()}</h3>
+    <p class="ticket-summary-subtext">${complaintText ? complaintText.slice(0, 150) + (complaintText.length > 150 ? "..." : "") : "Extracting ticket title & summary with LLM..."}</p>
   `;
   updateFeedEmptyState();
 };
@@ -870,9 +875,9 @@ const setActiveFeedCard = (story) => {
     <div class="feed-card__header">
       <span class="badge">Active</span>
     </div>
-    <h3>${title}</h3>
-    <p>${summary}</p>
-    <div style="font-size:10px; color:var(--muted); margin-top:6px;">${story.source || "Customer Ticket"} • ${time}</div>
+    <h3 class="ticket-title">${title}</h3>
+    <p class="ticket-summary-subtext">${summary}</p>
+    <div class="ticket-card-footer">${story.source || "Customer Ticket"} &middot; ${time}</div>
   `;
   updateFeedEmptyState();
 };
@@ -902,8 +907,20 @@ const stopTransformedStreamTicker = () => {
   }
 };
 
+const clearDeliberatingPlaceholder = (container) => {
+  if (container) {
+    const deliberatingEl = container.querySelector(".troy-deliberating");
+    if (deliberatingEl) deliberatingEl.remove();
+    if (container.classList.contains("formulating")) {
+      container.classList.remove("formulating");
+      container.classList.add("streaming");
+    }
+  }
+};
+
 const executeStreamAction = (action, container) => {
   if (!action || !container) return;
+  clearDeliberatingPlaceholder(container);
 
   switch (action.type) {
     case "create_block":
@@ -951,66 +968,163 @@ const executeStreamAction = (action, container) => {
   }
 };
 
-// ── Split Resolution Sections into 3 Dedicated Chatboxes ───────────────────
-const stripSectionNumbers = (text) => {
-  if (!text) return "";
-  let src = text;
-  // Strip numbers from 1. Executive Assessment, 2. Root Cause Analysis, 3. Customer Communication, 4. Internal Routing
-  src = src.replace(/(^|\n)([#*]{0,4}\s*)1[\.:\)]\s*(\*{0,2}Executive\s+Assessment)/gi, "$1$2$3");
-  src = src.replace(/(^|\n)([#*]{0,4}\s*)2[\.:\)]\s*(\*{0,2}Root\s+Cause)/gi, "$1$2$3");
-  src = src.replace(/(^|\n)([#*]{0,4}\s*)3[\.:\)]\s*(\*{0,2}Customer\s+Communication)/gi, "$1$2$3");
-  src = src.replace(/(^|\n)([#*]{0,4}\s*)4[\.:\)]\s*(\*{0,2}Internal\s+Routing)/gi, "$1$2$3");
-  return src;
+// ── Multi-Prompt Resolution Architecture: 1 Dedicated Prompt = 1 Chatbox ──
+const SECTION_DEFINITIONS = [
+  {
+    key: "part1",
+    id: "executive",
+    title: "Executive Assessment & Category Confirmation",
+    cardId: "troy-card",
+    speechId: "troy-speech",
+    loadingText: "Troy is performing Executive Assessment",
+    pattern: /(?:^|\n)[ \t]*(?:[-*•#>]|\d+[\.:\)])*[ \t]*(?:\*{1,3})?[ \t]*(?:Executive\s+Assessment|Executive\s+Summary)[^\n]*/i,
+  },
+  {
+    key: "part2",
+    id: "root_cause",
+    title: "Root Cause Analysis & Precedent Alignment",
+    cardId: "troy-card-root-cause",
+    speechId: "troy-root-cause-speech",
+    loadingText: "Troy is performing Root Cause Analysis",
+    pattern: /(?:^|\n)[ \t]*(?:[-*•#>]|\d+[\.:\)])*[ \t]*(?:\*{1,3})?[ \t]*Root\s+Cause(?:\s+Analysis)?[^\n]*/i,
+  },
+  {
+    key: "part3",
+    id: "customer_comms",
+    title: "Customer Communication Strategy",
+    cardId: "troy-card-communication",
+    speechId: "troy-communication-speech",
+    loadingText: "Troy is formulating Customer Communication Strategy",
+    pattern: /(?:^|\n)[ \t]*(?:[-*•#>]|\d+[\.:\)])*[ \t]*(?:\*{1,3})?[ \t]*Customer\s+Comm(?:unication(?:\s+Strategy)?|s)[^\n]*/i,
+  },
+  {
+    key: "part4",
+    id: "internal_routing",
+    title: "Internal Routing & Next Action Steps",
+    cardId: "troy-card-routing",
+    speechId: "troy-routing-speech",
+    loadingText: "Troy is determining Internal Routing & Next Steps",
+    pattern: /(?:^|\n)[ \t]*(?:[-*•#>]|\d+[\.:\)])*[ \t]*(?:\*{1,3})?[ \t]*Internal\s+Routing[^\n]*/i,
+  },
+];
+
+const cleanHeadingTitle = (line, defaultTitle) => {
+  if (!line) return defaultTitle;
+  let title = line.trim();
+  title = title.replace(/^(?:[#*•\->]|\d+[\.:\)])+[ \t]*/, "");
+  title = title.replace(/^\*+|\*+$/g, "").trim();
+  title = title.replace(/:+$/, "").trim();
+  title = title.replace(/\s*\(exact\s+empathetic\s+message[^\)]*\)/i, "").trim();
+  return title || defaultTitle;
+};
+
+const formatSectionWithBoldHeading = (rawText, defaultTitle) => {
+  if (!rawText) return "";
+  let text = rawText.replace(/\r\n/g, "\n").trim();
+  text = text.replace(/^[ \t]*[•\u2022][ \t]*/gm, "- ");
+
+  const lines = text.split("\n");
+  let headingLine = "";
+  let bodyLines = [];
+
+  let firstLineIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim()) {
+      firstLineIdx = i;
+      break;
+    }
+  }
+
+  const headingPattern = /(?:Executive\s+Assessment|Root\s+Cause|Customer\s+Comm|Internal\s+Routing)/i;
+
+  if (firstLineIdx !== -1) {
+    const candidate = lines[firstLineIdx].trim();
+    if (headingPattern.test(candidate)) {
+      headingLine = candidate;
+      bodyLines = lines.slice(firstLineIdx + 1);
+    } else {
+      bodyLines = lines;
+    }
+  } else {
+    bodyLines = lines;
+  }
+
+  const cleanTitle = cleanHeadingTitle(headingLine, defaultTitle);
+  let body = bodyLines.join("\n").trim();
+
+  // Format Subject: ... nicely in Customer Communication Strategy
+  body = body.replace(/^[ \t]*[-*•]?\s*Subject:\s*(.*)$/im, "**Subject:** $1");
+
+  if (body) {
+    return `### **${cleanTitle}**\n\n${body}`;
+  }
+  return `### **${cleanTitle}**`;
 };
 
 const splitResolutionSections = (fullText) => {
-  if (!fullText) return { part1: "", part2: "", part3: "" };
+  if (!fullText) return { part1: "", part2: "", part3: "", part4: "" };
 
   const text = fullText.trim();
+  const matches = [];
 
-  // Pattern matching Section 3: "Customer Communication Strategy" (with or without 3.)
-  const p3Match = text.match(/(?:\n|^)(?:[#*]{0,4}\s*)?(?:(?:3[\.:\)]\s*)?(?:\*{0,2})Customer\s+Communication)/i);
-
-  // Pattern matching Section 4: "Internal Routing & Next Action Steps" (with or without 4.)
-  const p4Match = text.match(/(?:\n|^)(?:[#*]{0,4}\s*)?(?:(?:4[\.:\)]\s*)?(?:\*{0,2})Internal\s+Routing)/i);
-
-  const idx3 = p3Match ? p3Match.index : -1;
-  const idx4 = p4Match ? p4Match.index : -1;
-
-  let part1 = "";
-  let part2 = "";
-  let part3 = "";
-
-  if (idx3 !== -1 && idx4 !== -1 && idx3 < idx4) {
-    part1 = text.slice(0, idx3).trim();
-    part2 = text.slice(idx3, idx4).trim();
-    part3 = text.slice(idx4).trim();
-  } else if (idx3 !== -1 && idx4 === -1) {
-    part1 = text.slice(0, idx3).trim();
-    part2 = text.slice(idx3).trim();
-    part3 = "";
-  } else if (idx4 !== -1 && idx3 === -1) {
-    part1 = text.slice(0, idx4).trim();
-    part2 = "";
-    part3 = text.slice(idx4).trim();
-  } else {
-    part1 = text;
+  for (const def of SECTION_DEFINITIONS) {
+    const m = def.pattern.exec(text);
+    if (m) {
+      const hasLeadingNewline = m[0].startsWith("\n");
+      const startIndex = m.index + (hasLeadingNewline ? 1 : 0);
+      matches.push({
+        def,
+        startIndex,
+      });
+    }
   }
 
-  return {
-    part1: stripSectionNumbers(part1),
-    part2: stripSectionNumbers(part2),
-    part3: stripSectionNumbers(part3),
-  };
+  if (matches.length === 0) {
+    return {
+      part1: formatSectionWithBoldHeading(text, SECTION_DEFINITIONS[0].title),
+      part2: "",
+      part3: "",
+      part4: "",
+    };
+  }
+
+  matches.sort((a, b) => a.startIndex - b.startIndex);
+  const result = { part1: "", part2: "", part3: "", part4: "" };
+
+  for (let i = 0; i < matches.length; i++) {
+    const cur = matches[i];
+    const next = matches[i + 1];
+    let sliceEnd = next ? next.startIndex : text.length;
+    let sliceStart = cur.startIndex;
+
+    if (i === 0 && cur.startIndex > 0 && cur.def.key === "part1") {
+      sliceStart = 0;
+    }
+
+    const rawSlice = text.slice(sliceStart, sliceEnd).trim();
+    result[cur.def.key] = formatSectionWithBoldHeading(rawSlice, cur.def.title);
+  }
+
+  return result;
 };
 
-const createTroyChatbox = (cardId, speechId) => {
+const createTroyChatbox = (cardId, speechId, loadingText = "") => {
   let card = document.getElementById(cardId);
   const deliberationList = document.getElementById("deliberation-list");
+  const def = SECTION_DEFINITIONS.find((d) => d.cardId === cardId || d.speechId === speechId);
+  const effectiveLoadingText = loadingText || def?.loadingText || "";
+
+  const initialSpeechContent = effectiveLoadingText
+    ? `<div class="troy-deliberating"><span class="troy-pulse-orb"></span><span class="troy-analyzing-text">${effectiveLoadingText}${getThinkingDotsHtml()}</span></div>`
+    : "";
+  const initialClass = effectiveLoadingText
+    ? "agent-speech troy-speech formulating"
+    : "agent-speech troy-speech";
+
   if (!card) {
     card = document.createElement("div");
     card.id = cardId;
-    card.className = "agent-card troy";
+    card.className = "agent-card troy speaking";
     card.innerHTML = `
       <div class="agent-avatar">
         <video class="agent-avatar-video" autoplay loop muted playsinline>
@@ -1020,32 +1134,76 @@ const createTroyChatbox = (cardId, speechId) => {
       </div>
       <div>
         <div class="agent-name">Troy</div>
-        <div class="agent-speech troy-speech" id="${speechId}"></div>
+        <div class="${initialClass}" id="${speechId}">${initialSpeechContent}</div>
       </div>
     `;
-    deliberationList?.appendChild(card);
+
+    const actionBar = document.getElementById("resolution-action-bar");
+    if (actionBar && deliberationList) {
+      deliberationList.insertBefore(card, actionBar);
+    } else {
+      deliberationList?.appendChild(card);
+    }
+
     const avatarEl = card.querySelector(".agent-avatar");
     if (avatarEl) {
       initTransparentVideoCanvas(avatarEl);
     }
+  } else {
+    const speechEl = document.getElementById(speechId);
+    if (speechEl && !speechEl.textContent.trim() && effectiveLoadingText) {
+      speechEl.className = initialClass;
+      speechEl.innerHTML = initialSpeechContent;
+      card.classList.add("speaking");
+    }
   }
+
+  if (deliberationList && effectiveLoadingText) {
+    const isNearBottom =
+      deliberationList.scrollHeight - deliberationList.scrollTop - deliberationList.clientHeight < 240;
+    if (isNearBottom) {
+      deliberationList.scrollTop = deliberationList.scrollHeight;
+    }
+  }
+
   return card;
+};
+
+const renderSectionChatbox = (secIndex, rawText) => {
+  const def = SECTION_DEFINITIONS[secIndex];
+  if (!def || !rawText) return;
+
+  const card = def.cardId === "troy-card"
+    ? (document.getElementById("troy-card") || document.getElementById("booting-card"))
+    : createTroyChatbox(def.cardId, def.speechId, def.loadingText);
+
+  if (card) {
+    card.id = def.cardId;
+    card.classList.remove("speaking");
+  }
+
+  const speechEl = document.getElementById(def.speechId);
+  if (speechEl) {
+    speechEl.className = "agent-speech troy-speech";
+    const formatted = formatSectionWithBoldHeading(rawText, def.title);
+    speechEl.innerHTML = renderMarkdown(formatted);
+  }
 };
 
 let resolutionStages = [];
 let currentStageIndex = 0;
-let cachedSplitParts = { part1: "", part2: "", part3: "" };
+let cachedSplitParts = { part1: "", part2: "", part3: "", part4: "" };
+let isRenderingActionBar = false;
+let hasRenderedActionBar = false;
 
 const renderResolutionActionButtons = async () => {
   const deliberationList = document.getElementById("deliberation-list");
   if (!deliberationList) return;
 
-  const existingBar = document.getElementById("resolution-action-bar");
-  if (existingBar) existingBar.remove();
+  if (isRenderingActionBar || hasRenderedActionBar) return;
+  isRenderingActionBar = true;
 
-  const actionBar = document.createElement("div");
-  actionBar.id = "resolution-action-bar";
-  actionBar.className = "resolution-action-bar";
+  document.querySelectorAll("#resolution-action-bar, .resolution-action-bar").forEach((el) => el.remove());
 
   const cat = cachedCraReport?.predicted_category || "Refunds";
   const q = topicInput?.value || "88219";
@@ -1061,6 +1219,12 @@ const renderResolutionActionButtons = async () => {
   } catch (_) {
     verifyData = null;
   }
+
+  document.querySelectorAll("#resolution-action-bar, .resolution-action-bar").forEach((el) => el.remove());
+
+  const actionBar = document.createElement("div");
+  actionBar.id = "resolution-action-bar";
+  actionBar.className = "resolution-action-bar";
 
   const CATEGORY_SPECIALIST_MAP = {
     "Refunds": "Billing Team Specialist",
@@ -1101,15 +1265,18 @@ const renderResolutionActionButtons = async () => {
 
   const cycle = verifyData?.billing_cycle || cust.billing_cycle || "October 2026";
   const isAlreadyRefunded = Boolean(
-    verifyData?.is_already_refunded ||
-    verifyData?.already_refunded ||
-    cust.is_already_refunded ||
-    cust.already_refunded ||
-    cust.refund_status === "Already Refunded" ||
-    (cust.refund_id && String(cust.refund_status || "").includes("Refunded"))
+    verifyData?.is_already_refunded !== undefined
+      ? verifyData.is_already_refunded
+      : (verifyData?.already_refunded ||
+         cust.is_already_refunded ||
+         cust.already_refunded ||
+         cust.refund_status === "Already Refunded")
   );
-  const activeRefId = verifyData?.refund_id || cust.refund_id || verifyData?.reference_id || "REF-88219-AUTO";
+  const activeRefId = verifyData?.refund_id || cust.refund_id || verifyData?.reference_id || (cust.reference_order_id ? "REF-" + cust.reference_order_id.replace("ORD-", "") + "-AUTO" : "REF-88219-AUTO");
   const activeRefDate = verifyData?.refunded_at || cust.refunded_at || "Oct 21, 2026";
+
+  const dupTxnId = verifyData?.duplicate_transaction?.transaction_id || (cust.transaction_2 ? cust.transaction_2.split(' ')[0] : "TXN-9012");
+  const retTxnId = verifyData?.retained_transaction?.transaction_id || (cust.transaction_1 ? cust.transaction_1.split(' ')[0] : "TXN-9011");
 
   if (!isRefundCategory) {
     // Non-refund category: Authentication & Access, Bugs & Errors, Data Sync, Integrations & API, etc.
@@ -1164,13 +1331,13 @@ const renderResolutionActionButtons = async () => {
           <div class="verify-detail-item"><span class="v-label">Customer ID:</span> <strong>${cust.customer_id}</strong> (${cust.customer_email})</div>
           <div class="verify-detail-item"><span class="v-label">Plan & Cycle:</span> <strong>${cust.subscription_plan}</strong> (${cycle})</div>
           <div class="verify-detail-item"><span class="v-label">Account Balance:</span> <span class="v-settled">$0.00 (Settled)</span> &middot; <code>${activeRefId}</code></div>
-          <div class="verify-detail-item"><span class="v-label">Agent Finding:</span> TXN-9012 already refunded; TXN-9011 active. No duplicate payout needed.</div>
+          <div class="verify-detail-item"><span class="v-label">Agent Finding:</span> ${dupTxnId} already refunded; ${retTxnId} active. No duplicate payout needed.</div>
         `
       : `
           <div class="verify-detail-item"><span class="v-label">Customer ID:</span> <strong>${cust.customer_id}</strong> (${cust.customer_email})</div>
           <div class="verify-detail-item"><span class="v-label">Plan & Cycle:</span> <strong>${cust.subscription_plan}</strong> (${cycle})</div>
           <div class="verify-detail-item"><span class="v-label">Ledger Records:</span> <span class="v-alert">${chargesCount} transaction records in ${cycle} ($${totBilled})</span></div>
-          <div class="verify-detail-item"><span class="v-label">Agent Decision:</span> Refund redundant <strong>TXN-9012 ($${planRate})</strong> &amp; retain TXN-9011</div>
+          <div class="verify-detail-item"><span class="v-label">Agent Decision:</span> Refund redundant <strong>${dupTxnId} ($${planRate})</strong> &amp; retain ${retTxnId}</div>
         `;
 
     const agentBtnText = isAlreadyRefunded ? "Verify &amp; Reconfirm Refund" : "Let agent resolve it";
@@ -1212,6 +1379,8 @@ const renderResolutionActionButtons = async () => {
   }
 
   deliberationList.appendChild(actionBar);
+  hasRenderedActionBar = true;
+  isRenderingActionBar = false;
 
   // Smoothly scroll to reveal action buttons
   const isNearBottom =
@@ -1244,10 +1413,10 @@ const renderResolutionActionButtons = async () => {
     } else {
       manualSteps = [
         { text: "Accessing internal customer transaction ledger (data/transactions.csv)...", delay: 650 },
-        { text: `Routing ticket #${targetRefId} and transaction TXN-9012 to Human Billing Specialist queue...`, delay: 700 },
-        { text: "Flagging duplicate charge TXN-9012 for manual ledger review...", delay: 750 },
+        { text: `Routing ticket #${targetRefId} and transaction ${dupTxnId} to Human Billing Specialist queue...`, delay: 700 },
+        { text: `Flagging duplicate charge ${dupTxnId} for manual ledger review...`, delay: 750 },
         { text: "Logging escalation audit record in data/transactions.csv...", delay: 650 },
-        { text: `Dispatching escalation notice to ${cust.customer_email || "alex.morgan@gmail.com"}...`, delay: 600 },
+        { text: `Dispatching escalation notice to ${cust.customer_email || "customer"}...`, delay: 600 },
       ];
     }
 
@@ -1358,11 +1527,11 @@ const renderResolutionActionButtons = async () => {
             <span class="db-sync-tag manual">data/transactions.csv Flagged</span>
           </div>
           <div class="result-card-body">
-            <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || "Alex Morgan"}</strong> (${c.customer_id || "USR-10492"} &middot; ${c.customer_email || "alex.morgan@gmail.com"})</div>
+            <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || cust.customer_name || "Alex Morgan"}</strong> (${c.customer_id || cust.customer_id || "USR-10492"} &middot; ${c.customer_email || cust.customer_email || "alex.morgan@gmail.com"})</div>
             <div><span class="res-meta-lbl">Account Status:</span> <span class="status-badge manual">${c.account_status || "Escalated - Billing Specialist Audit"}</span></div>
             <div><span class="res-meta-lbl">Assigned Queue:</span> <strong>${queueName}</strong> (Target SLA: 18.13 hrs)</div>
-            <div><span class="res-meta-lbl">Transaction Reference:</span> <code>TXN-9012 ($${planRate})</code> flagged for human review in <code>data/transactions.csv</code></div>
-            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Yes - Escalation Notice Sent</span> to ${c.customer_email || "alex.morgan@gmail.com"}</div>
+            <div><span class="res-meta-lbl">Transaction Reference:</span> <code>${dupTxnId} ($${planRate})</code> flagged for human review in <code>data/transactions.csv</code></div>
+            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Yes - Escalation Notice Sent</span> to ${c.customer_email || cust.customer_email || "alex.morgan@gmail.com"}</div>
             <div><span class="res-meta-lbl">Ledger Audit:</span> Flagged in <code>data/transactions.csv</code> at ${data?.timestamp || "Just now"}</div>
           </div>
         </div>
@@ -1387,12 +1556,12 @@ const renderResolutionActionButtons = async () => {
         { text: `Dispatching confirmation notice to ${cust.customer_email}...`, delay: 600 },
       ];
     } else {
-      autoSteps = isAlreadyRefunded
+      autoSteps = verifyData?.steps || (isAlreadyRefunded
         ? [
             { text: "Accessing internal transaction ledger (data/transactions.csv)...", delay: 650 },
             { text: `Locating customer account: ${cust.customer_name || "Alex Morgan"} (${cust.customer_id || "USR-10492"})...`, delay: 700 },
-            { text: `Auditing ledger: Accidental duplicate record TXN-9012 was ALREADY refunded under ${activeRefId}...`, delay: 750 },
-            { text: `Verifying account balance: Active renewal TXN-9011 ($${planRate}) valid; account balance is $0.00...`, delay: 750 },
+            { text: `Auditing ledger: Accidental duplicate record ${dupTxnId} was ALREADY refunded under ${activeRefId}...`, delay: 750 },
+            { text: `Verifying account balance: Active renewal ${retTxnId} ($${planRate}) valid; account balance is $0.00...`, delay: 750 },
             { text: "Duplicate payout check: Secondary payout blocked to prevent duplicate billing credit...", delay: 700 },
             { text: `Re-dispatching refund verification notice (${activeRefId}) to ${cust.customer_email || "alex.morgan@gmail.com"}...`, delay: 600 },
           ]
@@ -1400,11 +1569,11 @@ const renderResolutionActionButtons = async () => {
             { text: "Accessing internal transaction ledger (data/transactions.csv)...", delay: 700 },
             { text: `Found user transaction history: ${cust.customer_name || "Alex Morgan"} (${cust.customer_id || "USR-10492"})...`, delay: 750 },
             { text: `Analyzing billing cycle ${cycle}: Found 2 settled transaction records ($${planRate} each)...`, delay: 800 },
-            { text: `Decision formulated: Refund redundant duplicate record TXN-9012 ($${planRate}) & retain valid renewal TXN-9011...`, delay: 850 },
-            { text: `Sending refund: Authorizing $${planRate} reversal via Stripe Gateway API (REF-88219-AUTO)...`, delay: 850 },
-            { text: "Making changes in database: Updating TXN-9012 status to 'Refunded' in data/transactions.csv...", delay: 800 },
+            { text: `Decision formulated: Refund redundant duplicate record ${dupTxnId} ($${planRate}) & retain valid renewal ${retTxnId}...`, delay: 850 },
+            { text: `Sending refund: Authorizing $${planRate} reversal via Stripe Gateway API (${activeRefId})...`, delay: 850 },
+            { text: `Making changes in database: Updating ${dupTxnId} status to 'Refunded' in data/transactions.csv...`, delay: 800 },
             { text: `Dispatching refund confirmation receipt to ${cust.customer_email || "alex.morgan@gmail.com"}...`, delay: 650 },
-          ];
+          ]);
     }
 
     const engineTitle = !isRefundCategory
@@ -1442,7 +1611,7 @@ const renderResolutionActionButtons = async () => {
           : (isAlreadyRefunded ? `Refund Verified & Confirmed (${activeRefId})` : `Refund Initiated ($${planRate} via Stripe API)`),
         notes: !isRefundCategory
           ? `Autonomous ${cat} resolution executed by Troy under reference ${verifyData?.reference_id || activeRefId}.`
-          : (isAlreadyRefunded ? `Autonomous audit verified that TXN-9012 was already refunded under ${activeRefId}. Duplicate payout blocked.` : "Autonomous override executed by Troy. Accidental double renewal debit reversed in Stripe API."),
+          : (isAlreadyRefunded ? `Autonomous audit verified that ${dupTxnId} was already refunded under ${activeRefId}. Duplicate payout blocked.` : `Autonomous override executed by Troy. Accidental double renewal debit reversed in Stripe API under ${activeRefId}.`),
       }),
     })
       .then((r) => r.json())
@@ -1527,13 +1696,13 @@ const renderResolutionActionButtons = async () => {
             <span class="db-sync-tag agent">data/transactions.csv Verified</span>
           </div>
           <div class="result-card-body">
-            <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || "Alex Morgan"}</strong> (${c.customer_id || "USR-10492"} &middot; ${c.customer_email || "alex.morgan@gmail.com"})</div>
-            <div><span class="res-meta-lbl">Subscription Plan:</span> ${c.subscription_plan || "Pro Tier ($49.00/mo)"}</div>
+            <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || cust.customer_name || "Alex Morgan"}</strong> (${c.customer_id || cust.customer_id || "USR-10492"} &middot; ${c.customer_email || cust.customer_email || "alex.morgan@gmail.com"})</div>
+            <div><span class="res-meta-lbl">Subscription Plan:</span> ${c.subscription_plan || cust.subscription_plan || "Pro Tier ($49.00/mo)"}</div>
             <div><span class="res-meta-lbl">Account Balance:</span> <span class="status-badge verified">$0.00 (Settled - Good Standing)</span></div>
-            <div><span class="res-meta-lbl">Ledger Status:</span> <strong>TXN-9012 already Refunded ($${planRate}) under ${c.refund_id || activeRefId}</strong></div>
-            <div><span class="res-meta-lbl">Active Renewal:</span> <strong>TXN-9011 ($${planRate}) active &amp; settled</strong></div>
+            <div><span class="res-meta-lbl">Ledger Status:</span> <strong>${dupTxnId} already Refunded ($${planRate}) under ${c.refund_id || activeRefId}</strong></div>
+            <div><span class="res-meta-lbl">Active Renewal:</span> <strong>${retTxnId} ($${planRate}) active &amp; settled</strong></div>
             <div><span class="res-meta-lbl">Duplicate Prevention:</span> <span class="status-badge agent">No Secondary Charge / Payout Required</span></div>
-            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Receipt Re-Dispatched (${c.refund_id || activeRefId})</span> to ${c.customer_email || "alex.morgan@gmail.com"}</div>
+            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Receipt Re-Dispatched (${c.refund_id || activeRefId})</span> to ${c.customer_email || cust.customer_email || "alex.morgan@gmail.com"}</div>
             <div><span class="res-meta-lbl">Ledger Audit:</span> Verified in <code>data/transactions.csv</code> &middot; Audited by Troy</div>
           </div>
         </div>
@@ -1551,14 +1720,14 @@ const renderResolutionActionButtons = async () => {
             <span class="db-sync-tag agent">data/transactions.csv Synced</span>
           </div>
           <div class="result-card-body">
-            <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || "Alex Morgan"}</strong> (${c.customer_id || "USR-10492"} &middot; ${c.customer_email || "alex.morgan@gmail.com"})</div>
-            <div><span class="res-meta-lbl">Subscription Plan:</span> ${c.subscription_plan || "Pro Tier ($49.00/mo)"}</div>
+            <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || cust.customer_name || "Alex Morgan"}</strong> (${c.customer_id || cust.customer_id || "USR-10492"} &middot; ${c.customer_email || cust.customer_email || "alex.morgan@gmail.com"})</div>
+            <div><span class="res-meta-lbl">Subscription Plan:</span> ${c.subscription_plan || cust.subscription_plan || "Pro Tier ($49.00/mo)"}</div>
             <div><span class="res-meta-lbl">Ledger Audit:</span> <span class="status-badge verified">2 Charges in Single Cycle Reconciled</span></div>
-            <div><span class="res-meta-lbl">Reconciled Ledger Action:</span> <strong>TXN-9012 marked as Refunded ($${planRate}) in data/transactions.csv</strong></div>
-            <div><span class="res-meta-lbl">Active Renewal Retained:</span> <strong>TXN-9011 ($${planRate}) retained as settled monthly renewal</strong></div>
-            <div><span class="res-meta-lbl">Receipt &amp; ID:</span> <code>${c.refund_id || "REF-88219-AUTO"}</code> | <span class="status-badge agent">Active - In Good Standing</span></div>
-            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Yes - Confirmation Dispatched</span> to ${c.customer_email || "alex.morgan@gmail.com"}</div>
-            <div><span class="res-meta-lbl">Audit Log:</span> Row TXN-9012 updated in <code>data/transactions.csv</code> at ${data?.timestamp || "Just now"} by Troy</div>
+            <div><span class="res-meta-lbl">Reconciled Ledger Action:</span> <strong>${dupTxnId} marked as Refunded ($${planRate}) in data/transactions.csv</strong></div>
+            <div><span class="res-meta-lbl">Active Renewal Retained:</span> <strong>${retTxnId} ($${planRate}) retained as settled monthly renewal</strong></div>
+            <div><span class="res-meta-lbl">Receipt &amp; ID:</span> <code>${c.refund_id || activeRefId}</code> | <span class="status-badge agent">Active - In Good Standing</span></div>
+            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Yes - Confirmation Dispatched</span> to ${c.customer_email || cust.customer_email || "alex.morgan@gmail.com"}</div>
+            <div><span class="res-meta-lbl">Audit Log:</span> Row ${dupTxnId} updated in <code>data/transactions.csv</code> at ${data?.timestamp || "Just now"} by Troy</div>
           </div>
         </div>
       `;
@@ -1570,40 +1739,36 @@ const renderResolutionActionButtons = async () => {
 
 const finishTransformedStream = (fullText = "") => {
   stopTransformedStreamTicker();
+  stopMlAnalyzingCycle();
 
-  if (fullText && !cachedSplitParts.part1) {
-    cachedSplitParts = splitResolutionSections(fullText);
+  const textToUse = fullText || cachedResolutionText || streamedSpeechText || "";
+  if (textToUse && (!cachedSplitParts.part1 || !cachedSplitParts.part2)) {
+    cachedSplitParts = splitResolutionSections(textToUse);
   }
 
-  // Complete Chatbox 1: Executive Assessment & Root Cause Analysis (1 & 2)
-  const troySpeech = document.getElementById("troy-speech");
-  const troyCard = document.getElementById("troy-card") || document.getElementById("booting-card");
-  if (troyCard) troyCard.classList.remove("speaking");
-  if (troySpeech && cachedSplitParts.part1) {
-    troySpeech.className = "agent-speech troy-speech";
-    troySpeech.innerHTML = renderMarkdown(cachedSplitParts.part1);
+  // Ensure preliminary assessment card is delivered if report was cached
+  if (!hasDeliveredPreliminary && cachedCraReport) {
+    deliverPreliminaryAssessment(cachedCraReport);
   }
 
-  // Complete Chatbox 2: Customer Communication Strategy (3)
+  // Complete Chatbox 1: Executive Assessment & Category Confirmation
+  if (cachedSplitParts.part1) {
+    renderSectionChatbox(0, cachedSplitParts.part1);
+  }
+
+  // Complete Chatbox 2: Root Cause Analysis & Precedent Alignment
   if (cachedSplitParts.part2) {
-    const commCard = createTroyChatbox("troy-card-communication", "troy-communication-speech");
-    commCard.classList.remove("speaking");
-    const commSpeech = document.getElementById("troy-communication-speech");
-    if (commSpeech) {
-      commSpeech.className = "agent-speech troy-speech";
-      commSpeech.innerHTML = renderMarkdown(cachedSplitParts.part2);
-    }
+    renderSectionChatbox(1, cachedSplitParts.part2);
   }
 
-  // Complete Chatbox 3: Internal Routing & Next Action Steps (4)
+  // Complete Chatbox 3: Customer Communication Strategy
   if (cachedSplitParts.part3) {
-    const routingCard = createTroyChatbox("troy-card-routing", "troy-routing-speech");
-    routingCard.classList.remove("speaking");
-    const routingSpeech = document.getElementById("troy-routing-speech");
-    if (routingSpeech) {
-      routingSpeech.className = "agent-speech troy-speech";
-      routingSpeech.innerHTML = renderMarkdown(cachedSplitParts.part3);
-    }
+    renderSectionChatbox(2, cachedSplitParts.part3);
+  }
+
+  // Complete Chatbox 4: Internal Routing & Next Action Steps
+  if (cachedSplitParts.part4) {
+    renderSectionChatbox(3, cachedSplitParts.part4);
   }
 
   // Render action buttons after internal routing and next action steps
@@ -1612,15 +1777,13 @@ const finishTransformedStream = (fullText = "") => {
   isTypingTransformed = false;
   updateLiveStatus("Resolution complete & formulated by Troy.", false);
 
-  if (pendingResolutionEnd || !isResolving) {
-    pendingResolutionEnd = false;
-    isResolving = false;
-    markFeedCardResolved();
-    if (fetchNextBtn) {
-      fetchNextBtn.disabled = false;
-      fetchNextBtn.classList.remove("is-loading");
-      fetchNextBtn.textContent = "Begin Resolution";
-    }
+  pendingResolutionEnd = false;
+  isResolving = false;
+  markFeedCardResolved();
+  if (fetchNextBtn) {
+    fetchNextBtn.disabled = false;
+    fetchNextBtn.classList.remove("is-loading");
+    fetchNextBtn.textContent = "Begin Resolution";
   }
 };
 
@@ -1632,15 +1795,21 @@ const startStage = (index) => {
 
   currentStageIndex = index;
   const stage = resolutionStages[index];
+  const def = SECTION_DEFINITIONS[index] || SECTION_DEFINITIONS[0];
 
   // If stage container element is not yet created, create the chatbox now
   if (!stage.container) {
-    const card = createTroyChatbox(stage.cardId, stage.speechId);
+    const card = createTroyChatbox(stage.cardId, stage.speechId, def.loadingText);
     card.classList.add("speaking");
     stage.container = document.getElementById(stage.speechId);
     if (stage.container) {
-      stage.container.className = "agent-speech troy-speech streaming";
-      stage.container.innerHTML = "";
+      stage.container.className = "agent-speech troy-speech streaming formulating";
+      stage.container.innerHTML = `
+        <div class="troy-deliberating">
+          <span class="troy-pulse-orb"></span>
+          <span class="troy-analyzing-text">${def.loadingText}${getThinkingDotsHtml()}</span>
+        </div>
+      `;
     }
     const items = parseMarkdownToStreamItems(stage.rawText);
     stage.actions = buildStreamingActions(items);
@@ -1728,10 +1897,11 @@ const startTransformedStream = (rawText) => {
   troySpeech.className = "agent-speech troy-speech streaming";
   troySpeech.innerHTML = "";
 
-  // Prepare the 3 chatbox stages:
-  // Stage 1: Assessment & Root Cause (1 & 2) in Chatbox 1
-  // Stage 2: Customer Communication Strategy (3) in Chatbox 2
-  // Stage 3: Internal Routing & Next Action Steps (4) in Chatbox 3
+  // Prepare the 4 chatbox stages (1 prompt/section at a time = 1 chatbox at a time):
+  // Stage 0: Executive Assessment in Chatbox 1
+  // Stage 1: Root Cause Analysis in Chatbox 2
+  // Stage 2: Customer Communication Strategy in Chatbox 3
+  // Stage 3: Internal Routing & Next Action Steps in Chatbox 4
   resolutionStages = [];
 
   if (parts.part1) {
@@ -1746,8 +1916,8 @@ const startTransformedStream = (rawText) => {
 
   if (parts.part2) {
     resolutionStages.push({
-      cardId: "troy-card-communication",
-      speechId: "troy-communication-speech",
+      cardId: "troy-card-root-cause",
+      speechId: "troy-root-cause-speech",
       rawText: parts.part2,
       fullText: parts.part2,
     });
@@ -1755,10 +1925,19 @@ const startTransformedStream = (rawText) => {
 
   if (parts.part3) {
     resolutionStages.push({
-      cardId: "troy-card-routing",
-      speechId: "troy-routing-speech",
+      cardId: "troy-card-communication",
+      speechId: "troy-communication-speech",
       rawText: parts.part3,
       fullText: parts.part3,
+    });
+  }
+
+  if (parts.part4) {
+    resolutionStages.push({
+      cardId: "troy-card-routing",
+      speechId: "troy-routing-speech",
+      rawText: parts.part4,
+      fullText: parts.part4,
     });
   }
 
@@ -1839,22 +2018,52 @@ const onMlCycleComplete = () => {
   stopMlAnalyzingCycle();
   deliverPreliminaryAssessment(cachedCraReport);
 
-  // If LM Studio has already finished generating during the 5s cycle, stream resolution now!
-  if (cachedResolutionText) {
-    startTransformedStream(cachedResolutionText);
+  // If any multi-prompt sections already finished generating during 5s cycle, render them now
+  if (cachedSplitParts.part1) {
+    renderSectionChatbox(0, cachedSplitParts.part1);
+    if (!cachedSplitParts.part2) {
+      createTroyChatbox(SECTION_DEFINITIONS[1].cardId, SECTION_DEFINITIONS[1].speechId, SECTION_DEFINITIONS[1].loadingText);
+      updateLiveStatus("Troy is performing Root Cause Analysis...", true);
+    }
   } else {
-    // Still waiting on LM Studio: show final formulation status in Troy's speech bubble
+    // Still waiting on LLM: show performing Executive Assessment status in Troy's speech bubble
     const troySpeech = document.getElementById("troy-speech");
     if (troySpeech && !isTypingTransformed) {
       troySpeech.className = "agent-speech troy-speech formulating";
       troySpeech.innerHTML = `
         <div class="troy-deliberating">
           <span class="troy-pulse-orb"></span>
-          <span>Synthesizing formal resolution assessment & customer communication${getThinkingDotsHtml()}</span>
+          <span class="troy-analyzing-text">Troy is performing Executive Assessment${getThinkingDotsHtml()}</span>
         </div>
       `;
     }
-    updateLiveStatus("Troy is finalizing resolution assessment with LM Studio...", true);
+    updateLiveStatus("Troy is performing Executive Assessment...", true);
+  }
+
+  if (cachedSplitParts.part2) {
+    renderSectionChatbox(1, cachedSplitParts.part2);
+    if (!cachedSplitParts.part3) {
+      createTroyChatbox(SECTION_DEFINITIONS[2].cardId, SECTION_DEFINITIONS[2].speechId, SECTION_DEFINITIONS[2].loadingText);
+      updateLiveStatus("Troy is formulating Customer Communication Strategy...", true);
+    }
+  }
+
+  if (cachedSplitParts.part3) {
+    renderSectionChatbox(2, cachedSplitParts.part3);
+    if (!cachedSplitParts.part4) {
+      createTroyChatbox(SECTION_DEFINITIONS[3].cardId, SECTION_DEFINITIONS[3].speechId, SECTION_DEFINITIONS[3].loadingText);
+      updateLiveStatus("Troy is determining Internal Routing & Next Steps...", true);
+    }
+  }
+
+  if (cachedSplitParts.part4) {
+    renderSectionChatbox(3, cachedSplitParts.part4);
+    renderResolutionActionButtons();
+  }
+
+  // If cachedResolutionText was stored from single prompt / legacy stream
+  if (cachedResolutionText && !cachedSplitParts.part1) {
+    startTransformedStream(cachedResolutionText);
   }
 };
 
@@ -1970,18 +2179,21 @@ const resetTroyConsole = () => {
   statusBanner.className = "cra-live-status running";
   statusBanner.innerHTML = `<span class="status-dot"></span><span>Processing Complaint with CRA ML Engine...</span>`;
 
-  // Remove old preliminary card, communication card, and routing card if any
+  // Remove old preliminary card, root cause card, communication card, and routing card if any
   const oldPrelim = document.getElementById("troy-preliminary-card");
   if (oldPrelim) oldPrelim.remove();
   const oldMlCard = document.getElementById("cra-ml-card");
   if (oldMlCard) oldMlCard.remove();
+  const oldRootCause = document.getElementById("troy-card-root-cause");
+  if (oldRootCause) oldRootCause.remove();
   const oldComm = document.getElementById("troy-card-communication");
   if (oldComm) oldComm.remove();
   const oldRouting = document.getElementById("troy-card-routing");
   if (oldRouting) oldRouting.remove();
-  const oldActionBar = document.getElementById("resolution-action-bar");
-  if (oldActionBar) oldActionBar.remove();
-  cachedSplitParts = { part1: "", part2: "", part3: "" };
+  document.querySelectorAll("#resolution-action-bar, .resolution-action-bar").forEach((el) => el.remove());
+  isRenderingActionBar = false;
+  hasRenderedActionBar = false;
+  cachedSplitParts = { part1: "", part2: "", part3: "", part4: "" };
   resolutionStages = [];
 
   // Reset Troy's card
@@ -1996,7 +2208,7 @@ const resetTroyConsole = () => {
     troySpeech.innerHTML = `
       <div class="troy-deliberating">
         <span class="troy-pulse-orb"></span>
-        <span class="troy-analyzing-text" id="troy-analyzing-msg">Initializing Fine-Tuned DistilBERT Category Classifier${getThinkingDotsHtml()}</span>
+        <span class="troy-analyzing-text" id="troy-analyzing-msg">Troy is performing Executive Assessment${getThinkingDotsHtml()}</span>
       </div>
     `;
   }
@@ -2156,9 +2368,38 @@ const connectLiveStream = () => {
     } catch (_) {}
   });
 
+  let activeMultiPromptStage = 0;
+  let activeMultiPromptText = "";
+
   stream.addEventListener("agent_start", (e) => {
     try {
+      const data = JSON.parse(e.data);
+      const secIdx = data.section_index !== undefined ? data.section_index : (data.round || 0);
+      activeMultiPromptStage = secIdx;
+      activeMultiPromptText = "";
       streamedSpeechText = "";
+
+      if (!isMlCycling) {
+        const def = SECTION_DEFINITIONS[secIdx] || SECTION_DEFINITIONS[0];
+        const card = def.cardId === "troy-card"
+          ? (document.getElementById("troy-card") || document.getElementById("booting-card"))
+          : createTroyChatbox(def.cardId, def.speechId, def.loadingText);
+
+        if (card) {
+          card.classList.add("speaking");
+        }
+        const speechEl = document.getElementById(def.speechId);
+        if (speechEl) {
+          speechEl.className = "agent-speech troy-speech formulating";
+          speechEl.innerHTML = `
+            <div class="troy-deliberating">
+              <span class="troy-pulse-orb"></span>
+              <span class="troy-analyzing-text">${def.loadingText || "Troy is analyzing"}${getThinkingDotsHtml()}</span>
+            </div>
+          `;
+        }
+        updateLiveStatus(`${def.loadingText || "Troy is analyzing"}...`, true);
+      }
     } catch (_) {}
   });
 
@@ -2166,8 +2407,25 @@ const connectLiveStream = () => {
     try {
       const data = JSON.parse(e.data);
       if (data.delta) {
-        // Accumulate tokens silently while LM Studio finishes generating
+        activeMultiPromptText += data.delta;
         streamedSpeechText += data.delta;
+
+        if (!isMlCycling && activeMultiPromptStage !== undefined) {
+          const def = SECTION_DEFINITIONS[activeMultiPromptStage] || SECTION_DEFINITIONS[0];
+          const speechEl = document.getElementById(def.speechId);
+          if (speechEl) {
+            speechEl.className = "agent-speech troy-speech streaming";
+            speechEl.innerHTML = renderMarkdown(formatSectionWithBoldHeading(activeMultiPromptText, def.title));
+            const deliberationList = document.getElementById("deliberation-list");
+            if (deliberationList) {
+              const isNearBottom =
+                deliberationList.scrollHeight - deliberationList.scrollTop - deliberationList.clientHeight < 160;
+              if (isNearBottom) {
+                deliberationList.scrollTop = deliberationList.scrollHeight;
+              }
+            }
+          }
+        }
       }
     } catch (_) {}
   });
@@ -2175,34 +2433,69 @@ const connectLiveStream = () => {
   stream.addEventListener("agent", (e) => {
     try {
       const data = JSON.parse(e.data);
-      const fullText = data.message || streamedSpeechText;
+      const fullText = data.message || activeMultiPromptText || streamedSpeechText;
+      const secIdx = data.section_index !== undefined ? data.section_index : (data.round || 0);
+      const partKey = `part${secIdx + 1}`;
+      cachedSplitParts[partKey] = fullText;
       cachedResolutionText = fullText;
-      // If 5s ML cycling is already complete, start progressive transformed stream now
+
       if (!isMlCycling) {
-        startTransformedStream(fullText);
+        renderSectionChatbox(secIdx, fullText);
+        const nextIdx = secIdx + 1;
+        if (nextIdx < SECTION_DEFINITIONS.length) {
+          const nextDef = SECTION_DEFINITIONS[nextIdx];
+          createTroyChatbox(nextDef.cardId, nextDef.speechId, nextDef.loadingText);
+          updateLiveStatus(`${nextDef.loadingText}...`, true);
+        } else {
+          renderResolutionActionButtons();
+        }
       }
     } catch (_) {}
   });
 
-  const onComplete = () => {
-    if (isTypingTransformed) {
-      pendingResolutionEnd = true;
-    } else {
-      isResolving = false;
-      markFeedCardResolved();
-      if (fetchNextBtn) {
-        fetchNextBtn.disabled = false;
-        fetchNextBtn.classList.remove("is-loading");
-        fetchNextBtn.textContent = "Begin Resolution";
+  const onComplete = (e) => {
+    try {
+      if (e?.data) {
+        const data = JSON.parse(e.data);
+        if (data.sections) {
+          if (data.sections.executive) cachedSplitParts.part1 = data.sections.executive;
+          if (data.sections.root_cause) cachedSplitParts.part2 = data.sections.root_cause;
+          if (data.sections.customer_comms) cachedSplitParts.part3 = data.sections.customer_comms;
+          if (data.sections.internal_routing) cachedSplitParts.part4 = data.sections.internal_routing;
+        } else if (data.full_resolution) {
+          const split = splitResolutionSections(data.full_resolution);
+          cachedSplitParts = { ...cachedSplitParts, ...split };
+        }
       }
-    }
+    } catch (_) {}
+
+    finishTransformedStream();
   };
 
   stream.addEventListener("resolution_end", onComplete);
   stream.addEventListener("council_end", onComplete);
 
-  stream.addEventListener("error", () => {
-    console.warn("[SSE] Connection interrupted, reconnecting...");
+  stream.addEventListener("error", (e) => {
+    let msg = "Resolution connection interrupted or encountered an error.";
+    if (e?.data) {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.message) msg = data.message;
+      } catch (_) {}
+    }
+    console.warn("[SSE]", msg);
+    if (e?.data && isResolving) {
+      isResolving = false;
+      stopMlAnalyzingCycle();
+      stopTransformedStreamTicker();
+      showTopWarning(msg);
+      if (fetchNextBtn) {
+        fetchNextBtn.disabled = false;
+        fetchNextBtn.classList.remove("is-loading");
+        fetchNextBtn.textContent = "Begin Resolution";
+      }
+      updateLiveStatus(msg, false);
+    }
   });
 };
 
@@ -2231,13 +2524,6 @@ topicInput?.addEventListener("keydown", (e) => {
 
 fetchNextBtn?.addEventListener("click", () => {
   startResolutionFlow();
-});
-
-// Click Troy's card while streaming to instantly reveal the full formatted text
-document.getElementById("troy-card")?.addEventListener("click", () => {
-  if (isTypingTransformed) {
-    finishTransformedStream();
-  }
 });
 
 // ── Category Presets from Training Dataset (11 Categories) ───────────────────

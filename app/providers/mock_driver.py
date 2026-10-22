@@ -11,6 +11,17 @@ class MockDriver(BaseLlmDriver):
     def _determine_response(self, messages: List[Dict[str, str]]) -> str:
         prompt_text = " ".join(m.get("content", "") for m in messages).lower()
 
+        if "title" in prompt_text and "summary" in prompt_text and ("json" in prompt_text or "keys" in prompt_text):
+            if "pdf" in prompt_text or "crash" in prompt_text:
+                return json.dumps({
+                    "title": "Android PDF Export Crash",
+                    "summary": "Customer reports that the mobile application crashes with an unhandled 500 error when clicking export PDF on Android."
+                })
+            return json.dumps({
+                "title": "Customer Complaint Resolution Request",
+                "summary": "Customer submitted an inquiry regarding account resolution and billing entitlements."
+            })
+
         if "output only a 2-3 word title" in prompt_text or "title:" in prompt_text:
             return "Refund Request"
 

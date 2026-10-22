@@ -1238,16 +1238,36 @@ body {
 }
 
 .feed-card h3,
-.feed-card h4 {
-  font-weight: 600;
+.feed-card h4,
+.feed-card .ticket-title {
+  font-weight: 700;
   font-size: 15px;
-  line-height: 1.3;
-  margin-bottom: 10px;
+  line-height: 1.35;
+  margin-bottom: 8px;
+  color: var(--text-primary);
 }
 
-.feed-card p {
-  font-size: 12px;
+.feed-card p,
+.feed-card .ticket-summary-subtext {
+  font-size: 12.5px;
+  line-height: 1.55;
   color: var(--muted);
+  margin-bottom: 6px;
+}
+
+[data-theme="light"] .feed-card.active .ticket-title {
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .feed-card.active .ticket-summary-subtext {
+  color: #334155 !important;
+}
+
+.feed-card .ticket-card-footer {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-top: 8px;
+  opacity: 0.85;
 }
 
 .feed-card__header {
@@ -3037,8 +3057,8 @@ body {
   height: 6px;
   border-radius: 50%;
   background: #38bdf8;
-  box-shadow: none;
-  animation: none;
+  box-shadow: 0 0 6px rgba(56, 189, 248, 0.6);
+  animation: pulse-dot 1.2s ease-in-out infinite;
   display: inline-block;
   flex-shrink: 0;
 }
@@ -3053,12 +3073,38 @@ body {
 .agent-speech.troy-speech h1,
 .agent-speech.troy-speech h2,
 .agent-speech.troy-speech h3,
-.agent-speech.troy-speech h4 {
-  margin: 14px 0 6px 0;
-  color: var(--text-primary);
-  font-size: 14.5px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+.agent-speech.troy-speech h4,
+.agent-speech.troy-speech .troy-section-heading {
+  margin: 0 0 10px 0;
+  color: #38bdf8;
+  font-size: 15px;
+  font-weight: 700 !important;
+  letter-spacing: 0.015em;
+  display: block;
+  border-bottom: 1px solid rgba(56, 189, 248, 0.2);
+  padding-bottom: 6px;
+}
+
+.agent-speech.troy-speech h4 strong,
+.agent-speech.troy-speech .troy-section-heading strong {
+  color: #38bdf8;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .agent-speech.troy-speech h1,
+[data-theme="light"] .agent-speech.troy-speech h2,
+[data-theme="light"] .agent-speech.troy-speech h3,
+[data-theme="light"] .agent-speech.troy-speech h4,
+[data-theme="light"] .agent-speech.troy-speech .troy-section-heading {
+  color: #0284c7;
+  font-weight: 700 !important;
+  border-bottom-color: rgba(2, 132, 199, 0.18);
+}
+
+[data-theme="light"] .agent-speech.troy-speech h4 strong,
+[data-theme="light"] .agent-speech.troy-speech .troy-section-heading strong {
+  color: #0284c7;
+  font-weight: 700 !important;
 }
 
 .agent-speech.troy-speech h4:first-child,

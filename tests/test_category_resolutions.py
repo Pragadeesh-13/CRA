@@ -166,3 +166,54 @@ def test_manual_resolution_all_11_categories(category):
         assert res["ticket"]["predicted_team"] == res["assigned_queue"]
         assert "Specialist" in res["assigned_queue"] or "Queue" in res["assigned_queue"]
 
+
+def test_customer_account_lookup_and_emily_watson_resolution():
+    from app.database import find_customer_account_by_query, analyze_customer_transactions, get_category_complaint_context
+
+    q = "Order #ORD-81094: Double billed"
+    acc = find_customer_account_by_query(query=q)
+    assert acc is not None
+    assert acc["customer_id"] == "USR-07231"
+    assert acc["customer_name"] == "Emily Watson"
+    assert acc["customer_email"] == "emily.w@consulting.co"
+
+    pred = cra_engine.predict_category(q)
+    assert pred["predicted_category"] == "Refunds"
+    assert pred["category_confidence"] > 0.90
+
+    ctx = get_category_complaint_context("Refunds", query=q)
+    assert ctx["is_refund"] is True
+    assert ctx["customer_id"] == "USR-07231"
+    assert ctx["customer_name"] == "Emily Watson"
+    assert ctx["customer_email"] == "emily.w@consulting.co"
+    assert ctx["action_btn_text"] == "Let agent resolve it"
+    assert ctx["is_already_refunded"] is False
+    assert "TXN-7712" in ctx["steps"][2]["text"]
+    assert "Emily Watson" in ctx["steps"][1]["text"]
+
+    analysis = analyze_customer_transactions(query=q)
+    assert analysis["customer_name"] == "Emily Watson"
+    assert analysis["customer_id"] == "USR-07231"
+    assert analysis["has_pending_duplicate"] is True
+    assert analysis["duplicate_transaction"]["transaction_id"] == "TXN-7712"
+    assert analysis["retained_transaction"]["transaction_id"] == "TXN-7711"
+
+
+def test_all_scenarios_customer_account_resolution():
+    from app.database import find_customer_account_by_query
+
+    test_cases = [
+        ("Order #88219 was debited twice", "USR-10492", "Alex Morgan"),
+        ("Order #86102 was charged at full rate", "USR-09148", "Michael Scott"),
+        ("Order #79110 two-factor locked", "USR-08914", "Sarah Jenkins"),
+        ("Order #93041 webhook timeout 504", "USR-12053", "David Chen"),
+        ("Order #85420 VAT tax invoice", "USR-14309", "Elena Rostova"),
+        ("Order #ORD-81094: Double billed", "USR-07231", "Emily Watson"),
+    ]
+
+    for q, expected_id, expected_name in test_cases:
+        acc = find_customer_account_by_query(query=q)
+        assert acc is not None, f"Failed to match account for query: {q}"
+        assert acc["customer_id"] == expected_id
+        assert acc["customer_name"] == expected_name
+

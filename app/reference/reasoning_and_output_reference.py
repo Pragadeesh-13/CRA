@@ -46,6 +46,7 @@ async def execute_agent_with_reasoning(
     label: str = "Resolution",
     show_reasoning: bool = True,
     use_stream: bool = True,
+    extra_payload: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     """
     REFERENCE DEMO LOGIC:
@@ -59,6 +60,7 @@ async def execute_agent_with_reasoning(
         "state": role_or_state,
         "round": round_num,
         "label": label,
+        **(extra_payload or {}),
     }
 
     # Signal the UI that this agent has started generating

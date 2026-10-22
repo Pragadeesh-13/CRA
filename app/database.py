@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DATABASE_FILE = DATA_DIR / "transactions.csv"
+CUSTOMER_ACCOUNTS_FILE = DATA_DIR / "customer_accounts.csv"
 
 FIELDNAMES = [
     "transaction_id",
@@ -36,6 +37,29 @@ FIELDNAMES = [
     "refund_amount",
     "refunded_at",
     "processed_by",
+    "notes",
+]
+
+CUSTOMER_ACCOUNT_FIELDNAMES = [
+    "customer_id",
+    "customer_name",
+    "customer_email",
+    "reference_order_id",
+    "subscription_plan",
+    "billing_cycle",
+    "monthly_rate",
+    "total_billed_this_month",
+    "charges_this_month",
+    "transaction_1",
+    "transaction_2",
+    "duplicate_verified",
+    "refund_status",
+    "refund_id",
+    "account_balance",
+    "account_status",
+    "last_verified_by",
+    "updated_by",
+    "last_updated",
     "notes",
 ]
 
@@ -235,6 +259,93 @@ def write_all_transactions(records: List[Dict[str, str]]) -> bool:
         return False
 
 
+def read_all_customer_accounts() -> List[Dict[str, str]]:
+    """Reads all rows from data/customer_accounts.csv."""
+    if not CUSTOMER_ACCOUNTS_FILE.exists():
+        return []
+    records = []
+    try:
+        with open(CUSTOMER_ACCOUNTS_FILE, "r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                records.append(dict(row))
+    except Exception as e:
+        logger.error(f"Error reading {CUSTOMER_ACCOUNTS_FILE}: {e}")
+    return records
+
+
+def write_all_customer_accounts(records: List[Dict[str, str]]) -> bool:
+    """Writes all rows to data/customer_accounts.csv."""
+    try:
+        with open(CUSTOMER_ACCOUNTS_FILE, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=CUSTOMER_ACCOUNT_FIELDNAMES)
+            writer.writeheader()
+            writer.writerows(records)
+        return True
+    except Exception as e:
+        logger.error(f"Error writing to {CUSTOMER_ACCOUNTS_FILE}: {e}")
+        return False
+
+
+def find_customer_account_by_query(
+    query: Optional[str] = None,
+    customer_id: Optional[str] = None,
+) -> Optional[Dict[str, str]]:
+    """
+    Finds a customer account from data/customer_accounts.csv by customer_id,
+    order reference (e.g. 81094, ORD-81094), customer name, or email.
+    """
+    accounts = read_all_customer_accounts()
+    if not accounts:
+        return None
+
+    target_id = str(customer_id).strip().upper() if customer_id else None
+    if target_id:
+        for acc in accounts:
+            acc_id = acc.get("customer_id", "").upper()
+            if target_id == acc_id or target_id in acc_id:
+                return acc
+
+    if query:
+        q_clean = query.strip()
+        q_lower = q_clean.lower()
+
+        # 1. Check for Order ID / reference numbers like 81094, 88219, ORD-81094
+        order_match = re.search(r"(?:ORD-)?(\d{4,6})", q_clean, re.IGNORECASE)
+        if order_match:
+            ref_num = order_match.group(1)
+            for acc in accounts:
+                ref_order = acc.get("reference_order_id", "")
+                if ref_num in ref_order or ref_num in acc.get("transaction_1", "") or ref_num in acc.get("transaction_2", "") or ref_num in acc.get("notes", ""):
+                    return acc
+
+        # 2. Check for customer_id mention in query
+        for acc in accounts:
+            acc_id = acc.get("customer_id", "").lower()
+            if acc_id and acc_id in q_lower:
+                return acc
+
+        # 3. Check for customer name tokens
+        for acc in accounts:
+            name = acc.get("customer_name", "").lower()
+            if not name:
+                continue
+            if name in q_lower:
+                return acc
+            name_parts = [p for p in name.split() if len(p) >= 3]
+            for part in name_parts:
+                if re.search(rf"\b{re.escape(part)}\b", q_lower):
+                    return acc
+
+        # 4. Check for customer email in query
+        for acc in accounts:
+            email = acc.get("customer_email", "").lower()
+            if email and email in q_lower:
+                return acc
+
+    return None
+
+
 def find_transactions_for_query(
     customer_id: Optional[str] = None,
     query: Optional[str] = None,
@@ -246,34 +357,44 @@ def find_transactions_for_query(
     transactions = read_all_transactions()
     target_id = str(customer_id).strip() if customer_id else None
 
-    # 1. Search by customer_id match
+    # First match against customer_accounts.csv to resolve customer entity
+    matched_acc = find_customer_account_by_query(query=query, customer_id=target_id)
+    if matched_acc:
+        acc_cust_id = matched_acc.get("customer_id")
+        acc_order_id = matched_acc.get("reference_order_id")
+        matched = [
+            t for t in transactions
+            if (acc_cust_id and t.get("customer_id") == acc_cust_id)
+            or (acc_order_id and t.get("order_id") == acc_order_id)
+        ]
+        if matched:
+            return matched
+
+    # Fallback to direct customer_id match in transactions
     if target_id:
         matched = [t for t in transactions if t.get("customer_id") == target_id or target_id in t.get("customer_id", "")]
         if matched:
             return matched
 
-    # 2. Extract reference from query text (e.g. #88219 or ORD-88219)
+    # Fallback to direct reference / order extraction from query
     if query:
-        match = re.search(r"#?(\d{5,})", query)
-        if match:
-            ref_num = match.group(1)
+        order_match = re.search(r"(?:ORD-)?(\d{4,6})", query, re.IGNORECASE)
+        if order_match:
+            ref_num = order_match.group(1)
             matched = [t for t in transactions if ref_num in t.get("order_id", "") or ref_num in t.get("transaction_id", "")]
             if matched:
                 return matched
 
         query_lower = query.lower()
-        # Match name or email in records
         for t in transactions:
             name = t.get("customer_name", "").lower()
             email = t.get("customer_email", "").lower()
             if (name and name in query_lower) or (email and email in query_lower):
                 return [row for row in transactions if row.get("customer_id") == t.get("customer_id")]
 
-        # Match subscription / twice / duplicate
         if "twice" in query_lower or "duplicate" in query_lower or "49" in query_lower:
             return [t for t in transactions if t.get("customer_id") == "USR-10492"]
 
-    # Default to Alex Morgan's transactions for primary demo
     return [t for t in transactions if t.get("customer_id") == "USR-10492"]
 
 
@@ -283,7 +404,7 @@ def analyze_customer_transactions(
 ) -> Dict[str, Any]:
     """
     Troy / Agent analyzes raw transaction records from data/transactions.csv:
-    - Groups records by customer and billing_cycle (e.g. 'October 2026').
+    - Groups records by customer and billing_cycle (e.g. 'October 2026', 'September 2026').
     - If a single billing cycle contains > 1 settled transaction for a subscription plan,
       flags the redundant transaction as a duplicate that should be refunded.
     """
@@ -297,9 +418,23 @@ def analyze_customer_transactions(
     cust_email = first.get("customer_email", "alex.morgan@gmail.com")
     plan = first.get("subscription_plan", "Pro Tier ($49.00/mo)")
     cycle = first.get("billing_cycle", "October 2026")
+    order_ref = first.get("order_id", "ORD-88219")
+
+    # Reconcile customer details with customer_accounts.csv if available
+    acc = find_customer_account_by_query(query=query, customer_id=cust_id)
+    if acc:
+        cust_id = acc.get("customer_id") or cust_id
+        cust_name = acc.get("customer_name") or cust_name
+        cust_email = acc.get("customer_email") or cust_email
+        plan = acc.get("subscription_plan") or plan
+        order_ref = acc.get("reference_order_id") or order_ref
 
     # Group transactions by billing cycle
     cycle_txns = [t for t in txns if t.get("billing_cycle") == cycle]
+    if not cycle_txns:
+        cycle_txns = txns
+        cycle = cycle_txns[0].get("billing_cycle", cycle)
+
     settled_txns = [t for t in cycle_txns if t.get("status") == "Settled"]
     refunded_txns = [t for t in cycle_txns if t.get("status") == "Refunded"]
 
@@ -321,7 +456,6 @@ def analyze_customer_transactions(
         retained_valid_txn = sorted_settled[0]
         candidate_to_refund = sorted_settled[1]
     elif is_already_refunded:
-        # Already refunded in earlier resolution
         retained_valid_txn = settled_txns[0] if settled_txns else cycle_txns[0]
         candidate_to_refund = refunded_txns[0]
     else:
@@ -330,22 +464,28 @@ def analyze_customer_transactions(
 
     overcharged_amount = float(candidate_to_refund.get("amount", "49.00")) if candidate_to_refund else 0.0
 
-    ref_id = refunded_txns[0].get("refund_id") or "REF-88219-AUTO" if refunded_txns else ""
+    clean_order_num = order_ref.replace("ORD-", "") if order_ref else "88219"
+    suggested_ref_id = f"REF-{clean_order_num}-AUTO"
+    ref_id = (refunded_txns[0].get("refund_id") if refunded_txns and refunded_txns[0].get("refund_id") else suggested_ref_id)
     ref_date = refunded_txns[0].get("refunded_at") or "" if refunded_txns else ""
+
+    dup_id = candidate_to_refund.get("transaction_id", "TXN-9012") if candidate_to_refund else "TXN-9012"
+    ret_id = retained_valid_txn.get("transaction_id", "TXN-9011") if retained_valid_txn else "TXN-9011"
+    plan_rate = str(first.get("amount", "49.00"))
 
     if is_already_refunded:
         summary_text = (
             f"Analyzed data/transactions.csv: Found {len(cycle_txns)} transaction records in {cycle} for {cust_name} ({cust_id}). "
             f"Records: {', '.join([f'{t.get('transaction_id')} (${t.get('amount')}, {t.get('status')})' for t in cycle_txns])}. "
-            f"Accidental duplicate debit {candidate_to_refund.get('transaction_id')} was ALREADY REFUNDED on {ref_date} (Refund ID: {ref_id}). "
-            f"Current ledger has 1 valid active renewal ({retained_valid_txn.get('transaction_id')}: ${retained_valid_txn.get('amount')}, Settled). "
+            f"Accidental duplicate debit {dup_id} was ALREADY REFUNDED on {ref_date} (Refund ID: {ref_id}). "
+            f"Current ledger has 1 valid active renewal ({ret_id}: ${retained_valid_txn.get('amount', plan_rate)}, Settled). "
             f"Account balance is $0.00. No further refund required."
         )
     elif has_duplicate_settled:
         summary_text = (
             f"Analyzed data/transactions.csv: Found {len(cycle_txns)} transaction records in {cycle} for {cust_name} ({cust_id}). "
             f"Records: {', '.join([f'{t.get('transaction_id')} (${t.get('amount')}, {t.get('status')})' for t in cycle_txns])}. "
-            f"Multiple settled debits detected in a single monthly cycle. Candidate transaction for refund: {candidate_to_refund.get('transaction_id') if candidate_to_refund else 'None'}."
+            f"Multiple settled debits detected in a single monthly cycle. Candidate transaction for refund: {dup_id}."
         )
     else:
         summary_text = (
@@ -354,14 +494,26 @@ def analyze_customer_transactions(
             f"Ledger reconciled. No duplicate charges found."
         )
 
+    # Dynamic progressive steps
+    steps = [
+        {"text": "Accessing internal customer transaction ledger (data/transactions.csv)...", "delay": 650},
+        {"text": f"Locating account records for {cust_name} ({cust_id})...", "delay": 700},
+        {"text": f"Ledger Audit: Duplicate {dup_id} is {'ALREADY marked as Refunded under ' + ref_id if is_already_refunded else f'verified as redundant second debit in {cycle}'}...", "delay": 750},
+        {"text": f"{'Verifying account balance: Account balance is $0.00 with 1 active renewal ' + ret_id if is_already_refunded else f'Authorizing ${plan_rate} refund reversal via Stripe Gateway API ({ref_id})'}...", "delay": 750},
+        {"text": f"{'Duplicate payout prevention active: Secondary refund blocked' if is_already_refunded else f'Updating data/transactions.csv: {dup_id} status set to Refunded'}...", "delay": 700},
+        {"text": f"Dispatching refund confirmation receipt ({ref_id}) to {cust_email}...", "delay": 600},
+    ]
+
     return {
         "ok": True,
         "verified": True,
+        "category": "Refunds",
         "customer_id": cust_id,
         "customer_name": cust_name,
         "customer_email": cust_email,
         "subscription_plan": plan,
         "billing_cycle": cycle,
+        "order_id": order_ref,
         "charges_this_month": len(cycle_txns),
         "total_billed_this_month": f"{total_billed:.2f}",
         "settled_count": len(settled_txns),
@@ -377,26 +529,27 @@ def analyze_customer_transactions(
         "refunded_transaction": refunded_txns[0] if refunded_txns else None,
         "transactions": cycle_txns,
         "summary": summary_text,
+        "steps": steps,
         # Backward compatibility fields for UI components
         "customer": {
             "customer_id": cust_id,
             "customer_name": cust_name,
             "customer_email": cust_email,
-            "reference_order_id": first.get("order_id", "ORD-88219"),
+            "reference_order_id": order_ref,
             "subscription_plan": plan,
             "billing_cycle": cycle,
-            "monthly_rate": str(first.get("amount", "49.00")),
+            "monthly_rate": plan_rate,
             "total_billed_this_month": f"{total_billed:.2f}",
             "charges_this_month": str(len(cycle_txns)),
-            "transaction_1": f"{txns[0].get('transaction_id')} (${txns[0].get('amount')} on {txns[0].get('transaction_date')[:10]}) [{txns[0].get('status')}]" if len(txns) > 0 else "",
-            "transaction_2": f"{txns[1].get('transaction_id')} (${txns[1].get('amount')} on {txns[1].get('transaction_date')[:10]}) [{txns[1].get('status')}]" if len(txns) > 1 else "None",
-            "duplicate_verified": "Yes - 2 Transaction Records in Same Cycle" if has_multiple_in_cycle else "No",
+            "transaction_1": f"{retained_valid_txn.get('transaction_id')} (${retained_valid_txn.get('amount')} on {retained_valid_txn.get('transaction_date', '')[:10]}) [{retained_valid_txn.get('status')}]" if retained_valid_txn else "",
+            "transaction_2": f"{candidate_to_refund.get('transaction_id')} (${candidate_to_refund.get('amount')} on {candidate_to_refund.get('transaction_date', '')[:10]}) [{candidate_to_refund.get('status')}]" if candidate_to_refund else "None",
+            "duplicate_verified": "Yes - Accidental Double Charge Detected" if has_duplicate_settled else ("Yes - Previously Refunded" if is_already_refunded else "No"),
             "is_already_refunded": is_already_refunded,
-            "refund_status": "Already Refunded" if is_already_refunded else ("Refunded" if refunded_txns else ("Pending Refund" if has_duplicate_settled else "N/A")),
-            "refund_id": ref_id,
+            "refund_status": "Already Refunded" if is_already_refunded else ("Pending Refund" if has_duplicate_settled else "N/A"),
+            "refund_id": ref_id if is_already_refunded else "",
             "refunded_at": ref_date,
             "account_balance": "$0.00 (Settled)" if not has_duplicate_settled else f"$-{overcharged_amount:.2f} (Overcharged)",
-            "account_status": "Active - In Good Standing" if not has_duplicate_settled else "Flagged - Multiple Charges in Cycle",
+            "account_status": "Active - In Good Standing" if not has_duplicate_settled else "Flagged - Accidental Double Charge",
         },
     }
 
@@ -413,6 +566,16 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
     is_explicit_refund = (
         "refund" in q
         or "88219" in q
+        or "81094" in q
+        or "double billed" in q
+        or "billed twice" in q
+        or "charged twice" in q
+        or "double charge" in q
+        or "duplicate charge" in q
+        or "duplicate debit" in q
+        or "double debit" in q
+        or "duplicate bill" in q
+        or "charged again" in q
         or ("charged" in q and ("twice" in q or "second" in q or "again" in q or "49" in q or "double" in q))
         or ("duplicate" in q and ("charge" in q or "debit" in q or "payment" in q or "transaction" in q or "billing" in q))
     )
@@ -438,19 +601,17 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "refund_id": ref_id,
             "refunded_at": txn_analysis.get("refunded_at", "2026-10-21 14:49:37"),
             "system_details": txn_analysis.get("summary", ""),
-            "steps": [
-                {"text": "Accessing internal customer transaction ledger (data/transactions.csv)...", "delay": 650},
-                {"text": "Locating account records for Alex Morgan (USR-10492)...", "delay": 700},
-                {"text": f"Ledger Audit: Duplicate TXN-9012 is {'ALREADY marked as Refunded under ' + ref_id if is_already_refunded else 'verified as redundant second debit in October 2026'}...", "delay": 750},
-                {"text": f"{'Verifying account balance: Account balance is $0.00 with 1 active renewal TXN-9011' if is_already_refunded else 'Authorizing $49.00 refund reversal via Stripe Gateway API (REF-88219-AUTO)'}...", "delay": 750},
-                {"text": f"{'Duplicate payout prevention active: Secondary refund blocked' if is_already_refunded else 'Updating data/transactions.csv: TXN-9012 status set to Refunded'}...", "delay": 700},
-                {"text": f"Dispatching refund confirmation receipt ({ref_id}) to alex.morgan@gmail.com...", "delay": 600},
-            ],
+            "steps": txn_analysis.get("steps", []),
             "txn_analysis": txn_analysis,
         }
 
     # Category 2: Authentication & Access
-    elif cat == "Authentication & Access" or "2fa" in q or "two-factor" in q or "login" in q or "locked" in q:
+    elif cat == "Authentication & Access" or "2fa" in q or "two-factor" in q or "login" in q or "locked" in q or "79110" in q:
+        acc = find_customer_account_by_query(query=query)
+        c_id = (acc.get("customer_id") if acc else None) or "USR-08914"
+        c_name = (acc.get("customer_name") if acc else None) or "Sarah Jenkins"
+        c_email = (acc.get("customer_email") if acc else None) or "sarah.j@enterprise.org"
+        c_plan = (acc.get("subscription_plan") if acc else None) or "Enterprise Tier ($299.00/mo)"
         return {
             "category": "Authentication & Access",
             "is_refund": False,
@@ -458,24 +619,29 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "database_file": "Identity Directory (IAM / Okta)",
             "status_pill": "🔒 Account Locked: 2FA SMS Gateway Failure",
             "action_btn_text": "Let agent restore access & reset 2FA",
-            "customer_id": "USR-08914",
-            "customer_name": "Sarah Jenkins",
-            "customer_email": "sarah.j@enterprise.org",
-            "subscription_plan": "Enterprise Tier ($299.00/mo)",
+            "customer_id": c_id,
+            "customer_name": c_name,
+            "customer_email": c_email,
+            "subscription_plan": c_plan,
             "reference_id": "AUTH-9921",
             "system_details": "Account locked after failed carrier SMS OTP delivery on payment portal. Identity verified via enterprise SSO certificate.",
             "steps": [
                 {"text": "Accessing Identity & Access Management directory (IAM / Okta)...", "delay": 650},
-                {"text": "Verifying corporate identity credentials for Sarah Jenkins (USR-08914)...", "delay": 700},
+                {"text": f"Verifying corporate identity credentials for {c_name} ({c_id})...", "delay": 700},
                 {"text": "Diagnosing authentication log: Carrier SMS delivery timeout on Payment Gateway...", "delay": 750},
                 {"text": "Generating temporary secure 2FA emergency bypass token (AUTH-9921)...", "delay": 750},
                 {"text": "Unlocking account status in IAM directory & resetting failed attempt counter...", "delay": 700},
-                {"text": "Dispatching secure biometric re-enrollment link to sarah.j@enterprise.org...", "delay": 600},
+                {"text": f"Dispatching secure biometric re-enrollment link to {c_email}...", "delay": 600},
             ],
         }
 
     # Category 3: Billing
-    elif cat == "Billing" or "vat" in q or "invoice" in q or "tax id" in q:
+    elif cat == "Billing" or "vat" in q or "invoice" in q or "tax id" in q or "85420" in q:
+        acc = find_customer_account_by_query(query=query)
+        c_id = (acc.get("customer_id") if acc else None) or "USR-14309"
+        c_name = (acc.get("customer_name") if acc else None) or "Elena Rostova"
+        c_email = (acc.get("customer_email") if acc else None) or "elena@globaltrade.de"
+        c_plan = (acc.get("subscription_plan") if acc else None) or "Team Tier ($120.00/mo)"
         return {
             "category": "Billing",
             "is_refund": False,
@@ -483,24 +649,29 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "database_file": "Invoicing & Regional Tax Ledger",
             "status_pill": "📋 Pending VAT & Invoicing Documentation",
             "action_btn_text": "Let agent generate & dispatch VAT invoice",
-            "customer_id": "USR-14309",
-            "customer_name": "Elena Rostova",
-            "customer_email": "elena@globaltrade.de",
-            "subscription_plan": "Team Tier ($120.00/mo)",
+            "customer_id": c_id,
+            "customer_name": c_name,
+            "customer_email": c_email,
+            "subscription_plan": c_plan,
             "reference_id": "INV-85420-VAT",
             "system_details": "Customer requested formal German VAT ID addition and stamped tax invoice for Q4 2026 accounting records.",
             "steps": [
                 {"text": "Accessing billing ledger & tax invoice engine...", "delay": 650},
-                {"text": "Locating account records for Elena Rostova (USR-14309)...", "delay": 700},
+                {"text": f"Locating account records for {c_name} ({c_id})...", "delay": 700},
                 {"text": "Validating VAT registration ID via European VIES tax service...", "delay": 750},
                 {"text": "Generating official stamped VAT invoice (INV-85420-VAT) with tax breakdown...", "delay": 750},
                 {"text": "Updating billing profile in customer organization profile...", "delay": 700},
-                {"text": "Dispatching signed tax receipt and PDF invoice to elena@globaltrade.de...", "delay": 600},
+                {"text": f"Dispatching signed tax receipt and PDF invoice to {c_email}...", "delay": 600},
             ],
         }
 
     # Category 4: Bugs & Errors
     elif cat == "Bugs & Errors" or "crash" in q or "500 error" in q or "bug" in q:
+        acc = find_customer_account_by_query(query=query)
+        c_id = (acc.get("customer_id") if acc else None) or "USR-12053"
+        c_name = (acc.get("customer_name") if acc else None) or "David Chen"
+        c_email = (acc.get("customer_email") if acc else None) or "d.chen@fintech.io"
+        c_plan = (acc.get("subscription_plan") if acc else None) or "Developer API Tier ($199.00/mo)"
         return {
             "category": "Bugs & Errors",
             "is_refund": False,
@@ -508,10 +679,10 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "database_file": "Engineering Defect Telemetry (Sentry & Jira)",
             "status_pill": "🐛 HTTP 500 Unhandled Exception Logged",
             "action_btn_text": "Let agent dispatch bug report to Engineering",
-            "customer_id": "USR-12053",
-            "customer_name": "David Chen",
-            "customer_email": "d.chen@fintech.io",
-            "subscription_plan": "Developer API Tier ($199.00/mo)",
+            "customer_id": c_id,
+            "customer_name": c_name,
+            "customer_email": c_email,
+            "subscription_plan": c_plan,
             "reference_id": "BUG-ENG-4401",
             "system_details": "Correlated recurring HTTP 500 crash with memory stream buffer exception in client release v2.4.1.",
             "steps": [
@@ -520,12 +691,17 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
                 {"text": "Formulating Engineering defect ticket: BUG-ENG-4401 (Priority: High)...", "delay": 750},
                 {"text": "Synthesizing temporary client-side workaround (direct CSV export stream)...", "delay": 750},
                 {"text": "Logging ticket in Engineering sprint queue with full diagnostic trace...", "delay": 700},
-                {"text": "Dispatching workaround instructions & ticket tracking to d.chen@fintech.io...", "delay": 600},
+                {"text": f"Dispatching workaround instructions & ticket tracking to {c_email}...", "delay": 600},
             ],
         }
 
     # Category 5: Data Sync
     elif cat == "Data Sync" or "sync" in q or "synchronization" in q:
+        acc = find_customer_account_by_query(query=query)
+        c_id = (acc.get("customer_id") if acc else None) or "USR-10492"
+        c_name = (acc.get("customer_name") if acc else None) or "Alex Morgan"
+        c_email = (acc.get("customer_email") if acc else None) or "alex.morgan@gmail.com"
+        c_plan = (acc.get("subscription_plan") if acc else None) or "Pro Tier ($49.00/mo)"
         return {
             "category": "Data Sync",
             "is_refund": False,
@@ -533,15 +709,15 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "database_file": "Cloud Real-Time Sync & State Reconciler",
             "status_pill": "🔄 Desynchronized: Offline Queue Conflict",
             "action_btn_text": "Let agent trigger cloud resync & reconcile state",
-            "customer_id": "USR-10492",
-            "customer_name": "Alex Morgan",
-            "customer_email": "alex.morgan@gmail.com",
-            "subscription_plan": "Pro Tier ($49.00/mo)",
+            "customer_id": c_id,
+            "customer_name": c_name,
+            "customer_email": c_email,
+            "subscription_plan": c_plan,
             "reference_id": "SYNC-RECON-2201",
             "system_details": "Timestamp divergence detected between mobile client offline queue and cloud PostgreSQL cluster.",
             "steps": [
                 {"text": "Connecting to cloud real-time sync coordinator...", "delay": 650},
-                {"text": "Auditing device-to-cloud replication queue for USR-10492...", "delay": 700},
+                {"text": f"Auditing device-to-cloud replication queue for {c_id}...", "delay": 700},
                 {"text": "Detecting timestamp conflict on pending mobile client records...", "delay": 750},
                 {"text": "Executing three-way merge resolution algorithm (SYNC-RECON-2201)...", "delay": 750},
                 {"text": "Forcing cloud ledger cache invalidation and clean state push...", "delay": 700},
@@ -550,7 +726,12 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
         }
 
     # Category 6: Integrations & API
-    elif cat == "Integrations & API" or "api" in q or "webhook" in q or "429" in q:
+    elif cat == "Integrations & API" or "api" in q or "webhook" in q or "429" in q or "93041" in q:
+        acc = find_customer_account_by_query(query=query)
+        c_id = (acc.get("customer_id") if acc else None) or "USR-12053"
+        c_name = (acc.get("customer_name") if acc else None) or "David Chen"
+        c_email = (acc.get("customer_email") if acc else None) or "d.chen@fintech.io"
+        c_plan = (acc.get("subscription_plan") if acc else None) or "Developer API Tier ($199.00/mo)"
         return {
             "category": "Integrations & API",
             "is_refund": False,
@@ -558,24 +739,29 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "database_file": "API Gateway Telemetry & Webhook Dispatcher",
             "status_pill": "⚡ Webhook Timeout (HTTP 504) / Rate Limit 429",
             "action_btn_text": "Let agent dispatch API guide & flush webhook queue",
-            "customer_id": "USR-12053",
-            "customer_name": "David Chen",
-            "customer_email": "d.chen@fintech.io",
-            "subscription_plan": "Developer API Tier ($199.00/mo)",
+            "customer_id": c_id,
+            "customer_name": c_name,
+            "customer_email": c_email,
+            "subscription_plan": c_plan,
             "reference_id": "API-HOOK-7703",
             "system_details": "12 webhook payloads dead-lettered due to endpoint latency; burst rate limit threshold exceeded.",
             "steps": [
                 {"text": "Querying API Gateway error telemetry & access logs...", "delay": 650},
-                {"text": "Locating developer account for David Chen (USR-12053)...", "delay": 700},
+                {"text": f"Locating developer account for {c_name} ({c_id})...", "delay": 700},
                 {"text": "Analyzing dead-letter queue: 12 events delayed by 504 endpoint timeout...", "delay": 750},
                 {"text": "Resetting burst rate-limit token bucket for customer API key...", "delay": 750},
                 {"text": "Initiating automated webhook replay sequence (API-HOOK-7703)...", "delay": 700},
-                {"text": "Dispatching developer documentation & OpenAPI specification link...", "delay": 600},
+                {"text": f"Dispatching developer documentation & OpenAPI specification link to {c_email}...", "delay": 600},
             ],
         }
 
     # Category 7: Onboarding & How-To
     elif cat == "Onboarding & How-To" or "how to" in q or "get started" in q or "invite" in q:
+        acc = find_customer_account_by_query(query=query)
+        c_id = (acc.get("customer_id") if acc else None) or "USR-09148"
+        c_name = (acc.get("customer_name") if acc else None) or "Michael Scott"
+        c_email = (acc.get("customer_email") if acc else None) or "m.scott@dunder.com"
+        c_plan = (acc.get("subscription_plan") if acc else None) or "Starter Tier ($29.00/mo)"
         return {
             "category": "Onboarding & How-To",
             "is_refund": False,
@@ -583,24 +769,29 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "database_file": "Customer Success Knowledge Base & CRM",
             "status_pill": "📚 Workspace Setup & Role Delegation Assistance",
             "action_btn_text": "Let agent send setup guide & configure workspace",
-            "customer_id": "USR-09148",
-            "customer_name": "Michael Scott",
-            "customer_email": "m.scott@dunder.com",
-            "subscription_plan": "Starter Tier ($29.00/mo)",
+            "customer_id": c_id,
+            "customer_name": c_name,
+            "customer_email": c_email,
+            "subscription_plan": c_plan,
             "reference_id": "GUIDE-ONB-1102",
             "system_details": "New workspace administrator requesting guidance on inviting team members and setting role-based permissions.",
             "steps": [
                 {"text": "Accessing Customer Success Knowledge Base & training registry...", "delay": 650},
-                {"text": "Locating workspace records for USR-09148 (Michael Scott)...", "delay": 700},
+                {"text": f"Locating workspace records for {c_id} ({c_name})...", "delay": 700},
                 {"text": "Synthesizing step-by-step role delegation & member onboarding workflow...", "delay": 750},
                 {"text": "Generating automated member invitation link and role permission template...", "delay": 750},
                 {"text": "Recording onboarding milestone completion in customer CRM...", "delay": 700},
-                {"text": "Dispatching interactive guide (GUIDE-ONB-1102) to m.scott@dunder.com...", "delay": 600},
+                {"text": f"Dispatching interactive guide (GUIDE-ONB-1102) to {c_email}...", "delay": 600},
             ],
         }
 
     # Category 8: Performance
     elif cat == "Performance" or "slow" in q or "latency" in q or "load" in q:
+        acc = find_customer_account_by_query(query=query)
+        c_id = (acc.get("customer_id") if acc else None) or "USR-08914"
+        c_name = (acc.get("customer_name") if acc else None) or "Sarah Jenkins"
+        c_email = (acc.get("customer_email") if acc else None) or "sarah.j@enterprise.org"
+        c_plan = (acc.get("subscription_plan") if acc else None) or "Enterprise Tier ($299.00/mo)"
         return {
             "category": "Performance",
             "is_refund": False,
@@ -608,10 +799,10 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "database_file": "Datadog APM & Database Query Telemetry",
             "status_pill": "⚡ High Latency Bottleneck: 42.8s Search Duration",
             "action_btn_text": "Let agent flush query cache & run optimization",
-            "customer_id": "USR-08914",
-            "customer_name": "Sarah Jenkins",
-            "customer_email": "sarah.j@enterprise.org",
-            "subscription_plan": "Enterprise Tier ($299.00/mo)",
+            "customer_id": c_id,
+            "customer_name": c_name,
+            "customer_email": c_email,
+            "subscription_plan": c_plan,
             "reference_id": "PERF-OPT-3301",
             "system_details": "Full-text search queries exceeding SLA threshold due to fragmented elastic index cache.",
             "steps": [
@@ -620,12 +811,17 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
                 {"text": "Identifying bottleneck: Stale search index cache and worker thread saturation...", "delay": 750},
                 {"text": "Executing automated cache invalidation and query index defragmentation (PERF-OPT-3301)...", "delay": 750},
                 {"text": "Verifying query latency normalized to < 450ms baseline...", "delay": 700},
-                {"text": "Dispatching performance resolution report to sarah.j@enterprise.org...", "delay": 600},
+                {"text": f"Dispatching performance resolution report to {c_email}...", "delay": 600},
             ],
         }
 
     # Category 9: Security
     elif cat == "Security" or "unauthorized" in q or "compromised" in q or "ip allowlist" in q:
+        acc = find_customer_account_by_query(query=query)
+        c_id = (acc.get("customer_id") if acc else None) or "USR-08914"
+        c_name = (acc.get("customer_name") if acc else None) or "Sarah Jenkins"
+        c_email = (acc.get("customer_email") if acc else None) or "sarah.j@enterprise.org"
+        c_plan = (acc.get("subscription_plan") if acc else None) or "Enterprise Tier ($299.00/mo)"
         return {
             "category": "Security",
             "is_refund": False,
@@ -633,24 +829,29 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "database_file": "Cloudflare WAF & Security Operations Center (SOC)",
             "status_pill": "🛡️ Anomaly: Unauthorized Access / Untrusted IP",
             "action_btn_text": "Let agent terminate sessions & secure account",
-            "customer_id": "USR-08914",
-            "customer_name": "Sarah Jenkins",
-            "customer_email": "sarah.j@enterprise.org",
-            "subscription_plan": "Enterprise Tier ($299.00/mo)",
+            "customer_id": c_id,
+            "customer_name": c_name,
+            "customer_email": c_email,
+            "subscription_plan": c_plan,
             "reference_id": "SEC-REVOKE-8812",
             "system_details": "Anomalous authorization token detected from unverified IP range. Threat level assessed as elevated.",
             "steps": [
                 {"text": "Connecting to Security Operations Center (SOC) telemetry...", "delay": 650},
-                {"text": "Auditing active user sessions for Sarah Jenkins (USR-08914)...", "delay": 700},
+                {"text": f"Auditing active user sessions for {c_name} ({c_id})...", "delay": 700},
                 {"text": "Confirming geolocation anomaly: Untrusted login session from unfamiliar IP...", "delay": 750},
                 {"text": "Immediately revoking all active JWT bearer tokens (SEC-REVOKE-8812)...", "delay": 750},
                 {"text": "Enforcing mandatory multi-factor biometric challenge on next sign-in...", "delay": 700},
-                {"text": "Dispatching urgent security incident notice & confirmation to user...", "delay": 600},
+                {"text": f"Dispatching urgent security incident notice & confirmation to {c_email}...", "delay": 600},
             ],
         }
 
     # Category 10: Subscription
-    elif cat == "Subscription" or "downgrade" in q or "renewal" in q or "cancel" in q:
+    elif cat == "Subscription" or "downgrade" in q or "renewal" in q or "cancel" in q or "86102" in q:
+        acc = find_customer_account_by_query(query=query)
+        c_id = (acc.get("customer_id") if acc else None) or "USR-09148"
+        c_name = (acc.get("customer_name") if acc else None) or "Michael Scott"
+        c_email = (acc.get("customer_email") if acc else None) or "m.scott@dunder.com"
+        c_plan = (acc.get("subscription_plan") if acc else None) or "Starter Tier ($29.00/mo)"
         return {
             "category": "Subscription",
             "is_refund": False,
@@ -658,24 +859,29 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "database_file": "Stripe Subscription & Entitlements Engine",
             "status_pill": "📋 Pending Downgrade Adjustment ($50.00 Credit Due)",
             "action_btn_text": "Let agent apply downgrade & credit prorated balance",
-            "customer_id": "USR-09148",
-            "customer_name": "Michael Scott",
-            "customer_email": "m.scott@dunder.com",
-            "subscription_plan": "Starter Tier ($29.00/mo)",
+            "customer_id": c_id,
+            "customer_name": c_name,
+            "customer_email": c_email,
+            "subscription_plan": c_plan,
             "reference_id": "SUB-ADJ-6601",
             "system_details": "Customer requested downgrade to Starter Tier prior to renewal; legacy renewal was billed at $79.00. $50.00 credit due.",
             "steps": [
                 {"text": "Connecting to Stripe Subscription & Entitlements Engine...", "delay": 650},
-                {"text": "Locating subscription profile for Michael Scott (USR-09148)...", "delay": 700},
+                {"text": f"Locating subscription profile for {c_name} ({c_id})...", "delay": 700},
                 {"text": "Auditing billing schedule: Legacy $79 renewal confirmed; downgrade to Starter ($29) requested...", "delay": 750},
                 {"text": "Calculating prorated delta: $50.00 credit approved under SUB-ADJ-6601...", "delay": 750},
                 {"text": "Applying $50.00 credit to customer ledger & setting renewal tier to Starter ($29.00)...", "delay": 700},
-                {"text": "Dispatching updated subscription schedule and receipt to m.scott@dunder.com...", "delay": 600},
+                {"text": f"Dispatching updated subscription schedule and receipt to {c_email}...", "delay": 600},
             ],
         }
 
     # Category 11: Account Management (default fallback)
     else:
+        acc = find_customer_account_by_query(query=query)
+        c_id = (acc.get("customer_id") if acc else None) or "USR-14309"
+        c_name = (acc.get("customer_name") if acc else None) or "Elena Rostova"
+        c_email = (acc.get("customer_email") if acc else None) or "elena@globaltrade.de"
+        c_plan = (acc.get("subscription_plan") if acc else None) or "Team Tier ($120.00/mo)"
         return {
             "category": "Account Management",
             "is_refund": False,
@@ -683,19 +889,19 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "database_file": "Enterprise Workspace Directory & IAM",
             "status_pill": "👤 Entity Update & Account Consolidation Request",
             "action_btn_text": "Let agent update account records & confirm",
-            "customer_id": "USR-14309",
-            "customer_name": "Elena Rostova",
-            "customer_email": "elena@globaltrade.de",
-            "subscription_plan": "Team Tier ($120.00/mo)",
+            "customer_id": c_id,
+            "customer_name": c_name,
+            "customer_email": c_email,
+            "subscription_plan": c_plan,
             "reference_id": "ACC-MGT-5501",
             "system_details": "Request to merge subsidiary account into primary organization and update legal contact information.",
             "steps": [
                 {"text": "Accessing Enterprise Workspace Directory (IAM / SSO)...", "delay": 650},
-                {"text": "Locating organization profile for Elena Rostova (USR-14309)...", "delay": 700},
+                {"text": f"Locating organization profile for {c_name} ({c_id})...", "delay": 700},
                 {"text": "Verifying organizational signing authority and corporate domain records...", "delay": 750},
                 {"text": "Processing account consolidation and updating primary contact credentials (ACC-MGT-5501)...", "delay": 750},
                 {"text": "Updating customer master account record in Enterprise Directory...", "delay": 700},
-                {"text": "Dispatching consolidation confirmation notice to elena@globaltrade.de...", "delay": 600},
+                {"text": f"Dispatching consolidation confirmation notice to {c_email}...", "delay": 600},
             ],
         }
 
@@ -739,22 +945,46 @@ def execute_agent_resolution(
             logger.info(f"Database verify: Transaction {target_txn_id} was ALREADY refunded under {existing_ref_id}.")
             res_action = f"Transaction {target_txn_id} was already refunded under {existing_ref_id} on {existing_ref_date}. Reconfirmed without duplicate payout."
         else:
+            ref_code = analysis.get("refund_id") or "REF-88219-AUTO"
             for row in all_txns:
                 if row.get("transaction_id") == target_txn_id:
                     row["status"] = "Refunded"
-                    row["refund_id"] = "REF-88219-AUTO"
+                    row["refund_id"] = ref_code
                     row["refund_amount"] = row.get("amount", "49.00")
                     row["refunded_at"] = now_str
                     row["processed_by"] = "Troy (Autonomous Resolution Agent)"
-                    row["notes"] = notes or "Refunded by Troy: Duplicate subscription charge in October 2026 billing cycle."
+                    row["notes"] = notes or f"Refunded by Troy: Duplicate subscription charge in {analysis.get('billing_cycle', 'cycle')}."
                     updated_txn = row
                     break
             write_all_transactions(all_txns)
             logger.info(f"Database updated: Transaction {target_txn_id} marked as Refunded in data/transactions.csv.")
-            res_action = f"Transaction {target_txn_id} Refunded ($49.00 via Stripe Gateway API)"
+            res_action = f"Transaction {target_txn_id} Refunded (${updated_txn.get('amount', '49.00') if updated_txn else '49.00'} via Stripe Gateway API)"
 
         plan_rate = analysis.get("retained_transaction", {}).get("amount", "49.00")
-        active_ref_id = existing_ref_id if is_already_ref else (updated_txn.get("refund_id") if updated_txn else "REF-88219-AUTO")
+        active_ref_id = existing_ref_id if is_already_ref else (updated_txn.get("refund_id") if updated_txn else ref_code)
+
+        # Synchronize and update data/customer_accounts.csv
+        accounts = read_all_customer_accounts()
+        target_cust_id = analysis.get("customer_id")
+        for acc in accounts:
+            if acc.get("customer_id") == target_cust_id:
+                acc["refund_status"] = f"Refunded (${plan_rate} via Stripe API)"
+                acc["refund_id"] = active_ref_id
+                acc["account_balance"] = "$0.00 (Settled)"
+                acc["account_status"] = "Active - In Good Standing"
+                acc["duplicate_verified"] = "Yes - Accidental Double Charge Detected"
+                acc["total_billed_this_month"] = f"{plan_rate} (Net after ${plan_rate} refund)"
+                if target_txn_id in acc.get("transaction_2", "") or not acc.get("transaction_2") or acc.get("transaction_2") == "None":
+                    acc["transaction_2"] = f"{target_txn_id} (${plan_rate} on {now_str[:10]}) [Refunded: {active_ref_id}]"
+                acc["last_verified_by"] = "Troy (Autonomous Resolution Agent)"
+                acc["updated_by"] = "Troy (Autonomous Resolution Agent)"
+                acc["last_updated"] = now_str
+                acc["notes"] = f"Autonomous override executed by Troy. Accidental double renewal debit reversed in Stripe API under {active_ref_id}."
+                break
+        write_all_customer_accounts(accounts)
+
+        order_num = analysis.get("order_id") or analysis.get("customer", {}).get("reference_order_id", "ORD-88219")
+        ticket_num = order_num.replace("ORD-", "")
 
         return {
             "ok": True,
@@ -762,8 +992,10 @@ def execute_agent_resolution(
             "category": "Refunds",
             "already_refunded": is_already_ref,
             "is_already_refunded": is_already_ref,
+            "refund_id": active_ref_id,
             "refunded_transaction": updated_txn,
             "retained_transaction": analysis.get("retained_transaction"),
+            "duplicate_transaction": updated_txn or dup_txn,
             "customer": {
                 "customer_id": analysis.get("customer_id", "USR-10492"),
                 "customer_name": analysis.get("customer_name", "Alex Morgan"),
@@ -771,15 +1003,15 @@ def execute_agent_resolution(
                 "subscription_plan": analysis.get("subscription_plan", "Pro Tier ($49.00/mo)"),
                 "status": "Resolved",
                 "account_status": "Active - In Good Standing",
-                "refund_status": "Refunded ($49.00 via Stripe API)",
+                "refund_status": f"Refunded (${plan_rate} via Stripe API)",
                 "refund_id": active_ref_id,
                 "refunded_at": existing_ref_date if is_already_ref else now_str,
                 "account_balance": "$0.00 (Settled)",
                 "customer_notified": f"Yes - Confirmation Dispatched ({active_ref_id})",
             },
             "ticket": {
-                "ticket_id": "88219",
-                "order_id": "ORD-88219",
+                "ticket_id": ticket_num,
+                "order_id": order_num,
                 "customer_name": analysis.get("customer_name", "Alex Morgan"),
                 "customer_email": analysis.get("customer_email", "alex.morgan@gmail.com"),
                 "status": "Resolved",
@@ -956,6 +1188,9 @@ def execute_manual_resolution(
         write_all_transactions(all_txns)
         logger.info(f"Database updated: Transaction {target_txn_id} flagged for manual review in data/transactions.csv.")
 
+        order_num = analysis.get("order_id") or analysis.get("customer", {}).get("reference_order_id", "ORD-88219")
+        ticket_num = order_num.replace("ORD-", "")
+
         return {
             "ok": True,
             "action": "manual_resolve",
@@ -972,8 +1207,8 @@ def execute_manual_resolution(
                 "customer_notified": "Yes - Escalation Notice Sent",
             },
             "ticket": {
-                "ticket_id": "88219",
-                "order_id": "ORD-88219",
+                "ticket_id": ticket_num,
+                "order_id": order_num,
                 "status": "Escalated - Manual Review",
                 "predicted_team": assigned_queue,
                 "customer_notified": "Yes - Escalation Notice Sent",

@@ -8,11 +8,13 @@ and LLM resolution deliberation.
 
 import asyncio
 import datetime
+import json
 import logging
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from app.utils.sanitizer import sanitize_model_output
+from app.utils.json_extractor import parse_json
 from app.simulation.state import SimulationState
 from app.simulation.round_barrier import RoundBarrier
 from app.http.sse_manager import SseManager
@@ -20,6 +22,7 @@ from app.providers.base_driver import BaseLlmDriver
 from app.prompts.ticket_prompts import (
     build_ticket_title_prompt,
     build_ticket_summary_prompt,
+    build_ticket_title_and_summary_prompt,
     build_title_prompt,
     build_summary_prompt,
 )
@@ -85,39 +88,45 @@ class ComplaintResolutionOrchestrator:
 
     async def summarise_ticket(self, query: str, driver: Optional[BaseLlmDriver] = None) -> Optional[Dict[str, Any]]:
         """
-        Creates a concise summary of the incoming complaint ticket.
+        Sends the complaint ticket to the LLM to generate both a concise Title and an informative Summary.
+        Pre-seeds with domain-intelligent extraction so the title is never truncated or malformed.
         """
         text = (query or "").strip()
         if not text:
             return None
 
-        # Determine short title
-        short_title = self._title_fallback(text)
-        self.sse.broadcast("topic", {"title": short_title or "Complaint Ticket"})
-
-        # Generate ticket summary
-        summary = ""
         d = driver or self._active_driver()
+        title = ""
+        summary = ""
+
+        # Pre-seed with smart domain fallback so we never emit a broken or truncated title
+        smart_title = self._title_fallback(text)
+        smart_summary = self._summary_fallback(text)
+
         if d:
             try:
-                # Brief call with timeout so resolution isn't delayed
-                summary = await asyncio.wait_for(self._summarize_text(text, d), timeout=5.0)
+                # Send ticket to LLM to generate both Title and Summary subtext
+                t, s = await asyncio.wait_for(self._summarize_ticket_with_llm(text, d), timeout=10.0)
+                if t and len(t.split()) >= 2:
+                    title = t
+                if s and len(s) > 10:
+                    summary = s
             except Exception as e:
-                logger.info(f"Summarizer used fast fallback: {e}")
+                logger.info(f"LLM ticket title/summary generation used smart fallback: {e}")
+
+        if not title:
+            title = smart_title
 
         if not summary:
-            # Clean direct heuristic summary
-            clean_first = re.split(r"[\n\.\?!]", text)[0].strip()
-            if len(clean_first) > 10:
-                summary = f"Customer reported: {clean_first}"
-            else:
-                summary = f"Customer complaint ticket regarding {text[:140]}..."
+            summary = smart_summary
 
-        # Guarantee no 'policy' word appears in summary
         summary = re.sub(r"\bpolicy\b", "ticket", summary, flags=re.IGNORECASE)
+        title = re.sub(r"\bpolicy\b", "Ticket", title, flags=re.IGNORECASE)
+
+        self.sse.broadcast("topic", {"title": title or "Complaint Ticket"})
 
         story = {
-            "title": short_title or "Complaint Ticket",
+            "title": title or "Complaint Ticket",
             "source": "Customer Ticket",
             "url": "",
             "publishedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -127,6 +136,42 @@ class ComplaintResolutionOrchestrator:
         self.set_story(story)
         self.sse.broadcast("feed", story)
         return story
+
+    async def _summarize_ticket_with_llm(self, text: str, driver: BaseLlmDriver) -> Tuple[str, str]:
+        """
+        Sends the complaint ticket to the LLM to generate both the Title and the Summary subtext.
+        """
+        messages, max_tokens = build_ticket_title_and_summary_prompt(text)
+        try:
+            raw = await driver.complete(messages, max_tokens)
+            cleaned = sanitize_model_output(raw).strip()
+
+            # Robust JSON extraction handling markdown fences, thought tags, and substrings
+            data = parse_json(cleaned) or parse_json(raw)
+
+            if isinstance(data, dict):
+                title = str(data.get("title") or "").strip()
+                summary = str(data.get("summary") or "").strip()
+                if title or summary:
+                    title = re.sub(r'^["\']|["\']$', '', title).strip()
+                    title = re.sub(r'[\.:]+$', '', title).strip()
+                    return title, summary
+
+            # Line-based regex fallback
+            title_match = re.search(r"(?:Title|Ticket Title)\s*:\s*([^\n]+)", cleaned, re.IGNORECASE)
+            summary_match = re.search(r"(?:Summary|Issue Summary)\s*:\s*([^\n]+(?:\n[^\n]+)?)", cleaned, re.IGNORECASE)
+
+            t = title_match.group(1).strip() if title_match else ""
+            s = summary_match.group(1).strip() if summary_match else ""
+            if t or s:
+                t = re.sub(r'^["\']|["\']$', '', t).strip()
+                t = re.sub(r'[\.:]+$', '', t).strip()
+                return t, s
+
+        except Exception as e:
+            logger.warning(f"Failed to generate title and summary via LLM: {e}")
+
+        return "", ""
 
     async def summarise_policy(self, query: str, driver: Optional[BaseLlmDriver] = None) -> Optional[Dict[str, Any]]:
         # Backward compatibility alias
@@ -295,7 +340,7 @@ class ComplaintResolutionOrchestrator:
                 prompt_lines.append(f"- Decision: Authorize immediate refund specifically for duplicate transaction {dup_id} (${dup_amt}), updating its status to 'Refunded' in data/transactions.csv.\n")
                 prompt_lines.append(
                     "Please deliver your formal Complaint Resolution Assessment as Troy, Lead Complaint Resolution Agent. "
-                    "Explicitly cite your analysis of the transaction records in data/transactions.csv and your decision to refund the redundant transaction (TXN-9012). "
+                    f"Explicitly cite your analysis of the transaction records in data/transactions.csv and your decision to refund the redundant transaction ({dup_id}). "
                 )
         else:
             # Domain-specific prompt for the other 10 categories
@@ -314,15 +359,7 @@ class ComplaintResolutionOrchestrator:
                 f"Explain the concrete actions taking place under reference ID {cat_ctx.get('reference_id')}, and reassure the customer with clear next steps."
             )
 
-        prompt_lines.append(
-            "Structure your response under these clear section titles (do NOT prefix with numbers like 1, 2, 3, 4):\n"
-            "- Executive Assessment & Category Confirmation\n"
-            "- Root Cause Analysis & Precedent Alignment\n"
-            "- Customer Communication Strategy (exact empathetic message to send to the customer)\n"
-            "- Internal Routing & Next Action Steps"
-        )
-
-        prompt_content = "\n".join(prompt_lines)
+        base_context_str = "\n".join(prompt_lines)
 
         if is_refund_domain:
             system_instruction = (
@@ -340,30 +377,159 @@ class ComplaintResolutionOrchestrator:
             )
 
         troy_agent = {"name": "Troy", "state": f"Assigned: {team}"}
-        troy_message = await self._agent_speak(
-            agent=troy_agent,
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": prompt_content},
-            ],
-            max_tokens=2048,
-            round_num=0,
-            label="Resolution",
+
+        # Multi-prompt architecture: 1 dedicated prompt per resolution section = 1 chatbox at a time
+        section_configs = [
+            {
+                "id": "executive",
+                "index": 0,
+                "title": "Executive Assessment & Category Confirmation",
+                "card_id": "troy-card",
+                "speech_id": "troy-speech",
+                "label": "Executive Assessment",
+                "prompt": (
+                    "TASK: Deliver ONLY Section 1: Executive Assessment & Category Confirmation.\n"
+                    "FORMAT REQUIREMENT: Start directly with the bold heading '### **Executive Assessment & Category Confirmation**'.\n"
+                    "CONTENT REQUIREMENT: Formally confirm the complaint category, assigned department, SLA timeline, and audit findings from database records or system telemetry. State definitively whether the customer's assertion is valid or already reconciled.\n"
+                    "CRITICAL CONSTRAINT: Do NOT include Root Cause, Customer Communication, or Internal Routing. Stop after completing this section."
+                ),
+            },
+            {
+                "id": "root_cause",
+                "index": 1,
+                "title": "Root Cause Analysis & Precedent Alignment",
+                "card_id": "troy-card-root-cause",
+                "speech_id": "troy-root-cause-speech",
+                "label": "Root Cause Analysis",
+                "prompt": (
+                    "TASK: Deliver ONLY Section 2: Root Cause Analysis & Precedent Alignment.\n"
+                    "FORMAT REQUIREMENT: Start directly with the bold heading '### **Root Cause Analysis & Precedent Alignment**'.\n"
+                    "CONTENT REQUIREMENT: Explain the root cause of the customer issue and explicitly cite alignment with the historical precedents retrieved from the knowledge base.\n"
+                    "CRITICAL CONSTRAINT: Do NOT repeat Section 1. Do NOT include Customer Communication or Internal Routing. Stop after completing this section."
+                ),
+            },
+            {
+                "id": "customer_comms",
+                "index": 2,
+                "title": "Customer Communication Strategy",
+                "card_id": "troy-card-communication",
+                "speech_id": "troy-communication-speech",
+                "label": "Customer Communication",
+                "prompt": (
+                    "TASK: Deliver ONLY Section 3: Customer Communication Strategy.\n"
+                    "FORMAT REQUIREMENT: Start directly with the bold heading '### **Customer Communication Strategy**'.\n"
+                    "CONTENT REQUIREMENT: Write the exact empathetic message to be sent to the customer. Include '**Subject:** [Subject line]', personalized greeting with customer name, clear reassuring explanation of actions taken or already resolved, and professional sign-off from Troy.\n"
+                    "CRITICAL CONSTRAINT: Do NOT repeat previous sections. Do NOT output internal routing. Stop after completing this section."
+                ),
+            },
+            {
+                "id": "internal_routing",
+                "index": 3,
+                "title": "Internal Routing & Next Action Steps",
+                "card_id": "troy-card-routing",
+                "speech_id": "troy-routing-speech",
+                "label": "Internal Routing",
+                "prompt": (
+                    "TASK: Deliver ONLY Section 4: Internal Routing & Next Action Steps.\n"
+                    "FORMAT REQUIREMENT: Start directly with the bold heading '### **Internal Routing & Next Action Steps**'.\n"
+                    "CONTENT REQUIREMENT: State the internal department routing, database ledger updates or system actions executed, internal ticket status update, and concrete next operational steps.\n"
+                    "CRITICAL CONSTRAINT: Do NOT repeat previous sections. Stop after completing this section."
+                ),
+            },
+        ]
+
+        # Prepare full category fallback in case LLM is offline or times out
+        fallback_full = self._build_category_fallback(
+            pred_cat=pred_cat,
+            complaint_text=complaint_text,
+            conf_pct=conf_pct,
+            team=team,
+            sla_hours=sla_hours,
+            report=report,
+            cat_ctx=cat_ctx,
         )
+        fallback_sections = self._split_fallback_into_sections(fallback_full)
 
-        if not troy_message or "Signal lost" in troy_message:
-            fallback_text = self._build_category_fallback(
-                pred_cat=pred_cat,
-                complaint_text=complaint_text,
-                conf_pct=conf_pct,
-                team=team,
-                sla_hours=sla_hours,
-                report=report,
-                cat_ctx=cat_ctx,
+        conversation_history: List[Dict[str, str]] = [
+            {"role": "system", "content": system_instruction},
+        ]
+        section_results = {}
+
+        for sec in section_configs:
+            sec_id = sec["id"]
+            sec_idx = sec["index"]
+            sec_title = sec["title"]
+            card_id = sec["card_id"]
+            speech_id = sec["speech_id"]
+            label = sec["label"]
+
+            self.sse.broadcast(
+                "system",
+                {"message": f"Troy generating Prompt {sec_idx + 1}/4: {sec_title}..."}
             )
-            self.sse.broadcast("agent_start", {"agent": "Troy", "round": 0, "state": f"Assigned: {team}"})
-            self.sse.broadcast("agent", {"agent": "Troy", "round": 0, "message": fallback_text, "state": f"Assigned: {team}"})
 
+            # Build user prompt with base telemetry on first step
+            if sec_idx == 0:
+                user_msg = f"{base_context_str}\n\n{sec['prompt']}"
+            else:
+                user_msg = sec["prompt"]
+
+            step_messages = list(conversation_history)
+            step_messages.append({"role": "user", "content": user_msg})
+
+            extra_payload = {
+                "section": sec_id,
+                "section_index": sec_idx,
+                "section_title": sec_title,
+                "card_id": card_id,
+                "speech_id": speech_id,
+            }
+
+            sec_output = await self._agent_speak(
+                agent=troy_agent,
+                messages=step_messages,
+                max_tokens=1024,
+                round_num=sec_idx,
+                label=label,
+                extra_payload=extra_payload,
+            )
+
+            if not sec_output or "Signal lost" in sec_output:
+                sec_output = fallback_sections.get(sec_id) or fallback_full
+                self.sse.broadcast(
+                    "agent_start",
+                    {"agent": "Troy", "round": sec_idx, "state": f"Assigned: {team}", **extra_payload}
+                )
+                self.sse.broadcast(
+                    "agent",
+                    {
+                        "agent": "Troy",
+                        "round": sec_idx,
+                        "state": f"Assigned: {team}",
+                        "message": sec_output,
+                        **extra_payload,
+                    }
+                )
+
+            # Ensure bold heading is present at the very top of each section
+            clean_bold_heading = f"### **{sec_title}**"
+            if not re.search(r"###\s*\*\*", sec_output):
+                if re.search(rf"^(?:[#*•\->]|\d+[\.:\)])*[ \t]*{re.escape(sec_title)}", sec_output, re.IGNORECASE | re.MULTILINE):
+                    sec_output = re.sub(
+                        rf"^(?:[#*•\->]|\d+[\.:\)])*[ \t]*{re.escape(sec_title)}[^\n]*",
+                        clean_bold_heading,
+                        sec_output,
+                        count=1,
+                        flags=re.IGNORECASE | re.MULTILINE,
+                    )
+                else:
+                    sec_output = f"{clean_bold_heading}\n\n{sec_output.strip()}"
+
+            section_results[sec_id] = sec_output
+            conversation_history.append({"role": "user", "content": user_msg})
+            conversation_history.append({"role": "assistant", "content": sec_output})
+
+        full_resolution_text = "\n\n".join(section_results.values())
         resolution_summary = f"Complaint ticket categorized as '{pred_cat}' ({conf_pct:.1f}% confidence) and routed to {team}."
         self.sse.broadcast(
             "resolution_end",
@@ -374,6 +540,8 @@ class ComplaintResolutionOrchestrator:
                 "team": team,
                 "sla_hours": sla_hours,
                 "cra_report": report,
+                "full_resolution": full_resolution_text,
+                "sections": section_results,
             },
         )
         self.sse.broadcast(
@@ -390,6 +558,8 @@ class ComplaintResolutionOrchestrator:
                     "negative": [],
                 },
                 "cra_report": report,
+                "full_resolution": full_resolution_text,
+                "sections": section_results,
             },
         )
 
@@ -400,6 +570,7 @@ class ComplaintResolutionOrchestrator:
         max_tokens: int,
         round_num: int = 0,
         label: str = "Resolution",
+        extra_payload: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Executes an agent call using the reference reasoning and output streaming handler.
@@ -419,8 +590,40 @@ class ComplaintResolutionOrchestrator:
             label=label,
             show_reasoning=show_reasoning,
             use_stream=use_stream,
+            extra_payload=extra_payload,
         )
         return result.get("message", "")
+
+    def _split_fallback_into_sections(self, text: str) -> Dict[str, str]:
+        """
+        Splits a full fallback resolution into the 4 dedicated sections,
+        ensuring each section starts with a bold markdown heading.
+        """
+        if not text:
+            return {}
+
+        patterns = [
+            ("executive", r"###\s*Executive Assessment[^\n]*", "### **Executive Assessment & Category Confirmation**"),
+            ("root_cause", r"###\s*Root Cause[^\n]*", "### **Root Cause Analysis & Precedent Alignment**"),
+            ("customer_comms", r"###\s*Customer Communication[^\n]*", "### **Customer Communication Strategy**"),
+            ("internal_routing", r"###\s*Internal Routing[^\n]*", "### **Internal Routing & Next Action Steps**"),
+        ]
+
+        matches = []
+        for sec_id, pattern, bold_heading in patterns:
+            m = re.search(pattern, text, re.IGNORECASE)
+            if m:
+                matches.append((sec_id, m.start(), m.end(), bold_heading))
+
+        matches.sort(key=lambda x: x[1])
+        sections = {}
+
+        for i, (sec_id, start, end, bold_heading) in enumerate(matches):
+            next_start = matches[i + 1][1] if i + 1 < len(matches) else len(text)
+            body = text[end:next_start].strip()
+            sections[sec_id] = f"{bold_heading}\n{body}"
+
+        return sections
 
     async def _summarize_title(self, text: str, driver: BaseLlmDriver) -> str:
         messages, max_tokens = build_ticket_title_prompt(text)
@@ -437,10 +640,122 @@ class ComplaintResolutionOrchestrator:
         return self._title_fallback(text)
 
     def _title_fallback(self, text: str) -> str:
-        cleaned = re.sub(r"[#*_>`~\[\]\(\)\{\}\"'\-]", " ", text or "")
-        stop_words = {"the", "a", "an", "and", "or", "of", "to", "in", "for", "on", "with", "by", "as", "is", "are", "be", "i", "my", "we", "our", "me"}
-        words = [w.capitalize() for w in cleaned.split() if w.lower() not in stop_words]
-        return " ".join(words[:3]) if words else "Complaint Ticket"
+        raw = (text or "").strip()
+        if not raw:
+            return "Customer Complaint Ticket"
+
+        low = raw.lower()
+
+        # 1. High-priority domain and keyword intent matching
+        if ("crash" in low or "500" in low or "exception" in low) and ("pdf" in low or "export" in low):
+            if "android" in low:
+                return "Android PDF Export Crash"
+            return "App Crash on PDF Export"
+        elif "crash" in low or "crashed" in low or "crashes" in low:
+            if "android" in low:
+                return "Android Mobile App Crash"
+            elif "ios" in low or "iphone" in low:
+                return "iOS Mobile App Crash"
+            elif "camera" in low:
+                return "Mobile Camera Crash Error"
+            return "Application Crash Error"
+
+        if "2fa" in low or "two-factor" in low or "mfa" in low or ("auth" in low and "code" in low):
+            return "2FA Authentication Code Delivery Issue"
+
+        if "password reset" in low or "reset password" in low:
+            return "Password Reset Assistance"
+
+        if "vat" in low or "tax id" in low or "tax invoice" in low:
+            return "Company VAT & Tax Invoice Request"
+
+        if "sync" in low or "syncing" in low:
+            return "Cross-Device Data Sync Failure"
+
+        if "429" in low or "rate limit" in low:
+            return "Webhook API 429 Rate Limit Error"
+        elif "api" in low and ("webhook" in low or "endpoint" in low or "documentation" in low):
+            return "API Webhook Configuration Issue"
+
+        if ("invite" in low or "team" in low) and ("permission" in low or "role" in low):
+            return "Workspace Team Invite & Permissions"
+
+        if "latency" in low or "seconds to load" in low or "45 seconds" in low or "slow" in low or "timeout" in low:
+            return "Dashboard Search Query Latency"
+
+        if "suspicious" in low or "unauthorized" in low or "unknown ip" in low:
+            return "Suspicious Login Attempt Detected"
+
+        if ("renewal" in low or "downgrade" in low) and ("charge" in low or "charged" in low or "unexpected" in low):
+            return "Unexpected Plan Renewal Charge"
+
+        if "merge" in low and "account" in low:
+            return "Workspace Account Merge & Name Update"
+
+        if "charged twice" in low or "duplicate" in low:
+            return "Duplicate Subscription Charge"
+
+        if "refund" in low:
+            return "Customer Refund Request"
+
+        if "payment" in low or "checkout" in low or "gateway" in low:
+            if "404" in low or "error" in low or "fail" in low:
+                return "Payment Gateway Checkout Error"
+            return "Payment & Checkout Inquiry"
+
+        # 2. Grammar-aware clause & phrase extractor (avoids cutting off mid-phrase)
+        cleaned = re.sub(
+            r"^(?:hello|hi|hey|please|can you|could you|i need to|i want to|i am writing to|i have an issue where|we have an issue where|customer reported that|there is an issue with|issue with|problem with|bug with|how do i|how to|can i|getting an?|there is an?)\s+",
+            "",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r'[#*_>`~\[\]\(\)\{\}\"\'\-]', " ", cleaned)
+
+        first_clause = re.split(r'[\.\?!;\n]|,\s*(?:but|and|or|because|since|however)\s*', cleaned)[0].strip()
+        words = [w for w in first_clause.split() if w]
+
+        dangling = {
+            "every", "the", "a", "an", "and", "or", "of", "to", "in", "for", "on", "with", "by",
+            "as", "is", "are", "be", "at", "from", "into", "my", "our", "your", "their", "when",
+            "that", "which", "if", "where", "how", "what", "who", "while", "after", "before", "all"
+        }
+
+        # Trim dangling prepositions/determiners from the end
+        while words and words[-1].lower() in dangling:
+            words.pop()
+
+        if len(words) > 5:
+            words = words[:5]
+            while words and words[-1].lower() in dangling:
+                words.pop()
+
+        if words:
+            return " ".join(w.capitalize() for w in words)
+
+        return "Customer Complaint Ticket"
+
+    def _summary_fallback(self, text: str) -> str:
+        raw = (text or "").strip()
+        if not raw:
+            return "Customer complaint ticket submitted for autonomous resolution."
+
+        # Preserve the customer's actual complaint details
+        clean = re.sub(r"^(?:hello|hi|hey)\s*[\.,!]?\s*", "", raw, flags=re.IGNORECASE).strip()
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean) if s.strip()]
+
+        if len(sentences) >= 2:
+            combined = f"{sentences[0]} {sentences[1]}"
+            if len(combined) > 220:
+                combined = combined[:217] + "..."
+            return f"Customer reported: {combined}"
+        elif sentences:
+            single = sentences[0]
+            if len(single) > 220:
+                single = single[:217] + "..."
+            return f"Customer reported: {single}"
+
+        return f"Customer complaint ticket regarding {raw[:140]}..."
 
     async def _summarize_text(self, text: str, driver: BaseLlmDriver) -> str:
         messages, max_tokens = build_ticket_summary_prompt(text)
@@ -486,9 +801,20 @@ class ComplaintResolutionOrchestrator:
         if pred_cat == "Refunds" or cat_ctx.get("is_refund", False):
             txn_analysis = cat_ctx.get("txn_analysis") or {}
             is_already_ref = txn_analysis.get("is_already_refunded", False)
-            dup_id = txn_analysis.get("duplicate_transaction", {}).get("transaction_id", "TXN-9012") if txn_analysis.get("duplicate_transaction") else "TXN-9012"
-            dup_amt = txn_analysis.get("duplicate_transaction", {}).get("amount", "49.00") if txn_analysis.get("duplicate_transaction") else "49.00"
-            ref_date = txn_analysis.get("refunded_at", "2026-10-21 14:49:37")
+            dup_txn = txn_analysis.get("duplicate_transaction") or {}
+            ret_txn = txn_analysis.get("retained_transaction") or {}
+            dup_id = dup_txn.get("transaction_id", "TXN-9012") if dup_txn else "TXN-9012"
+            ret_id = ret_txn.get("transaction_id", "TXN-9011") if ret_txn else "TXN-9011"
+            dup_amt = dup_txn.get("amount", "49.00") if dup_txn else "49.00"
+            ret_amt = ret_txn.get("amount", "49.00") if ret_txn else "49.00"
+            ref_date = txn_analysis.get("refunded_at") or dup_txn.get("refunded_at") or "2026-10-21 14:49:37"
+
+            c_name = txn_analysis.get("customer_name") or "Alex Morgan"
+            c_first = c_name.split()[0] if c_name else "Valued Customer"
+            c_cycle = txn_analysis.get("billing_cycle") or "October 2026"
+            order_ref = txn_analysis.get("order_id") or txn_analysis.get("customer", {}).get("reference_order_id", "ORD-88219")
+            order_num = order_ref.replace("ORD-", "")
+            active_ref = ref_id or txn_analysis.get("refund_id") or "REF-88219-AUTO"
 
             if is_already_ref:
                 return (
@@ -496,12 +822,12 @@ class ComplaintResolutionOrchestrator:
                     f"- **Classified Category**: Refunds ({conf_pct:.1f}% confidence)\n"
                     f"- **Assigned Department**: {team} ({report.get('team_method', 'Rule-based')})\n"
                     f"- **Target SLA**: {sla_hours} hours (Risk: {report.get('sla', {}).get('sla_risk', 'Low')})\n"
-                    f"- **Database Analysis**: Analyzed `data/transactions.csv` and confirmed customer account is already reconciled. The duplicate charge ({dup_id}: ${dup_amt}) was **ALREADY REFUNDED** on {ref_date} under Refund ID **{ref_id}**. The single active renewal (TXN-9011: $49.00) remains valid, and customer balance is **$0.00 (Settled)**.\n\n"
+                    f"- **Database Analysis**: Analyzed `data/transactions.csv` and confirmed customer account is already reconciled. The duplicate charge ({dup_id}: ${dup_amt}) was **ALREADY REFUNDED** on {ref_date} under Refund ID **{active_ref}**. The single active renewal ({ret_id}: ${ret_amt}) remains valid, and customer balance is **$0.00 (Settled)**.\n\n"
                     f"### Root Cause Analysis & Precedent Alignment\n"
                     f"- **Root Cause**: Payment gateway retry created duplicate authorization which was caught and refunded during automated settlement.\n"
                     f"- **Precedent Match**: 99.1% match with historical re-inquiry cases where customer needed reconfirmation of an already-processed refund receipt.\n\n"
                     f"### Customer Communication Strategy\n"
-                    f"\"Hello Alex, thank you for checking in. We verified our transaction records in the ledger and confirm that the duplicate charge of ${dup_amt} ({dup_id}) was already refunded to your original payment method under Refund ID {ref_id}. Depending on your bank's posting cycle, this typically reflects within 3-5 business days. Your subscription remains active with zero overdue balance.\"\n\n"
+                    f"\"Hello {c_first}, thank you for checking in. We verified our transaction records in the ledger and confirm that the duplicate charge of ${dup_amt} ({dup_id}) was already refunded to your original payment method under Refund ID {active_ref}. Depending on your bank's posting cycle, this typically reflects within 3-5 business days. Your subscription remains active with zero overdue balance.\"\n\n"
                     f"### Internal Routing & Next Action Steps\n"
                     f"- **Internal Routing**: Routed to {team}.\n"
                     f"- **Duplicate Prevention**: Verified existing refund in `data/transactions.csv`. No secondary refund payout required. Closed ticket as resolved and dispatched receipt reconfirmation."
@@ -512,15 +838,15 @@ class ComplaintResolutionOrchestrator:
                     f"- **Classified Category**: Refunds ({conf_pct:.1f}% confidence)\n"
                     f"- **Assigned Department**: {team} ({report.get('team_method', 'Rule-based')})\n"
                     f"- **Target SLA**: {sla_hours} hours (Risk: {report.get('sla', {}).get('sla_risk', 'Low')})\n"
-                    f"- **Database Analysis**: Analyzed `data/transactions.csv` and confirmed 2 settled transaction records in October 2026 for Alex Morgan (TXN-9011: $49.00 on Oct 20 & TXN-9012: $49.00 on Oct 21). An accidental second debit of $49.00 is confirmed.\n\n"
+                    f"- **Database Analysis**: Analyzed `data/transactions.csv` and confirmed 2 settled transaction records in {c_cycle} for {c_name} ({ret_id}: ${ret_amt} & {dup_id}: ${dup_amt}). An accidental second debit of ${dup_amt} is confirmed.\n\n"
                     f"### Root Cause Analysis & Precedent Alignment\n"
-                    f"- **Root Cause**: Payment gateway retry triggered an accidental double debit for Order #88219 during subscription renewal.\n"
+                    f"- **Root Cause**: Payment gateway retry triggered an accidental double debit for Order #{order_num} during subscription renewal.\n"
                     f"- **Precedent Match**: 98.4% match with historical case where immediate autonomous refund settled the account balance.\n\n"
                     f"### Customer Communication Strategy\n"
-                    f"\"Hello Alex, thank you for reaching out. We analyzed our billing transaction records and confirmed an accidental duplicate charge of $49.00 occurred during renewal. We have reversed transaction TXN-9012 immediately under refund reference {ref_id}.\"\n\n"
+                    f"\"Hello {c_first}, thank you for reaching out. We analyzed our billing transaction records and confirmed an accidental duplicate charge of ${dup_amt} occurred during renewal. We have reversed transaction {dup_id} immediately under refund reference {active_ref}.\"\n\n"
                     f"### Internal Routing & Next Action Steps\n"
                     f"- **Internal Routing**: Routed to {team}.\n"
-                    f"- **Database Sync**: Authorize refund for TXN-9012 ($49.00) in `data/transactions.csv` to reconcile customer account, retaining TXN-9011 as valid renewal."
+                    f"- **Database Sync**: Authorize refund for {dup_id} (${dup_amt}) in `data/transactions.csv` to reconcile customer account, retaining {ret_id} as valid renewal."
                 )
 
         elif pred_cat == "Authentication & Access":
