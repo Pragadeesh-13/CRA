@@ -1,5 +1,5 @@
 import pytest
-from app.cra import cra_engine
+from app.triage import LABEL_MAP, predict_category
 from app.database import get_category_complaint_context, execute_agent_resolution, execute_manual_resolution
 from app.simulation.troy import Troy
 from app.config import settings
@@ -23,7 +23,7 @@ ALL_11_CATEGORIES = [
 
 
 def test_label_map_has_all_11_categories():
-    labels = list(cra_engine.label_map.values())
+    labels = list(LABEL_MAP.values())
     for cat in ALL_11_CATEGORIES:
         assert cat in labels, f"Missing category {cat} in label map"
 
@@ -80,7 +80,7 @@ def test_troy_fallback_generation_all_11():
 
 def test_two_factor_auth_complaint_flow():
     prompt = "Two-factor authentication codes are not being delivered to my phone. Cannot login to dashboard."
-    pred = cra_engine.predict_category(prompt)
+    pred = predict_category(prompt)
     assert pred["predicted_category"] == "Authentication & Access"
     assert pred["category_confidence"] > 0.80
 
@@ -177,7 +177,7 @@ def test_customer_account_lookup_and_emily_watson_resolution():
     assert acc["customer_name"] == "Emily Watson"
     assert acc["customer_email"] == "emily.w@consulting.co"
 
-    pred = cra_engine.predict_category(q)
+    pred = predict_category(q)
     assert pred["predicted_category"] == "Refunds"
     assert pred["category_confidence"] > 0.90
 
@@ -216,4 +216,13 @@ def test_all_scenarios_customer_account_resolution():
         assert acc is not None, f"Failed to match account for query: {q}"
         assert acc["customer_id"] == expected_id
         assert acc["customer_name"] == expected_name
+
+
+def test_zero_ml_dependencies_loaded():
+    """Verifies that no legacy heavy ML libraries are imported during testing."""
+    import sys
+    ml_packages = ["torch", "transformers", "sentence_transformers", "xgboost", "faiss", "app.cra"]
+    loaded = [pkg for pkg in ml_packages if pkg in sys.modules]
+    assert not loaded, f"Legacy ML modules detected in sys.modules: {loaded}"
+
 

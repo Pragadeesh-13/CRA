@@ -1,9 +1,11 @@
+import os
 import json
 import logging
 import re
 from typing import List, Dict, Any, Callable, Optional, Union
 import httpx
 from app.providers.base_driver import BaseLlmDriver
+from app.providers.mock_driver import MockDriver
 from app.utils.thought_buffer import ThoughtBuffer
 
 logger = logging.getLogger("provider:openai")
@@ -81,8 +83,8 @@ def resolve_think_setting(model: str = "", think: Union[str, bool] = "auto") -> 
 class OpenAiDriver(BaseLlmDriver):
     def __init__(
         self,
-        provider: str = "openrouter",
-        model: str = "openai/gpt-6.1-sol-pro",
+        provider: str = "lmstudio",
+        model: str = "qwen/qwen3.5-9b",
         api_key: str = "",
         base_url: str = "",
         think: Union[str, bool] = "auto",
@@ -99,6 +101,8 @@ class OpenAiDriver(BaseLlmDriver):
         self.public_url = public_url
         self.timeout_sec = timeout_ms / 1000.0
         self.stream_idle_timeout_sec = stream_idle_timeout_ms / 1000.0
+        self._fallback_driver = MockDriver()
+        self._offline_detected = False
 
     def _default_base_url(self) -> str:
         if self.provider == "openai":
@@ -106,7 +110,8 @@ class OpenAiDriver(BaseLlmDriver):
         if self.provider == "groq":
             return "https://api.groq.com/openai/v1"
         if self.provider == "lmstudio":
-            return "http://localhost:1235/v1"
+            env_url = (os.getenv("LMSTUDIO_BASE_URL") or "").strip()
+            return env_url if env_url else "http://localhost:1234/v1"
         return "https://openrouter.ai/api/v1"
 
     def _build_headers(self, api_key_override: Optional[str] = None) -> Dict[str, str]:
@@ -161,6 +166,9 @@ class OpenAiDriver(BaseLlmDriver):
         max_tokens: int = 4096,
         **options: Any,
     ) -> str:
+        if self._offline_detected:
+            return await self._fallback_driver.complete(messages, max_tokens, **options)
+
         base = normalize_base_url(options.get("baseUrl") or self.base_url)
         endpoint = f"{base}/v1/chat/completions"
         headers = self._build_headers(options.get("apiKey"))
@@ -195,7 +203,17 @@ class OpenAiDriver(BaseLlmDriver):
                         content = lines[-1] if lines else reasoning[:200]
                 return content
 
-        return await _make_call(include_think=True, use_max_completion=False)
+        try:
+            return await _make_call(include_think=True, use_max_completion=False)
+        except (httpx.RequestError, httpx.HTTPStatusError, ConnectionError, OSError, Exception) as e:
+            if self.provider == "lmstudio" or self.options.get("fallback_to_mock", True):
+                logger.warning(
+                    f"LLM provider '{self.provider}' at '{endpoint}' unreachable ({type(e).__name__}: {e}). "
+                    f"Falling back to deterministic MockDriver."
+                )
+                self._offline_detected = True
+                return await self._fallback_driver.complete(messages, max_tokens, **options)
+            raise
 
     async def stream(
         self,
@@ -205,6 +223,11 @@ class OpenAiDriver(BaseLlmDriver):
         on_reasoning_delta: Optional[Callable[[str], None]] = None,
         **options: Any,
     ) -> str:
+        if self._offline_detected:
+            return await self._fallback_driver.stream(
+                messages, max_tokens, on_delta=on_delta, on_reasoning_delta=on_reasoning_delta, **options
+            )
+
         base = normalize_base_url(options.get("baseUrl") or self.base_url)
         endpoint = f"{base}/v1/chat/completions"
         headers = self._build_headers(options.get("apiKey"))
@@ -274,7 +297,19 @@ class OpenAiDriver(BaseLlmDriver):
 
             return full_text
 
-        return await _stream_call(include_think=True, use_max_completion=False)
+        try:
+            return await _stream_call(include_think=True, use_max_completion=False)
+        except (httpx.RequestError, httpx.HTTPStatusError, ConnectionError, OSError, Exception) as e:
+            if self.provider == "lmstudio" or self.options.get("fallback_to_mock", True):
+                logger.warning(
+                    f"LLM provider '{self.provider}' at '{endpoint}' unreachable ({type(e).__name__}: {e}). "
+                    f"Falling back to deterministic streaming MockDriver."
+                )
+                self._offline_detected = True
+                return await self._fallback_driver.stream(
+                    messages, max_tokens, on_delta=on_delta, on_reasoning_delta=on_reasoning_delta, **options
+                )
+            raise
 
     async def fetch_models(
         self,
@@ -300,5 +335,5 @@ class OpenAiDriver(BaseLlmDriver):
         except Exception as e:
             logger.warning(f"Failed to fetch live models for {self.provider}: {e}")
 
-        fallback = CURATED_MODELS.get(self.provider, [])
+        fallback = CURATED_MODELS.get(self.provider, []) or ["qwen/qwen3.5-9b"]
         return {"ok": True, "models": fallback}

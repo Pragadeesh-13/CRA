@@ -15,8 +15,11 @@ def parse_allowed_origins() -> List[str]:
 class Settings(BaseModel):
     port: int = Field(default_factory=lambda: int(os.getenv("PORT", "3000")))
     auth_mode: str = Field(default_factory=lambda: os.getenv("AUTH_MODE", "optional").lower())
-    llm_provider: str = Field(default_factory=lambda: os.getenv("LLM_PROVIDER", "openrouter").lower())
-    llm_model: str = Field(default_factory=lambda: os.getenv("LLM_MODEL", "openai/gpt-6.1-sol-pro"))
+    llm_provider: str = Field(default_factory=lambda: os.getenv("LLM_PROVIDER", "lmstudio").lower())
+    llm_model: str = Field(default_factory=lambda: os.getenv("LLM_MODEL", "qwen/qwen3.5-9b"))
+    lmstudio_base_url: str = Field(
+        default_factory=lambda: os.getenv("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")
+    )
     llm_api_key: str = Field(default_factory=lambda: os.getenv("LLM_API_KEY", ""))
     llm_stream: bool = Field(
         default_factory=lambda: os.getenv("LLM_STREAM", "true").lower() in ("true", "1", "yes")

@@ -37,6 +37,7 @@ driver = create_driver(
     settings.llm_provider,
     model=settings.llm_model,
     api_key=settings.llm_api_key,
+    base_url=provider_base_url(settings.llm_provider) or "",
     public_url=settings.public_url,
     timeout_ms=settings.llm_timeout_ms,
     stream_idle_timeout_ms=settings.llm_stream_idle_timeout_ms,
@@ -57,12 +58,7 @@ guard = SessionGuard(mode=settings.auth_mode)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: warm up CRA machine learning models asynchronously
-    try:
-        from app.cra import cra_engine
-        asyncio.create_task(asyncio.to_thread(cra_engine.warmup))
-    except Exception as e:
-        logger.warning(f"Could not launch CRA warmup task: {e}")
+    # Startup: clean decoupled startup without legacy ML warmup
     yield
     # Shutdown: clean up SSE connections and sessions
     session_registry.close_all()
@@ -114,6 +110,7 @@ async def resolve_session_config(request: Request) -> Dict[str, Any]:
         provider,
         model=model,
         api_key=api_key,
+        base_url=base_url,
         public_url=settings.public_url,
         timeout_ms=settings.llm_timeout_ms,
         stream_idle_timeout_ms=settings.llm_stream_idle_timeout_ms,
@@ -207,13 +204,13 @@ async def get_ticket(request: Request):
 async def verify_customer(query: Optional[str] = None, customer_id: Optional[str] = None, category: Optional[str] = None):
     """Analyzes customer transaction and account records across all 11 categories."""
     from app.database import get_category_complaint_context, analyze_customer_transactions
-    from app.cra import cra_engine
+    from app.triage import predict_category
 
     cat = (category or "").strip()
     if not cat and query:
         try:
-            pred = cra_engine.predict_category(query)
-            cat = pred.get("predicted_category", "")
+            pred = predict_category(query)
+            cat = pred.get("predicted_category", str(pred)) if hasattr(pred, "get") else str(pred)
         except Exception:
             pass
 
@@ -274,10 +271,10 @@ async def post_resolve_action(request: Request):
     notes = body.get("notes")
 
     if not category and query:
-        from app.cra import cra_engine
+        from app.triage import predict_category
         try:
-            pred = cra_engine.predict_category(query)
-            category = pred.get("predicted_category")
+            pred = predict_category(query)
+            category = pred.get("predicted_category", str(pred)) if hasattr(pred, "get") else str(pred)
         except Exception:
             pass
 
@@ -368,6 +365,7 @@ async def next_ticket(request: Request, query: str = ""):
         provider,
         model=model,
         api_key=api_key,
+        base_url=provider_base_url(provider) or "",
         public_url=settings.public_url,
         timeout_ms=settings.llm_timeout_ms,
         stream_idle_timeout_ms=settings.llm_stream_idle_timeout_ms,
@@ -457,7 +455,11 @@ async def get_models(request: Request, provider: Optional[str] = None):
         return JSONResponse(status_code=400, content={"ok": False, "error": f"Unsupported provider '{target_provider}'."})
 
     api_key = request.headers.get("x-api-key") or sess_cfg["apiKey"] or ""
-    temp_driver = create_driver(target_provider, api_key=api_key)
+    temp_driver = create_driver(
+        target_provider,
+        api_key=api_key,
+        base_url=provider_base_url(target_provider) or "",
+    )
     res = await temp_driver.fetch_models(api_key=api_key)
     return res
 
@@ -568,6 +570,7 @@ async def delete_keys(request: Request):
 # ── CRA Model Inference Endpoints ─────────────────────────────────────────────
 
 @app.post("/api/cra/resolve")
+@app.post("/api/cra/triage")
 async def api_cra_resolve(request: Request):
     """
     Executes the full CRA machine learning intelligence pipeline for an incoming complaint.
@@ -584,15 +587,16 @@ async def api_cra_resolve(request: Request):
     if not complaint:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Complaint text is required."})
 
-    from app.cra import cra_engine
-    report = await asyncio.to_thread(cra_engine.generate_intelligence_report, complaint)
+    from app.triage import async_triage_complaint
+    report = await async_triage_complaint(complaint)
     return {"ok": True, "report": report}
 
 
 @app.post("/api/cra/classify")
+@app.post("/api/cra/predict")
 async def api_cra_classify(request: Request):
     """
-    Fast category classification using the fine-tuned DistilBERT classifier.
+    Fast category classification using the non-ML triage classifier.
     """
     body = {}
     try:
@@ -604,9 +608,10 @@ async def api_cra_classify(request: Request):
     if not complaint:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Complaint text is required."})
 
-    from app.cra import cra_engine
-    result = await asyncio.to_thread(cra_engine.predict_category, complaint)
-    return {"ok": True, **result}
+    from app.triage import async_predict_category
+    result = await async_predict_category(complaint)
+    res_dict = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+    return {"ok": True, **res_dict}
 
 
 

@@ -10,11 +10,14 @@ import csv
 import logging
 import os
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_DB_LOCK = threading.RLock()
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DATABASE_FILE = DATA_DIR / "transactions.csv"
@@ -61,6 +64,141 @@ CUSTOMER_ACCOUNT_FIELDNAMES = [
     "updated_by",
     "last_updated",
     "notes",
+]
+
+DEFAULT_CUSTOMER_ACCOUNTS: List[Dict[str, str]] = [
+    {
+        "customer_id": "USR-10492",
+        "customer_name": "Alex Morgan",
+        "customer_email": "alex.morgan@gmail.com",
+        "reference_order_id": "ORD-88219",
+        "subscription_plan": "Pro Tier ($49.00/mo)",
+        "billing_cycle": "Monthly (20th)",
+        "monthly_rate": "49.00",
+        "total_billed_this_month": "49.00 (Net after $49.00 refund)",
+        "charges_this_month": "2",
+        "transaction_1": "TXN-9011 ($49.00 on 2026-10-20) [Settled Renewal]",
+        "transaction_2": "TXN-9012 ($49.00 on 2026-10-23) [Refunded: REF-88219-AUTO]",
+        "duplicate_verified": "Yes - Accidental Double Charge Detected",
+        "refund_status": "Refunded ($49.00 via Stripe API)",
+        "refund_id": "REF-88219-AUTO",
+        "account_balance": "$0.00 (Settled)",
+        "account_status": "Active - In Good Standing",
+        "last_verified_by": "Troy (Autonomous Resolution Agent)",
+        "updated_by": "Troy (Autonomous Resolution Agent)",
+        "last_updated": "2026-10-23 02:20:53",
+        "notes": "Autonomous override executed by Troy. Accidental double renewal debit reversed in Stripe API under REF-88219-AUTO.",
+    },
+    {
+        "customer_id": "USR-08914",
+        "customer_name": "Sarah Jenkins",
+        "customer_email": "sarah.j@enterprise.org",
+        "reference_order_id": "ORD-79110",
+        "subscription_plan": "Enterprise Tier ($299.00/mo)",
+        "billing_cycle": "Monthly (1st)",
+        "monthly_rate": "299.00",
+        "total_billed_this_month": "299.00",
+        "charges_this_month": "1",
+        "transaction_1": "TXN-8801 ($299.00 on 2026-10-01) [Settled]",
+        "transaction_2": "None",
+        "duplicate_verified": "No",
+        "refund_status": "N/A",
+        "refund_id": "",
+        "account_balance": "$0.00 (Current)",
+        "account_status": "Locked - 2FA SMS Gateway Failure",
+        "last_verified_by": "Tier 1 Support",
+        "updated_by": "Auth Service",
+        "last_updated": "2026-10-21 09:30:00",
+        "notes": "Account locked after 3 failed 2FA SMS attempts. Awaiting gateway reset.",
+    },
+    {
+        "customer_id": "USR-12053",
+        "customer_name": "David Chen",
+        "customer_email": "d.chen@fintech.io",
+        "reference_order_id": "ORD-93041",
+        "subscription_plan": "Developer API Tier ($199.00/mo)",
+        "billing_cycle": "Monthly (15th)",
+        "monthly_rate": "199.00",
+        "total_billed_this_month": "199.00",
+        "charges_this_month": "1",
+        "transaction_1": "TXN-8450 ($199.00 on 2026-10-15) [Settled]",
+        "transaction_2": "None",
+        "duplicate_verified": "No",
+        "refund_status": "N/A",
+        "refund_id": "",
+        "account_balance": "$0.00 (Current)",
+        "account_status": "Degraded - Webhook Gateway 504 Timeout",
+        "last_verified_by": "Engineering Bot",
+        "updated_by": "API Monitor",
+        "last_updated": "2026-10-21 10:15:00",
+        "notes": "Webhook retry queue flooded. Engineering investigation underway.",
+    },
+    {
+        "customer_id": "USR-14309",
+        "customer_name": "Elena Rostova",
+        "customer_email": "elena@globaltrade.de",
+        "reference_order_id": "ORD-85420",
+        "subscription_plan": "Team Tier ($120.00/mo)",
+        "billing_cycle": "Quarterly ($360.00)",
+        "monthly_rate": "120.00",
+        "total_billed_this_month": "360.00",
+        "charges_this_month": "1",
+        "transaction_1": "TXN-8201 ($360.00 on 2026-10-05) [Settled]",
+        "transaction_2": "None",
+        "duplicate_verified": "No",
+        "refund_status": "N/A",
+        "refund_id": "",
+        "account_balance": "$0.00 (Current)",
+        "account_status": "Active - Pending VAT Invoice Receipt",
+        "last_verified_by": "Billing Team",
+        "updated_by": "Invoicing Engine",
+        "last_updated": "2026-10-20 16:40:00",
+        "notes": "Formal German VAT tax invoice and receipt requested for accounting records.",
+    },
+    {
+        "customer_id": "USR-09148",
+        "customer_name": "Michael Scott",
+        "customer_email": "m.scott@dunder.com",
+        "reference_order_id": "ORD-86102",
+        "subscription_plan": "Starter Tier ($29.00/mo)",
+        "billing_cycle": "Monthly (18th)",
+        "monthly_rate": "29.00",
+        "total_billed_this_month": "79.00",
+        "charges_this_month": "1",
+        "transaction_1": "TXN-8902 ($79.00 on 2026-10-18) [Settled - Old Plan]",
+        "transaction_2": "None",
+        "duplicate_verified": "No",
+        "refund_status": "Partial Refund Pending ($50.00)",
+        "refund_id": "",
+        "account_balance": "$-50.00 (Credit Due)",
+        "account_status": "Pending Downgrade Adjustment",
+        "last_verified_by": "Billing Bot",
+        "updated_by": "Subscription Manager",
+        "last_updated": "2026-10-20 18:00:00",
+        "notes": "User requested downgrade prior to renewal. $50 prorated refund due.",
+    },
+    {
+        "customer_id": "USR-07231",
+        "customer_name": "Emily Watson",
+        "customer_email": "emily.w@consulting.co",
+        "reference_order_id": "ORD-81094",
+        "subscription_plan": "Pro Tier ($49.00/mo)",
+        "billing_cycle": "Monthly (18th)",
+        "monthly_rate": "49.00",
+        "total_billed_this_month": "98.00",
+        "charges_this_month": "2",
+        "transaction_1": "TXN-7711 ($49.00 on 2026-09-18) [Settled Renewal]",
+        "transaction_2": "TXN-7712 ($49.00 on 2026-09-18) [Settled - Accidental Second Debit]",
+        "duplicate_verified": "Yes - Accidental Double Charge Detected",
+        "refund_status": "Pending Refund",
+        "refund_id": "",
+        "account_balance": "$-49.00 (Overcharged)",
+        "account_status": "Flagged - Accidental Double Charge",
+        "last_verified_by": "Troy AI",
+        "updated_by": "System Billing Daemon",
+        "last_updated": "2026-09-18 10:00:00",
+        "notes": "Accidental duplicate renewal charge debited twice within 24 hours. Awaiting agent resolution.",
+    },
 ]
 
 DEFAULT_TRANSACTIONS = [
@@ -209,82 +347,380 @@ DEFAULT_TRANSACTIONS = [
         "amount": "49.00",
         "currency": "USD",
         "payment_method": "Visa ending in 5543",
-        "status": "Refunded",
-        "refund_id": "REF-7712-AUTO",
-        "refund_amount": "49.00",
-        "refunded_at": "2026-09-18 14:22:10",
-        "processed_by": "Troy (Autonomous Resolution Agent)",
-        "notes": "Precedent Case: Duplicate renewal debit refunded autonomously by Troy",
+        "status": "Settled",
+        "refund_id": "",
+        "refund_amount": "",
+        "refunded_at": "",
+        "processed_by": "Stripe Gateway",
+        "notes": "Montly Sub",
     },
 ]
 
 
 def ensure_database_file() -> Path:
-    """Ensures data directory and transactions CSV file exist."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if not DATABASE_FILE.exists():
-        with open(DATABASE_FILE, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-            writer.writeheader()
-            writer.writerows(DEFAULT_TRANSACTIONS)
-        logger.info(f"Initialized transactions database at {DATABASE_FILE}")
-    return DATABASE_FILE
+    """Ensures data directory, transactions CSV, and customer accounts CSV exist and are seeded."""
+    with _DB_LOCK:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if not DATABASE_FILE.exists():
+            with open(DATABASE_FILE, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+                writer.writeheader()
+                writer.writerows(DEFAULT_TRANSACTIONS)
+            logger.info(f"Initialized transactions database at {DATABASE_FILE}")
+
+        if not CUSTOMER_ACCOUNTS_FILE.exists():
+            with open(CUSTOMER_ACCOUNTS_FILE, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=CUSTOMER_ACCOUNT_FIELDNAMES)
+                writer.writeheader()
+                writer.writerows(DEFAULT_CUSTOMER_ACCOUNTS)
+            logger.info(f"Initialized customer accounts database at {CUSTOMER_ACCOUNTS_FILE}")
+
+        return DATABASE_FILE
+
+
+def ensure_customer_accounts_file() -> Path:
+    """Ensures customer accounts CSV exists and is seeded, returning its Path."""
+    ensure_database_file()
+    return CUSTOMER_ACCOUNTS_FILE
 
 
 def read_all_transactions() -> List[Dict[str, str]]:
     """Reads all transaction rows from data/transactions.csv."""
-    db_path = ensure_database_file()
-    records: List[Dict[str, str]] = []
-    try:
-        with open(db_path, "r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                records.append(dict(row))
-    except Exception as e:
-        logger.error(f"Error reading {db_path}: {e}")
-    return records
+    with _DB_LOCK:
+        db_path = ensure_database_file()
+        records: List[Dict[str, str]] = []
+        try:
+            with open(db_path, "r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    records.append(dict(row))
+        except Exception as e:
+            logger.error(f"Error reading {db_path}: {e}")
+        return records
 
 
 def write_all_transactions(records: List[Dict[str, str]]) -> bool:
-    """Writes all transaction rows to data/transactions.csv."""
-    db_path = ensure_database_file()
-    try:
-        with open(db_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-            writer.writeheader()
-            writer.writerows(records)
-        return True
-    except Exception as e:
-        logger.error(f"Error writing to {db_path}: {e}")
-        return False
+    """Writes all transaction rows to data/transactions.csv atomically."""
+    with _DB_LOCK:
+        db_path = ensure_database_file()
+        tmp_path = db_path.with_suffix(".tmp")
+        try:
+            with open(tmp_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=FIELDNAMES, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(records)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, db_path)
+            return True
+        except Exception as e:
+            logger.error(f"Error writing to {db_path}: {e}")
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+            return False
 
 
 def read_all_customer_accounts() -> List[Dict[str, str]]:
     """Reads all rows from data/customer_accounts.csv."""
-    if not CUSTOMER_ACCOUNTS_FILE.exists():
-        return []
-    records = []
-    try:
-        with open(CUSTOMER_ACCOUNTS_FILE, "r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                records.append(dict(row))
-    except Exception as e:
-        logger.error(f"Error reading {CUSTOMER_ACCOUNTS_FILE}: {e}")
-    return records
+    with _DB_LOCK:
+        if not CUSTOMER_ACCOUNTS_FILE.exists():
+            return []
+        records = []
+        try:
+            with open(CUSTOMER_ACCOUNTS_FILE, "r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    records.append(dict(row))
+        except Exception as e:
+            logger.error(f"Error reading {CUSTOMER_ACCOUNTS_FILE}: {e}")
+        return records
 
 
 def write_all_customer_accounts(records: List[Dict[str, str]]) -> bool:
-    """Writes all rows to data/customer_accounts.csv."""
-    try:
-        with open(CUSTOMER_ACCOUNTS_FILE, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=CUSTOMER_ACCOUNT_FIELDNAMES)
-            writer.writeheader()
-            writer.writerows(records)
-        return True
-    except Exception as e:
-        logger.error(f"Error writing to {CUSTOMER_ACCOUNTS_FILE}: {e}")
+    """Writes all rows to data/customer_accounts.csv atomically."""
+    with _DB_LOCK:
+        CUSTOMER_ACCOUNTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = CUSTOMER_ACCOUNTS_FILE.with_suffix(".tmp")
+        try:
+            with open(tmp_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=CUSTOMER_ACCOUNT_FIELDNAMES, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(records)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, CUSTOMER_ACCOUNTS_FILE)
+            return True
+        except Exception as e:
+            logger.error(f"Error writing to {CUSTOMER_ACCOUNTS_FILE}: {e}")
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+            return False
+
+
+def update_transaction(transaction_id: str, updates: Dict[str, Any]) -> bool:
+    """
+    Updates specified columns for a transaction record in data/transactions.csv.
+    Returns True if record found and updated, False otherwise.
+    """
+    if not transaction_id or not updates:
         return False
+
+    with _DB_LOCK:
+        records = read_all_transactions()
+        target_id = str(transaction_id).strip()
+        matched = False
+
+        for row in records:
+            if row.get("transaction_id", "").strip() == target_id:
+                for k, v in updates.items():
+                    if k in FIELDNAMES:
+                        row[k] = str(v) if v is not None else ""
+                matched = True
+                break
+
+        if not matched:
+            logger.warning(f"update_transaction: transaction_id '{transaction_id}' not found.")
+            return False
+
+        return write_all_transactions(records)
+
+
+def update_customer_account(customer_id: str, updates: Dict[str, Any]) -> bool:
+    """
+    Updates specified columns for a customer account in data/customer_accounts.csv.
+    Returns True if record found and updated, False otherwise.
+    """
+    if not customer_id or not updates:
+        return False
+
+    with _DB_LOCK:
+        records = read_all_customer_accounts()
+        target_id = str(customer_id).strip().upper()
+        matched = False
+
+        for row in records:
+            row_id = row.get("customer_id", "").strip().upper()
+            if row_id == target_id:
+                for k, v in updates.items():
+                    if k in CUSTOMER_ACCOUNT_FIELDNAMES:
+                        row[k] = str(v) if v is not None else ""
+                matched = True
+                break
+
+        if not matched:
+            logger.warning(f"update_customer_account: customer_id '{customer_id}' not found.")
+            return False
+
+        return write_all_customer_accounts(records)
+
+
+def remediate_duplicate_charge(
+    order_id: str,
+    duplicate_txn_id: str,
+    refund_amount: str = "49.00",
+    processed_by: str = "Troy (Autonomous Resolution Agent)",
+    notes: str = "",
+) -> Dict[str, Any]:
+    """
+    Atomically resolves an erroneous duplicate charge across transactions.csv and customer_accounts.csv.
+    Updates transaction status to 'Refunded', sets refund_id, refunded_at, refund_amount, and processed_by.
+    Reconciles customer account to '$0.00 (Settled)' balance and 'Active - In Good Standing' status.
+    Idempotent: if transaction is already refunded, returns success without duplicate edits or payouts.
+    """
+    if not duplicate_txn_id:
+        return {
+            "ok": False,
+            "status": "Failed",
+            "error": "duplicate_txn_id is required for remediation",
+        }
+
+    with _DB_LOCK:
+        all_txns = read_all_transactions()
+        all_accs = read_all_customer_accounts()
+
+        # Pre-mutation snapshots for atomic rollback
+        txns_backup = [dict(t) for t in all_txns]
+        accs_backup = [dict(a) for a in all_accs]
+
+        target_txn = next(
+            (t for t in all_txns if t.get("transaction_id", "").strip() == str(duplicate_txn_id).strip()),
+            None,
+        )
+
+        if not target_txn:
+            logger.warning(f"remediate_duplicate_charge: transaction {duplicate_txn_id} not found.")
+            return {
+                "ok": False,
+                "status": "Failed",
+                "error": f"Transaction {duplicate_txn_id} not found in database.",
+            }
+
+        target_cust_id = target_txn.get("customer_id", "")
+        txn_order_id = target_txn.get("order_id", "") or order_id
+        effective_order_id = order_id or txn_order_id
+
+        # Find customer account matching customer_id or order_id
+        target_acc = None
+        if target_cust_id:
+            target_acc = next(
+                (a for a in all_accs if a.get("customer_id", "").strip().upper() == target_cust_id.strip().upper()),
+                None,
+            )
+        if not target_acc and effective_order_id:
+            target_acc = next(
+                (a for a in all_accs if a.get("reference_order_id", "").strip() == effective_order_id.strip()),
+                None,
+            )
+
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        clean_order_num = re.sub(r"[^\d]", "", effective_order_id) if effective_order_id else ""
+        suggested_ref_id = f"REF-{clean_order_num}-AUTO" if clean_order_num else f"REF-{duplicate_txn_id.replace('TXN-', '')}-AUTO"
+
+        effective_refund_id = (
+            target_txn.get("refund_id")
+            or (target_acc.get("refund_id") if target_acc else "")
+            or suggested_ref_id
+        )
+        effective_refund_amount = str(refund_amount) if refund_amount else (target_txn.get("amount") or "49.00")
+        audit_processor = processed_by or "Troy (Autonomous Resolution Agent)"
+
+        is_already_refunded = (target_txn.get("status") == "Refunded")
+
+        if is_already_refunded:
+            existing_ref_id = target_txn.get("refund_id") or effective_refund_id
+            existing_ref_amt = target_txn.get("refund_amount") or effective_refund_amount
+            existing_ref_date = target_txn.get("refunded_at") or now_str
+            existing_processor = target_txn.get("processed_by") or audit_processor
+            existing_notes = target_txn.get("notes") or notes or f"Autonomous refund reconfirmed for order {effective_order_id}."
+
+            target_txn["refund_id"] = existing_ref_id
+            target_txn["refund_amount"] = existing_ref_amt
+            target_txn["processed_by"] = existing_processor
+            if not target_txn.get("refunded_at"):
+                target_txn["refunded_at"] = existing_ref_date
+
+            if target_acc:
+                target_acc["refund_status"] = f"Refunded (${existing_ref_amt} via Stripe API)"
+                target_acc["refund_id"] = existing_ref_id
+                target_acc["account_balance"] = "$0.00 (Settled)"
+                target_acc["account_status"] = "Active - In Good Standing"
+                target_acc["duplicate_verified"] = "Yes - Accidental Double Charge Detected"
+                target_acc["total_billed_this_month"] = f"{existing_ref_amt} (Net after ${existing_ref_amt} refund)"
+                target_acc["last_verified_by"] = audit_processor
+                target_acc["updated_by"] = audit_processor
+                target_acc["last_updated"] = now_str
+                if notes:
+                    target_acc["notes"] = notes
+
+            tx_ok = write_all_transactions(all_txns)
+            if not tx_ok:
+                logger.error("remediate_duplicate_charge: write transactions failed in idempotent path")
+                return {
+                    "ok": False,
+                    "status": "Failed",
+                    "error": "Failed to persist atomic updates to database files",
+                }
+
+            acc_ok = write_all_customer_accounts(all_accs)
+            if not acc_ok:
+                logger.error("remediate_duplicate_charge: write accounts failed in idempotent path; rolling back transactions")
+                write_all_transactions(txns_backup)
+                return {
+                    "ok": False,
+                    "status": "Failed",
+                    "error": "Failed to persist atomic updates to database files",
+                }
+
+            logger.info(f"remediate_duplicate_charge: {duplicate_txn_id} was already refunded under {existing_ref_id}.")
+            return {
+                "ok": True,
+                "status": "Refunded",
+                "is_already_refunded": True,
+                "already_refunded": True,
+                "refund_id": existing_ref_id,
+                "refund_amount": existing_ref_amt,
+                "transaction_id": duplicate_txn_id,
+                "order_id": effective_order_id,
+                "customer_id": target_cust_id,
+                "processed_by": existing_processor,
+                "refunded_at": existing_ref_date,
+                "notes": existing_notes,
+                "action": "remediate_duplicate_charge",
+                "message": f"Transaction {duplicate_txn_id} was already refunded under {existing_ref_id}. Reconfirmed without duplicate payout.",
+            }
+
+        # 1. Update transaction row
+        target_txn["status"] = "Refunded"
+        target_txn["refund_id"] = effective_refund_id
+        target_txn["refund_amount"] = effective_refund_amount
+        target_txn["refunded_at"] = now_str
+        target_txn["processed_by"] = audit_processor
+        target_txn["notes"] = notes if notes else f"Refunded by Troy: Duplicate subscription charge for order {effective_order_id}."
+
+        # 2. Update customer account row
+        if target_acc:
+            target_acc["refund_status"] = f"Refunded (${effective_refund_amount} via Stripe API)"
+            target_acc["refund_id"] = effective_refund_id
+            target_acc["account_balance"] = "$0.00 (Settled)"
+            target_acc["account_status"] = "Active - In Good Standing"
+            target_acc["duplicate_verified"] = "Yes - Accidental Double Charge Detected"
+            target_acc["total_billed_this_month"] = f"{effective_refund_amount} (Net after ${effective_refund_amount} refund)"
+            if (
+                duplicate_txn_id in target_acc.get("transaction_2", "")
+                or not target_acc.get("transaction_2")
+                or target_acc.get("transaction_2") == "None"
+            ):
+                target_acc["transaction_2"] = (
+                    f"{duplicate_txn_id} (${effective_refund_amount} on {now_str[:10]}) [Refunded: {effective_refund_id}]"
+                )
+            target_acc["last_verified_by"] = audit_processor
+            target_acc["updated_by"] = audit_processor
+            target_acc["last_updated"] = now_str
+            target_acc["notes"] = notes if notes else f"Autonomous override executed by {audit_processor}. Accidental double renewal debit reversed in Stripe API under {effective_refund_id}."
+
+        # 3. Synchronous multi-table persistence with rollback
+        tx_ok = write_all_transactions(all_txns)
+        if not tx_ok:
+            logger.error("remediate_duplicate_charge: write transactions failed; aborting customer account write.")
+            return {
+                "ok": False,
+                "status": "Failed",
+                "error": "Failed to persist atomic updates to database files",
+            }
+
+        acc_ok = write_all_customer_accounts(all_accs)
+        if not acc_ok:
+            logger.error("remediate_duplicate_charge: write customer accounts failed; rolling back transactions.")
+            write_all_transactions(txns_backup)
+            return {
+                "ok": False,
+                "status": "Failed",
+                "error": "Failed to persist atomic updates to database files",
+            }
+
+        logger.info(f"remediate_duplicate_charge: {duplicate_txn_id} refunded under {effective_refund_id}. Both tables synchronized.")
+        return {
+            "ok": True,
+            "status": "Refunded",
+            "is_already_refunded": False,
+            "already_refunded": False,
+            "refund_id": effective_refund_id,
+            "refund_amount": effective_refund_amount,
+            "transaction_id": duplicate_txn_id,
+            "order_id": effective_order_id,
+            "customer_id": target_cust_id,
+            "processed_by": audit_processor,
+            "refunded_at": now_str,
+            "notes": target_txn["notes"],
+            "action": "remediate_duplicate_charge",
+            "message": f"Transaction {duplicate_txn_id} successfully refunded under {effective_refund_id} and account settled.",
+        }
 
 
 def find_customer_account_by_query(
@@ -299,11 +735,11 @@ def find_customer_account_by_query(
     if not accounts:
         return None
 
-    target_id = str(customer_id).strip().upper() if customer_id else None
+    target_id = str(customer_id).strip().upper() if customer_id and str(customer_id).strip() else None
     if target_id:
         for acc in accounts:
-            acc_id = acc.get("customer_id", "").upper()
-            if target_id == acc_id or target_id in acc_id:
+            acc_id = acc.get("customer_id", "").strip().upper()
+            if target_id == acc_id:
                 return acc
 
     if query:
@@ -355,7 +791,7 @@ def find_transactions_for_query(
     order reference, email, name, or keywords in the complaint query.
     """
     transactions = read_all_transactions()
-    target_id = str(customer_id).strip() if customer_id else None
+    target_id = str(customer_id).strip().upper() if customer_id and str(customer_id).strip() else None
 
     # First match against customer_accounts.csv to resolve customer entity
     matched_acc = find_customer_account_by_query(query=query, customer_id=target_id)
@@ -364,15 +800,15 @@ def find_transactions_for_query(
         acc_order_id = matched_acc.get("reference_order_id")
         matched = [
             t for t in transactions
-            if (acc_cust_id and t.get("customer_id") == acc_cust_id)
-            or (acc_order_id and t.get("order_id") == acc_order_id)
+            if (acc_cust_id and t.get("customer_id", "").strip().upper() == acc_cust_id.strip().upper())
+            or (acc_order_id and t.get("order_id", "").strip().upper() == acc_order_id.strip().upper())
         ]
         if matched:
             return matched
 
     # Fallback to direct customer_id match in transactions
     if target_id:
-        matched = [t for t in transactions if t.get("customer_id") == target_id or target_id in t.get("customer_id", "")]
+        matched = [t for t in transactions if t.get("customer_id", "").strip().upper() == target_id]
         if matched:
             return matched
 
@@ -381,7 +817,12 @@ def find_transactions_for_query(
         order_match = re.search(r"(?:ORD-)?(\d{4,6})", query, re.IGNORECASE)
         if order_match:
             ref_num = order_match.group(1)
-            matched = [t for t in transactions if ref_num in t.get("order_id", "") or ref_num in t.get("transaction_id", "")]
+            matched = [
+                t for t in transactions
+                if ref_num in t.get("order_id", "")
+                or ref_num in t.get("transaction_id", "")
+                or f"ORD-{ref_num}" == t.get("order_id", "").strip().upper()
+            ]
             if matched:
                 return matched
 
@@ -392,10 +833,195 @@ def find_transactions_for_query(
             if (name and name in query_lower) or (email and email in query_lower):
                 return [row for row in transactions if row.get("customer_id") == t.get("customer_id")]
 
-        if "twice" in query_lower or "duplicate" in query_lower or "49" in query_lower:
-            return [t for t in transactions if t.get("customer_id") == "USR-10492"]
+    return []
 
-    return [t for t in transactions if t.get("customer_id") == "USR-10492"]
+
+def query_customer_account(
+    customer_id: Optional[str] = None,
+    email: Optional[str] = None,
+    order_id: Optional[str] = None,
+    **kwargs: Any,
+) -> Optional[Dict[str, str]]:
+    """
+    Generic inspection tool (Feature 6): Queries data/customer_accounts.csv by customer_id, email, or order_id.
+    Returns customer account dict or None if not found or if all query arguments are empty.
+    """
+    cid = str(customer_id).strip().upper() if customer_id and str(customer_id).strip() else None
+    em = str(email).strip().lower() if email and str(email).strip() else None
+    oid = str(order_id).strip().upper() if order_id and str(order_id).strip() else None
+
+    if not any([cid, em, oid]):
+        return None
+
+    accounts = read_all_customer_accounts()
+    if not accounts:
+        return None
+
+    for acc in accounts:
+        acc_cid = acc.get("customer_id", "").strip().upper()
+        acc_em = acc.get("customer_email", "").strip().lower()
+        acc_oid = acc.get("reference_order_id", "").strip().upper()
+
+        if cid and acc_cid != cid:
+            continue
+        if em and acc_em != em:
+            continue
+        if oid:
+            oid_num = oid.replace("ORD-", "")
+            acc_oid_num = acc_oid.replace("ORD-", "")
+            if acc_oid != oid and acc_oid_num != oid_num:
+                continue
+
+        return acc
+
+    return None
+
+
+def query_transactions(
+    customer_id: Optional[str] = None,
+    order_id: Optional[str] = None,
+    status: Optional[str] = None,
+    billing_cycle: Optional[str] = None,
+    transaction_id: Optional[str] = None,
+    **kwargs: Any,
+) -> List[Dict[str, str]]:
+    """
+    Generic inspection tool (Feature 6): Queries data/transactions.csv with optional filters.
+    Returns list of matching transaction dicts.
+    """
+    transactions = read_all_transactions()
+    if not transactions:
+        return []
+
+    cid = str(customer_id).strip().upper() if customer_id is not None else None
+    oid = str(order_id).strip().upper() if order_id is not None else None
+    stat = str(status).strip().lower() if status is not None else None
+    cycle = str(billing_cycle).strip().lower() if billing_cycle is not None else None
+    tid = str(transaction_id).strip().upper() if transaction_id is not None else None
+
+    results = []
+    for t in transactions:
+        t_cid = t.get("customer_id", "").strip().upper()
+        t_oid = t.get("order_id", "").strip().upper()
+        t_stat = t.get("status", "").strip().lower()
+        t_cycle = t.get("billing_cycle", "").strip().lower()
+        t_tid = t.get("transaction_id", "").strip().upper()
+
+        if cid is not None and t_cid != cid:
+            continue
+        if oid is not None:
+            oid_num = oid.replace("ORD-", "")
+            t_oid_num = t_oid.replace("ORD-", "")
+            if t_oid != oid and t_oid_num != oid_num:
+                continue
+        if stat is not None and t_stat != stat:
+            continue
+        if cycle is not None and t_cycle != cycle:
+            continue
+        if tid is not None and t_tid != tid:
+            continue
+
+        results.append(t)
+
+    return results
+
+
+def inspect_account_and_transactions(
+    customer_id: Optional[str] = None,
+    query: Optional[str] = None,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """
+    Generic inspection tool (Feature 6): Combines customer account details, transaction history,
+    duplicate debit detection flags, and billing cycle audit for the specified customer or query.
+    """
+    cid = str(customer_id).strip().upper() if customer_id and str(customer_id).strip() else None
+
+    # 1. Locate customer account
+    account = query_customer_account(customer_id=cid) if cid else None
+    if not account and query:
+        account = find_customer_account_by_query(query=query, customer_id=cid)
+
+    target_cid = (account.get("customer_id") if account else None) or cid
+
+    # 2. Locate transactions
+    txns = query_transactions(customer_id=target_cid) if target_cid else []
+    if not txns and (query or target_cid):
+        txns = find_transactions_for_query(customer_id=target_cid, query=query)
+
+    if not txns and not account:
+        return {
+            "ok": False,
+            "error": "No account or transaction records found",
+            "customer_id": target_cid or "",
+            "account": None,
+            "customer": None,
+            "transactions": [],
+            "has_duplicate": False,
+            "duplicate_detected": False,
+            "is_already_refunded": False,
+        }
+
+    # 3. Ledger audit
+    first_txn = txns[0] if txns else {}
+    c_name = (account.get("customer_name") if account else None) or first_txn.get("customer_name", "")
+    c_email = (account.get("customer_email") if account else None) or first_txn.get("customer_email", "")
+    plan = (account.get("subscription_plan") if account else None) or first_txn.get("subscription_plan", "")
+    cycle = (account.get("billing_cycle") if account else None) or first_txn.get("billing_cycle", "")
+    order_ref = (account.get("reference_order_id") if account else None) or first_txn.get("order_id", "")
+
+    cycle_txns = [t for t in txns if t.get("billing_cycle") == cycle] if cycle else txns
+    if not cycle_txns:
+        cycle_txns = txns
+        cycle = cycle_txns[0].get("billing_cycle", "") if cycle_txns else ""
+
+    settled_txns = [t for t in cycle_txns if t.get("status", "").lower() == "settled"]
+    refunded_txns = [t for t in cycle_txns if t.get("status", "").lower() == "refunded"]
+
+    has_duplicate_settled = len(settled_txns) > 1
+    is_already_refunded = len(refunded_txns) > 0 and len(settled_txns) <= 1
+    has_duplicate = has_duplicate_settled or len(refunded_txns) > 0
+
+    sorted_settled = sorted(settled_txns, key=lambda x: x.get("transaction_date", ""))
+    retained_valid_txn = sorted_settled[0] if sorted_settled else (cycle_txns[0] if cycle_txns else None)
+    candidate_to_refund = sorted_settled[1] if len(sorted_settled) > 1 else (refunded_txns[0] if refunded_txns else None)
+
+    total_billed = sum(float(t.get("amount", "0")) for t in cycle_txns if t.get("amount"))
+
+    cust_card = dict(account) if account else {
+        "customer_id": target_cid or "",
+        "customer_name": c_name,
+        "customer_email": c_email,
+        "reference_order_id": order_ref,
+        "subscription_plan": plan,
+        "billing_cycle": cycle,
+        "charges_this_month": str(len(cycle_txns)),
+        "total_billed_this_month": f"{total_billed:.2f}",
+        "account_status": "Active - In Good Standing" if not has_duplicate_settled else "Flagged - Accidental Double Charge",
+        "account_balance": "$0.00 (Settled)" if not has_duplicate_settled else f"$-{float(candidate_to_refund.get('amount', '49.00') if candidate_to_refund else 49.0):.2f} (Overcharged)",
+    }
+
+    return {
+        "ok": True,
+        "customer_id": target_cid,
+        "customer_name": c_name,
+        "customer_email": c_email,
+        "account": account or cust_card,
+        "customer": cust_card,
+        "transactions": txns,
+        "cycle_transactions": cycle_txns,
+        "billing_cycle": cycle,
+        "order_id": order_ref,
+        "charges_this_month": len(cycle_txns),
+        "total_billed_this_month": f"{total_billed:.2f}",
+        "settled_count": len(settled_txns),
+        "refunded_count": len(refunded_txns),
+        "has_duplicate": has_duplicate,
+        "duplicate_detected": has_duplicate_settled,
+        "is_already_refunded": is_already_refunded,
+        "retained_transaction": retained_valid_txn,
+        "duplicate_transaction": candidate_to_refund,
+    }
 
 
 def analyze_customer_transactions(
@@ -507,6 +1133,7 @@ def analyze_customer_transactions(
     return {
         "ok": True,
         "verified": True,
+        "is_refund": True,
         "category": "Refunds",
         "customer_id": cust_id,
         "customer_name": cust_name,
@@ -585,6 +1212,16 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
         txn_analysis = analyze_customer_transactions(query=query)
         is_already_refunded = txn_analysis.get("is_already_refunded", False)
         ref_id = txn_analysis.get("refund_id") or "REF-88219-AUTO"
+        steps = txn_analysis.get("steps", [])
+        if not steps:
+            steps = [
+                {"text": "Accessing internal customer transaction ledger (data/transactions.csv)...", "delay": 650},
+                {"text": "Auditing customer billing cycle records and transaction history...", "delay": 700},
+                {"text": "Verifying transaction settlement status and duplicate charge flags...", "delay": 750},
+                {"text": "Preparing automated refund authorization via Stripe Gateway API...", "delay": 750},
+                {"text": "Updating database records to reflect refund reversal status...", "delay": 700},
+                {"text": "Dispatching customer confirmation notification...", "delay": 600},
+            ]
         return {
             "category": "Refunds",
             "is_refund": True,
@@ -601,7 +1238,7 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
             "refund_id": ref_id,
             "refunded_at": txn_analysis.get("refunded_at", "2026-10-21 14:49:37"),
             "system_details": txn_analysis.get("summary", ""),
-            "steps": txn_analysis.get("steps", []),
+            "steps": steps,
             "txn_analysis": txn_analysis,
         }
 
@@ -1268,9 +1905,9 @@ def execute_manual_resolution(
 
 # Backwards compatibility aliases
 verify_customer_billing = analyze_customer_transactions
-read_all_customers = read_all_transactions
+read_all_customers = read_all_customer_accounts
 read_all_tickets = read_all_transactions
-write_all_customers = write_all_transactions
+write_all_customers = write_all_customer_accounts
 write_all_tickets = write_all_transactions
 find_customer_by_id_or_query = find_transactions_for_query
 find_ticket_by_id_or_query = find_transactions_for_query

@@ -1,0 +1,24 @@
+diff --git a/app/simulation/troy.py b/app/simulation/troy.py
+--- a/app/simulation/troy.py
++++ b/app/simulation/troy.py
+@@ -321,6 +321,20 @@ class ComplaintResolutionOrchestrator:
+             txns = txn_analysis.get("transactions", [])
++            order_ref = txn_analysis.get("order_id") or "ORD-88219"
++
++            # Autonomous database tool execution: remediate redundant duplicate charge
++            if not is_already_refunded and dup_txn:
++                from app.database import remediate_duplicate_charge
++                rem_res = remediate_duplicate_charge(
++                    order_id=order_ref,
++                    duplicate_txn_id=dup_id,
++                    refund_amount=dup_amt,
++                    processed_by="Troy (Autonomous Resolution Agent)",
++                    notes=f"Autonomous duplicate charge remediation for {order_ref}",
++                )
++                logger.info(f"Troy autonomously executed database remediation: {rem_res}")
++                self.sse.broadcast("database_updated", rem_res)
++                txn_analysis = analyze_customer_transactions(query=complaint_text)
++                is_already_refunded = True
+ 
+             prompt_lines.append("DATABASE TRANSACTION RECORDS AUDIT (from data/transactions.csv):")
+             prompt_lines.append(f"- Customer: {c_name} (ID: {c_id} | Email: {c_email})")

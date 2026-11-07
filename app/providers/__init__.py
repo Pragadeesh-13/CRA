@@ -1,3 +1,4 @@
+import os
 from typing import Dict, Type, Optional
 from app.providers.base_driver import BaseLlmDriver
 from app.providers.openai_driver import OpenAiDriver
@@ -18,17 +19,20 @@ PROVIDER_BASE_URLS: Dict[str, str] = {
     "openai": "https://api.openai.com/v1",
     "groq": "https://api.groq.com/openai/v1",
     "anthropic": "https://api.anthropic.com",
-    "lmstudio": "http://localhost:1235/v1",
+    "lmstudio": "http://localhost:1234/v1",
 }
 
 
 def provider_base_url(provider_name: str) -> Optional[str]:
     key = (provider_name or "").strip().lower()
+    if key == "lmstudio":
+        env_url = (os.getenv("LMSTUDIO_BASE_URL") or "").strip()
+        return env_url if env_url else "http://localhost:1234/v1"
     return PROVIDER_BASE_URLS.get(key)
 
 
-def create_driver(provider_name: str, **options) -> BaseLlmDriver:
-    norm = (provider_name or "openrouter").strip().lower()
+def create_driver(provider_name: str = "lmstudio", **options) -> BaseLlmDriver:
+    norm = (provider_name or "lmstudio").strip().lower()
     driver_cls = PROVIDER_REGISTRY.get(norm)
     if not driver_cls:
         raise ValueError(
@@ -36,6 +40,10 @@ def create_driver(provider_name: str, **options) -> BaseLlmDriver:
         )
     clean_opts = dict(options)
     clean_opts.pop("provider", None)
+    if "base_url" not in clean_opts or not clean_opts["base_url"]:
+        p_url = provider_base_url(norm)
+        if p_url:
+            clean_opts["base_url"] = p_url
     return driver_cls(provider=norm, **clean_opts)
 
 

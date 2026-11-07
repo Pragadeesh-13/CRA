@@ -4,9 +4,5 @@ pydantic
 python-dotenv
 httpx
 cryptography
-numpy
-pandas
-torch
-transformers
-sentence-transformers
 pytest
+pytest-asyncio
