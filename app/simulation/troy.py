@@ -147,6 +147,113 @@ class ComplaintResolutionOrchestrator:
         raw = text if text is not None else query
         return cls.evaluate_complaint_intent(raw, category=category)
 
+    async def evaluate_complaint_intent_with_llm(
+        self,
+        text: str,
+        category: Optional[str] = None,
+        driver: Optional[BaseLlmDriver] = None,
+    ) -> Dict[str, Any]:
+        """
+        LLM-backed intent evaluation with heuristic fallback.
+
+        Asks the active LLM driver (any provider — Qwen via LM Studio,
+        OpenAI, Anthropic, or Mock) to classify the complaint as
+        ``database_remediation`` (a billing/ledger/transaction action is
+        required) or ``direct_response`` (Troy can answer directly). The
+        decision is validated and merged with the regex-extracted entity
+        IDs from the synchronous heuristic; any failure/timeout/invalid
+        output falls back seamlessly to ``evaluate_complaint_intent``.
+        """
+        # Heuristic result doubles as the entity extractor (order /
+        # customer / transaction IDs) and the fallback decision.
+        fallback = self.evaluate_complaint_intent(text, category=category)
+
+        d = driver or self._active_driver()
+        if d is None:
+            logger.info("LLM intent evaluation skipped (no driver available); using heuristic intent.")
+            return fallback
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Troy's intent classifier. Classify customer complaint "
+                    "intent as exactly one of:\n"
+                    "- \"database_remediation\": billing disputes, duplicate debits, "
+                    "double charges, or refund requests that require account/ledger "
+                    "mutations or transaction remediation (action_required: true).\n"
+                    "- \"direct_response\": general inquiries, technical questions, "
+                    "policy explanations, feature access, or how-to assistance that "
+                    "Troy can answer directly with no database mutation or human "
+                    "routing (action_required: false).\n"
+                    "Respond ONLY with a JSON object, no other text."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Triage category (may be empty): {category or 'unknown'}\n"
+                    f"Customer complaint: {(text or '').strip()[:2000]}\n\n"
+                    'Return ONLY this JSON: {"intent": "direct_response" | '
+                    '"database_remediation", "action_required": true | false, '
+                    '"confidence": 0.95, "reason": "Brief explanation"}'
+                ),
+            },
+        ]
+
+        try:
+            raw_out = await asyncio.wait_for(d.complete(messages, max_tokens=256), timeout=5.0)
+        except Exception as e:
+            logger.info(f"LLM intent evaluation failed ({type(e).__name__}: {e}); using heuristic intent.")
+            return fallback
+
+        if not raw_out:
+            logger.info("LLM intent evaluation returned empty output; using heuristic intent.")
+            return fallback
+
+        data = parse_json(raw_out)
+        if not isinstance(data, dict):
+            logger.info("LLM intent evaluation returned invalid JSON; using heuristic intent.")
+            return fallback
+
+        intent = str(data.get("intent") or "").strip()
+        if intent not in ("database_remediation", "direct_response"):
+            logger.info(f"LLM intent evaluation returned invalid intent {intent!r}; using heuristic intent.")
+            return fallback
+
+        action_raw = data.get("action_required")
+        if isinstance(action_raw, bool):
+            action_required = action_raw
+        elif isinstance(action_raw, str):
+            action_required = action_raw.strip().lower() in ("true", "1", "yes")
+        elif action_raw is None:
+            action_required = intent == "database_remediation"
+        else:
+            action_required = bool(action_raw)
+
+        requires_db_mutation = (intent == "database_remediation") or action_required
+
+        try:
+            confidence = float(data.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+
+        return {
+            "intent": intent,
+            "is_billing_dispute": requires_db_mutation,
+            "requires_db_mutation": requires_db_mutation,
+            "action_required": requires_db_mutation,
+            "requires_action": requires_db_mutation,
+            "confidence": confidence,
+            "reason": str(data.get("reason") or ""),
+            "category": category or fallback.get("category"),
+            "order_id": fallback.get("order_id"),
+            "customer_id": fallback.get("customer_id"),
+            "transaction_id": fallback.get("transaction_id"),
+            "raw_text": fallback.get("raw_text") or (text or "").strip(),
+        }
+
     def _active_driver(self) -> BaseLlmDriver:
         return self._run_driver or self.driver
 
@@ -340,7 +447,7 @@ class ComplaintResolutionOrchestrator:
         # mutation / human routing, or is it a direct response Troy can
         # resolve on its own? The UI renders action/routing buttons only
         # when Troy signals action_required is True.
-        intent_info = self.evaluate_complaint_intent(complaint_text, category=pred_cat)
+        intent_info = await self.evaluate_complaint_intent_with_llm(complaint_text, category=pred_cat)
         action_required = bool(intent_info.get("requires_db_mutation"))
         report["intent"] = intent_info
         report["action_required"] = action_required
@@ -391,7 +498,7 @@ class ComplaintResolutionOrchestrator:
         # Troy's intent is the single source of truth for whether this
         # ticket needs database work / routing — the UI renders
         # action/routing buttons only when it does (action_required).
-        intent_info = self.evaluate_complaint_intent(complaint_text, category=pred_cat)
+        intent_info = await self.evaluate_complaint_intent_with_llm(complaint_text, category=pred_cat)
         is_refund_domain = intent_info.get("intent") == "database_remediation"
         cat_ctx = get_category_complaint_context(category=pred_cat, query=complaint_text)
 

@@ -211,3 +211,125 @@ class TestFrontendActionGate:
         js = _app_js()
         assert "btn-resolve-manually" in js
         assert "btn-agent-resolve" in js
+
+
+# ---------------------------------------------------------------------------
+# LLM-backed intent evaluation (evaluate_complaint_intent_with_llm)
+# ---------------------------------------------------------------------------
+
+
+class _FakeLlmDriver:
+    """Minimal driver stand-in returning canned LLM output."""
+
+    def __init__(self, output=None, error=None, delay=0.0):
+        self.output = output
+        self.error = error
+        self.delay = delay
+        self.calls = 0
+
+    async def complete(self, messages, max_tokens=4096, **options):
+        self.calls += 1
+        if self.delay:
+            import asyncio
+
+            await asyncio.sleep(self.delay)
+        if self.error is not None:
+            raise self.error
+        return self.output
+
+
+def _orchestrator_with_driver(driver):
+    return ComplaintResolutionOrchestrator(
+        config=SimpleNamespace(llm_stream=False, show_reasoning=False),
+        driver=driver,
+        sse_manager=_RecordingSse(),
+    )
+
+
+class TestLlmIntentEvaluation:
+    @pytest.mark.asyncio
+    async def test_llm_valid_database_remediation(self):
+        driver = _FakeLlmDriver(
+            output='{"intent": "database_remediation", "action_required": true, "confidence": 0.95, "reason": "Duplicate debit needs a refund"}'
+        )
+        orchestrator = _orchestrator_with_driver(driver)
+        result = await orchestrator.evaluate_complaint_intent_with_llm(
+            "I was charged twice for order ORD-88219, customer USR-10492, TXN-9012"
+        )
+        assert result["intent"] == "database_remediation"
+        assert result["action_required"] is True
+        assert result["requires_db_mutation"] is True
+        assert result["is_billing_dispute"] is True
+        assert result["confidence"] == 0.95
+        assert result["reason"] == "Duplicate debit needs a refund"
+        # Entity regex extraction is preserved on the LLM path.
+        assert result["order_id"] == "ORD-88219"
+        assert result["customer_id"] == "USR-10492"
+        assert result["transaction_id"] == "TXN-9012"
+        assert driver.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_llm_valid_direct_response_fenced_json(self):
+        driver = _FakeLlmDriver(
+            output='```json\n{"intent": "direct_response", "action_required": false, "confidence": 0.9, "reason": "How-to question"}\n```'
+        )
+        orchestrator = _orchestrator_with_driver(driver)
+        result = await orchestrator.evaluate_complaint_intent_with_llm("How do I invite teammates? customer USR-10492")
+        assert result["intent"] == "direct_response"
+        assert result["action_required"] is False
+        assert result["requires_db_mutation"] is False
+        assert result["is_billing_dispute"] is False
+        assert result["confidence"] == 0.9
+        assert result["customer_id"] == "USR-10492"
+
+    @pytest.mark.asyncio
+    async def test_llm_direct_intent_with_action_required_still_mutates(self):
+        driver = _FakeLlmDriver(
+            output='{"intent": "direct_response", "action_required": true, "confidence": 0.7, "reason": "Needs account update"}'
+        )
+        orchestrator = _orchestrator_with_driver(driver)
+        result = await orchestrator.evaluate_complaint_intent_with_llm("Please update my account")
+        assert result["intent"] == "direct_response"
+        assert result["requires_db_mutation"] is True
+        assert result["action_required"] is True
+
+    @pytest.mark.asyncio
+    async def test_llm_exception_falls_back_to_heuristic(self):
+        driver = _FakeLlmDriver(error=RuntimeError("llama-server unreachable"))
+        orchestrator = _orchestrator_with_driver(driver)
+        result = await orchestrator.evaluate_complaint_intent_with_llm(DUPLICATE)
+        assert result["intent"] == "database_remediation"
+        assert result["requires_db_mutation"] is True
+        assert result["order_id"] == "ORD-88219"
+
+        result_inquiry = await orchestrator.evaluate_complaint_intent_with_llm(INQUIRY)
+        assert result_inquiry["intent"] == "direct_response"
+        assert result_inquiry["requires_db_mutation"] is False
+
+    @pytest.mark.asyncio
+    async def test_llm_timeout_falls_back_to_heuristic(self):
+        driver = _FakeLlmDriver(output='{"intent": "direct_response", "action_required": false}', delay=10.0)
+        orchestrator = _orchestrator_with_driver(driver)
+        result = await orchestrator.evaluate_complaint_intent_with_llm(DUPLICATE)
+        assert result["intent"] == "database_remediation"
+        assert result["requires_db_mutation"] is True
+
+    @pytest.mark.asyncio
+    async def test_llm_invalid_output_falls_back_to_heuristic(self):
+        for bad_output in ("not json at all", '{"intent": "maybe", "action_required": true}', "", "[1, 2, 3]"):
+            driver = _FakeLlmDriver(output=bad_output)
+            orchestrator = _orchestrator_with_driver(driver)
+            result = await orchestrator.evaluate_complaint_intent_with_llm(DUPLICATE)
+            assert result["intent"] == "database_remediation", bad_output
+            assert result["requires_db_mutation"] is True, bad_output
+
+    @pytest.mark.asyncio
+    async def test_no_driver_falls_back_to_heuristic(self):
+        orchestrator = ComplaintResolutionOrchestrator(
+            config=SimpleNamespace(llm_stream=False, show_reasoning=False),
+            driver=None,
+            sse_manager=_RecordingSse(),
+        )
+        result = await orchestrator.evaluate_complaint_intent_with_llm(INQUIRY, driver=None)
+        assert result["intent"] == "direct_response"
+        assert result["requires_db_mutation"] is False
