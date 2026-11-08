@@ -1196,6 +1196,83 @@ let cachedSplitParts = { part1: "", part2: "", part3: "", part4: "" };
 let isRenderingActionBar = false;
 let hasRenderedActionBar = false;
 
+// ── Troy's autonomous decision: is an action/routing required? ─────────────
+// Troy (the running LLM / resolution engine) decides whether a ticket needs
+// a database mutation or human routing, or whether it is a direct response
+// Troy resolves on its own. The decision arrives via the cra_report and
+// resolution_end SSE payloads (action_required / requires_action / intent)
+// and is re-confirmed by /api/customer/verify. Action/routing buttons are
+// rendered ONLY when Troy signalled action_required === true.
+const troyActionDecision = () => {
+  const booleans = [
+    cachedResolutionEnd?.action_required,
+    cachedResolutionEnd?.requires_action,
+    cachedCraReport?.action_required,
+    cachedCraReport?.requires_action,
+    cachedCraReport?.intent?.requires_db_mutation,
+    cachedResolutionEnd?.intent?.requires_db_mutation,
+  ];
+  for (const value of booleans) {
+    if (typeof value === "boolean") return value;
+  }
+  const intents = [
+    cachedResolutionEnd?.intent?.intent,
+    cachedCraReport?.intent?.intent,
+    typeof cachedCraReport?.intent === "string" ? cachedCraReport.intent : null,
+  ];
+  for (const intent of intents) {
+    if (intent === "database_remediation") return true;
+    if (intent === "direct_response") return false;
+  }
+  return null; // No decision signal received yet
+};
+
+const verifyActionDecision = (verifyData) => {
+  const booleans = [
+    verifyData?.action_required,
+    verifyData?.requires_action,
+    verifyData?.intent?.requires_db_mutation,
+  ];
+  for (const value of booleans) {
+    if (typeof value === "boolean") return value;
+  }
+  if (verifyData?.intent?.intent === "database_remediation") return true;
+  if (verifyData?.intent?.intent === "direct_response") return false;
+  return null;
+};
+
+// Clean, button-free status shown when Troy resolved the ticket directly:
+// no database mutation and no human routing required.
+const renderNoActionStatus = (deliberationList, category) => {
+  document.querySelectorAll("#resolution-action-bar, .resolution-action-bar").forEach((el) => el.remove());
+  const statusEl = document.createElement("div");
+  statusEl.id = "resolution-action-bar";
+  statusEl.className = "resolution-action-bar";
+  const cat = category || cachedCraReport?.predicted_category || "";
+  statusEl.innerHTML = `
+    <div class="customer-verify-strip">
+      <div class="verify-strip-header">
+        <div class="verify-strip-title">
+          <svg class="verify-check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+          </svg>
+          <strong>Resolved directly by Troy</strong>
+          ${cat ? `<span class="db-source-tag">${cat}</span>` : ""}
+        </div>
+        <span class="verify-status-pill settled">No action required</span>
+      </div>
+      <div class="verify-strip-details">
+        <div class="verify-detail-item"><span class="v-label">Decision:</span> Troy reviewed this ticket and determined no database change or specialist routing is required. The response above stands as the complete resolution.</div>
+      </div>
+    </div>
+  `;
+  deliberationList.appendChild(statusEl);
+  hasRenderedActionBar = true;
+  isRenderingActionBar = false;
+  updateLiveStatus("Resolved directly by Troy — no action or routing required.", false);
+};
+
 const renderResolutionActionButtons = async () => {
   const deliberationList = document.getElementById("deliberation-list");
   if (!deliberationList) return;
@@ -1205,19 +1282,40 @@ const renderResolutionActionButtons = async () => {
 
   document.querySelectorAll("#resolution-action-bar, .resolution-action-bar").forEach((el) => el.remove());
 
+  // Troy decides whether action/routing buttons exist at all: if Troy
+  // determined this is a direct response (no database mutation or human
+  // routing required), show a clean resolved status and NO buttons.
+  const troyDecision = troyActionDecision();
+  if (troyDecision === false) {
+    renderNoActionStatus(deliberationList, cachedCraReport?.predicted_category);
+    return;
+  }
+
   const cat = cachedCraReport?.predicted_category || "Refunds";
   const q = topicInput?.value || "88219";
 
-  // Pre-fetch verification from data/customer_accounts.csv
+  // Pre-fetch verification from data/customer_accounts.csv. Pass the
+  // Troy-classified category when known so the backend re-evaluates the
+  // same intent instead of defaulting to Refunds for unknown tickets.
+  const verifyCategory = cachedCraReport?.predicted_category || "";
   let verifyData = null;
   try {
     const vRes = await fetch(
-      "/api/customer/verify?query=" + encodeURIComponent(q) + "&category=" + encodeURIComponent(cat),
+      "/api/customer/verify?query=" + encodeURIComponent(q) + "&category=" + encodeURIComponent(verifyCategory),
       { headers: { ...authHeaders() } }
     );
     verifyData = await vRes.json();
   } catch (_) {
     verifyData = null;
+  }
+
+  // Re-confirm Troy's decision with the verify payload. Buttons render
+  // only when Troy signalled action_required === true; otherwise the
+  // ticket stands resolved by Troy without any action/routing buttons.
+  const verifyDecision = verifyActionDecision(verifyData);
+  if (troyDecision !== true && verifyDecision !== true) {
+    renderNoActionStatus(deliberationList, verifyData?.category || cat);
+    return;
   }
 
   document.querySelectorAll("#resolution-action-bar, .resolution-action-bar").forEach((el) => el.remove());
@@ -1964,6 +2062,7 @@ let intakeCycleInterval = null;
 let intakeCycleIndex = 0;
 let intakeCycleTimer = null;
 let cachedCraReport = null;
+let cachedResolutionEnd = null;
 let cachedResolutionText = null;
 let hasDeliveredIntakeSummary = false;
 let isIntakeCycling = false;
@@ -2164,6 +2263,7 @@ const resetTroyConsole = () => {
   streamActionQueue = [];
   streamedSpeechText = "";
   cachedCraReport = null;
+  cachedResolutionEnd = null;
   cachedResolutionText = null;
   hasDeliveredIntakeSummary = false;
 
@@ -2454,6 +2554,9 @@ const connectLiveStream = () => {
     try {
       if (e?.data) {
         const data = JSON.parse(e.data);
+        // Cache Troy's decision payload so the action-button gate can
+        // consult it before renderResolutionActionButtons runs.
+        cachedResolutionEnd = data;
         if (data.sections) {
           if (data.sections.executive) cachedSplitParts.part1 = data.sections.executive;
           if (data.sections.root_cause) cachedSplitParts.part2 = data.sections.root_cause;
