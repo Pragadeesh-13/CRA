@@ -30,12 +30,54 @@ def test_models_endpoint():
     assert isinstance(data["models"], list)
 
 
-def test_firebase_config_endpoint():
+def test_firebase_config_endpoint(monkeypatch):
+    from app.config import settings
+
+    # No project/key is shipped by default; the endpoint must not advertise a
+    # stale or placeholder project, and must fail closed.
+    for field in (
+        "firebase_project_id",
+        "firebase_web_api_key",
+        "firebase_auth_domain",
+        "firebase_storage_bucket",
+        "firebase_messaging_sender_id",
+        "firebase_app_id",
+        "firebase_measurement_id",
+    ):
+        monkeypatch.setattr(settings, field, "")
     res = client.get("/api/auth/firebase-config")
-    assert res.status_code == 200
+    assert res.status_code == 503, res.text
+    assert res.json()["configured"] is False
+    for leaked in ("llm-council-4da2d", "AIza", "projectId", "apiKey", "authDomain"):
+        assert leaked not in res.text
+
+
+def test_firebase_config_endpoint_configured(monkeypatch):
+    from app.config import settings
+
+    # Full operator-supplied public web config is surfaced verbatim.
+    config = {
+        "firebase_project_id": "user-proj-123",
+        "firebase_web_api_key": "user-key-abc",
+        "firebase_auth_domain": "user-proj-123.firebaseapp.com",
+        "firebase_storage_bucket": "user-proj-123.appspot.com",
+        "firebase_messaging_sender_id": "111222333",
+        "firebase_app_id": "1:111222333:web:abcdef",
+        "firebase_measurement_id": "G-ABCDEF",
+    }
+    for field, value in config.items():
+        monkeypatch.setattr(settings, field, value)
+    res = client.get("/api/auth/firebase-config")
+    assert res.status_code == 200, res.text
     data = res.json()
-    assert "apiKey" in data
-    assert "projectId" in data
+    assert data["configured"] is True
+    assert data["projectId"] == "user-proj-123"
+    assert data["apiKey"] == "user-key-abc"
+    assert data["authDomain"] == "user-proj-123.firebaseapp.com"
+    assert data["storageBucket"] == "user-proj-123.appspot.com"
+    assert data["messagingSenderId"] == "111222333"
+    assert data["appId"] == "1:111222333:web:abcdef"
+    assert data["measurementId"] == "G-ABCDEF"
 
 
 def test_auth_signup_validation():
@@ -65,7 +107,24 @@ def test_auth_login():
     assert data["user"]["username"] == "alice"
 
 
-def test_auth_google_with_photo():
+def test_auth_google_body_profile_not_trusted(monkeypatch):
+    """Admin-Configured fork: /api/auth/google registers ONLY the verifier's
+    server-decoded claims; body profile/tenant fields are ignored."""
+    import app.main as main
+
+    class _Verifier:
+        def verify(self, id_token):
+            assert id_token == "google_test_token_123"
+            return {
+                "id": "firebase-uid-1",
+                "uid": "firebase-uid-1",
+                "email": "verified@corp.com",
+                "fullName": "Verified User",
+                "username": "verified",
+                "tenant_id": "tenant-a",
+            }
+
+    monkeypatch.setattr(main, "firebase_verifier", _Verifier())
     res = client.post(
         "/api/auth/google",
         json={
@@ -74,13 +133,17 @@ def test_auth_google_with_photo():
             "displayName": "Alice Google",
             "uid": "google_uid_123",
             "photoURL": "https://lh3.googleusercontent.com/a/test-avatar",
+            "tenant_id": "tenant-evil",
+            "org_id": "tenant-evil",
         },
     )
-    assert res.status_code == 200
-    data = res.json()
-    assert data["ok"] is True
-    assert data["user"]["photoURL"] == "https://lh3.googleusercontent.com/a/test-avatar"
-    assert data["user"]["email"] == "alice@gmail.com"
+    assert res.status_code == 200, res.text
+    user = res.json()["user"]
+    assert user["email"] == "verified@corp.com"
+    assert user["tenant_id"] == "tenant-a"
+    assert "alice@gmail.com" not in res.text
+    assert "test-avatar" not in res.text
+    assert "tenant-evil" not in res.text
 
 
 def test_static_index_serving():
@@ -230,46 +293,48 @@ def test_database_transactions_endpoint():
 
 
 def test_resolve_action_agent_and_manual():
-    from app.database import DATABASE_FILE
-    original_content = DATABASE_FILE.read_text(encoding="utf-8") if DATABASE_FILE.exists() else None
+    """Admin-Configured fork: /api/resolve/action is intentionally fail-closed.
+
+    The standalone automation fork expects 200/Refunded here; this variant
+    must deny with no success claim and no CSV mutation (live writes out
+    of scope, tenant policy not bypassable via this route).
+    """
+    from app.database import DATABASE_FILE, CUSTOMER_ACCOUNTS_FILE
+
+    before_tx = DATABASE_FILE.read_bytes() if DATABASE_FILE.exists() else None
+    before_acc = CUSTOMER_ACCOUNTS_FILE.read_bytes() if CUSTOMER_ACCOUNTS_FILE.exists() else None
     try:
-        # 1. Test Agent Resolve (updates customer account in CSV)
-        res_agent = client.post(
-            "/api/resolve/action",
-            json={
+        for payload in (
+            {
                 "action": "agent_resolve",
                 "customer_id": "USR-10492",
                 "query": "Order #88219 charged twice",
                 "action_details": "Refund Initiated ($49.00 via Stripe API)",
                 "notes": "Automated test resolution by Troy",
             },
-        )
-        assert res_agent.status_code == 200
-        data_agent = res_agent.json()
-        assert data_agent["ok"] is True
-        assert data_agent["action"] == "agent_resolve"
-        assert data_agent["customer"]["account_status"] == "Active - In Good Standing"
-        assert "Refunded" in data_agent["customer"]["refund_status"]
-        assert data_agent["customer"]["refund_id"] == "REF-88219-AUTO"
-        assert "$0.00" in data_agent["customer"]["account_balance"]
-
-        # 2. Test Manual Resolve
-        res_manual = client.post(
-            "/api/resolve/action",
-            json={
+            {
                 "action": "manual_resolve",
                 "customer_id": "USR-08914",
                 "notes": "Escalated for human operator review in automated test",
             },
-        )
-        assert res_manual.status_code == 200
-        data_manual = res_manual.json()
-        assert data_manual["ok"] is True
-        assert data_manual["action"] == "manual_resolve"
-        assert "Escalated" in data_manual["customer"]["account_status"]
+        ):
+            res = client.post("/api/resolve/action", json=payload)
+            assert res.status_code == 403, res.text
+            data = res.json()
+            assert data["ok"] is False
+            assert data["decision"] == "deny"
+            assert data["mutated_customer_data"] is False
+            assert data["mutated_external"] is False
+            assert "refund_id" not in data
+            assert "customer" not in data
+        # No mutation of either CSV
+        assert DATABASE_FILE.read_bytes() == before_tx
+        assert CUSTOMER_ACCOUNTS_FILE.read_bytes() == before_acc
     finally:
-        if original_content is not None:
-            DATABASE_FILE.write_text(original_content, encoding="utf-8")
+        if before_tx is not None:
+            DATABASE_FILE.write_bytes(before_tx)
+        if before_acc is not None:
+            CUSTOMER_ACCOUNTS_FILE.write_bytes(before_acc)
 
 
 

@@ -11,6 +11,7 @@ venv/
 htmlcov/
 .env
 firebase_creds.json
+runtime/
 
 # Model weights and large datasets (>100MB)
 *.bin

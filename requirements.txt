@@ -4,5 +4,6 @@ pydantic
 python-dotenv
 httpx
 cryptography
+firebase-admin
 pytest
 pytest-asyncio

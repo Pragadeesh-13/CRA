@@ -3,6 +3,35 @@ from fastapi import Request
 
 SESSION_COOKIE = "__session"
 
+# The single server-side principal field that may carry a *verified* tenant
+# claim. Populated only by the auth middleware from a verified IdP token; never
+# from request body/query/complaint text. CRA policy storage is tenant-keyed, so
+# tenancy is canonicalized on `tenant_id` only; `org_id` is intentionally not
+# honored as a tenant source.
+TRUSTED_TENANT_CLAIM: str = "tenant_id"
+
+
+def resolve_trusted_tenant_id(session_user: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Return a tenant id from the trusted server-side principal, else ``None``.
+
+    SECURITY CONTRACT
+    -----------------
+    * ``session_user`` MUST originate from ``request.state.session_user``, which
+      the auth middleware populates exclusively from a verified IdP token.
+    * Callers MUST NEVER pass query params, JSON body fields, URL titles, or
+      complaint text here — those are untrusted and must not select a tenant.
+    * Only ``tenant_id`` is honored (``org_id`` is ignored). No default tenant is
+      ever returned. A missing, non-string, or invalid slug claim yields ``None``
+      so downstream policy stays fail-closed.
+    """
+    if not isinstance(session_user, dict):
+        return None
+    # Local import keeps this module dependency-light and avoids import cycles.
+    from app.admin_config import is_valid_tenant_id
+
+    candidate = session_user.get(TRUSTED_TENANT_CLAIM)
+    return candidate if is_valid_tenant_id(candidate) else None
+
 PUBLIC_API_PATHS = {
     "/api/auth/firebase-config",
     "/api/auth/signup",
@@ -78,7 +107,13 @@ class SessionGuard:
         if token in self._sessions:
             return {"ok": True, "status": 200, "user": self._sessions[token]}
 
-        # Basic token projection for guest/offline sessions
+        # In required mode an unrecognized bearer must NOT be downgraded to the
+        # fake guest/admin projection. Firebase ID tokens are verified at
+        # /api/auth/google and then registered above; anything else is rejected.
+        if self.mode not in ("open", "optional"):
+            return {"ok": False, "user": None, "status": 401, "error": "Authentication required"}
+
+        # Basic token projection for guest/offline sessions (no tenant claim).
         return {
             "ok": True,
             "status": 200,

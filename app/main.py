@@ -13,7 +13,14 @@ from app.config import settings
 from app.providers import create_driver, provider_base_url, PROVIDER_REGISTRY
 from app.simulation import SimulationState, RoundBarrier, Troy, CouncilOrchestrator, SessionRegistry
 from app.http.sse_manager import SseManager
-from app.auth import KeyVault, SessionGuard, requires_key
+from app.auth import (
+    KeyVault,
+    SessionGuard,
+    requires_key,
+    resolve_trusted_tenant_id,
+    FirebaseTokenVerifier,
+    TokenVerificationError,
+)
 from app.database import (
     read_all_transactions,
     read_all_customers,
@@ -53,6 +60,10 @@ orchestrator = Troy(
 
 session_registry = SessionRegistry(config=settings, driver=driver)
 key_vault = KeyVault(encryption_secret=settings.key_encryption_secret)
+firebase_verifier = FirebaseTokenVerifier(
+    project_id=settings.firebase_project_id,
+    service_account=settings.firebase_service_account,
+)
 guard = SessionGuard(mode=settings.auth_mode)
 
 
@@ -96,6 +107,25 @@ async def auth_session_middleware(request: Request, call_next):
 def get_active_session(request: Request):
     user = getattr(request.state, "session_user", None)
     return session_registry.resolve(user)
+
+
+def _story_with_trusted_tenant(story: Dict[str, Any], tenant_id: Optional[str]) -> Dict[str, Any]:
+    """Attach ``tenant_id`` to a story using ONLY a trusted principal claim.
+
+    Any tenant field already present is dropped so a value injected via request
+    body/query/title/complaint text can never reach the orchestrator. When no
+    trusted claim exists the story carries no tenant context, preserving
+    fail-closed policy behavior.
+    """
+    clean = {k: v for k, v in story.items() if k not in ("tenant_id", "tenant")}
+    if tenant_id:
+        clean["tenant_id"] = tenant_id
+    return clean
+
+
+def _request_trusted_tenant(request: Request) -> Optional[str]:
+    """Resolve tenant context from the authenticated server-side principal only."""
+    return resolve_trusted_tenant_id(getattr(request.state, "session_user", None))
 
 
 async def resolve_session_config(request: Request) -> Dict[str, Any]:
@@ -258,36 +288,29 @@ async def get_database_transactions():
 
 @app.post("/api/resolve/action")
 async def post_resolve_action(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    """Admin-Configured fork: fail closed / read-only.
 
-    action = body.get("action", "agent_resolve")
-    customer_id = body.get("customer_id") or body.get("ticket_id")
-    query = body.get("query")
-    category = body.get("category")
-    custom_action = body.get("action_details") or "Refund Initiated ($49.00 via Stripe API)"
-    notes = body.get("notes")
-
-    if not category and query:
-        from app.triage import predict_category
-        try:
-            pred = predict_category(query)
-            category = pred.get("predicted_category", str(pred)) if hasattr(pred, "get") else str(pred)
-        except Exception:
-            pass
-
-    if action == "manual_resolve":
-        res = execute_manual_resolution(customer_id=customer_id, query=query, notes=notes, category=category)
-    else:
-        res = execute_agent_resolution(customer_id=customer_id, query=query, action=custom_action, notes=notes, category=category)
-
-    # Broadcast event so UI or stream clients know database was updated
-    session = get_active_session(request)
-    session.sse_manager.broadcast("database_updated", res)
-
-    return res
+    Live writes are out of scope in this variant, and this legacy route
+    previously bypassed tenant policy via execute_agent/manual_resolution
+    (CSV mutation + Stripe-claimed refunds). It must not mutate customer
+    data or claim success until a trusted tenant context + runtime policy
+    enforcement exists (see docs/ADMIN_CONFIG.md). Preserved in the
+    standalone automation fork; closed here.
+    """
+    return JSONResponse(
+        status_code=403,
+        content={
+            "ok": False,
+            "action": "agent_resolve",
+            "decision": "deny",
+            "status": "deny",
+            "rationale": "live writes disabled in Admin-Configured variant: /api/resolve/action is read-only/fail-closed and bypasses tenant policy",
+            "error": "live writes disabled in Admin-Configured variant",
+            "mutated_external": False,
+            "mutated_customer_data": False,
+            "external_contact": False,
+        },
+    )
 
 
 @app.get("/api/trigger")
@@ -304,6 +327,9 @@ async def manual_trigger(request: Request, title: str = "Manual resolution trigg
         "publishedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "description": "Manual trigger from query parameter.",
     }
+    # Tenant context comes only from the trusted principal claim; the `title`
+    # query parameter is untrusted and can never select a tenant.
+    story = _story_with_trusted_tenant(story, _request_trusted_tenant(request))
     session.orchestrator.set_story(story)
     session.sse_manager.broadcast("topic", {"title": story["title"]})
     session.sse_manager.broadcast("feed", story)
@@ -360,6 +386,11 @@ async def next_ticket(request: Request, query: str = ""):
     user = getattr(request.state, "session_user", None)
     await key_vault.put(user, {"provider": provider, "model": model, "apiKey": api_key})
 
+    # Tenant context is resolved once from the trusted principal claim; the
+    # `query`, `provider`, `model`, and any other body/query fields are ignored
+    # for tenant selection. No trusted claim => story has no tenant (fail closed).
+    trusted_tenant = _request_trusted_tenant(request)
+
     # Build active run driver
     run_driver = create_driver(
         provider,
@@ -381,11 +412,148 @@ async def next_ticket(request: Request, query: str = ""):
         session.sse_manager.broadcast("policy_summarizing", {"query": ticket_query})
         story = await session.orchestrator.summarise_ticket(ticket_query, driver=run_driver)
         if story:
+            story = _story_with_trusted_tenant(story, trusted_tenant)
             await session.orchestrator.run(story, driver=run_driver)
 
     asyncio.create_task(_run_flow())
     return {"ok": True, "started": True}
 
+
+# ── Admin-Configured CRA Endpoints (fail-closed; see app/admin_config.py) ────
+import hmac as _hmac
+
+def _admin_store():
+    from app.admin_config import AdminConfigStore
+    from pathlib import Path as _Path
+    _dir = getattr(settings, "admin_config_dir", "") or ""
+    return AdminConfigStore(_Path(_dir) if _dir else None)
+
+def _require_admin(request: Request):
+    """Fail-closed admin gate. Returns error response or None if authorized.
+
+    Existing auth has no admin role (see docs/ADMIN_CONFIG.md), so require
+    BOTH an authenticated session user AND CRA_ADMIN_TOKEN via X-Admin-Token,
+    or a future explicit admin role claim.
+    """
+    user = getattr(request.state, "session_user", None)
+    if not user:
+        return JSONResponse(status_code=403, content={"ok": False, "error": "Admin authentication required (no authenticated session)"})
+    if user.get("role") == "admin" or user.get("is_admin") is True:
+        return None
+    expected = getattr(settings, "admin_token", "") or ""
+    provided = request.headers.get("x-admin-token") or ""
+    if expected and provided and _hmac.compare_digest(provided, expected):
+        return None
+    return JSONResponse(status_code=403, content={"ok": False, "error": "Admin credential required (X-Admin-Token missing/invalid or no admin role)"})
+
+@app.put("/api/admin/configs/{tenant_id}")
+async def put_admin_config(request: Request, tenant_id: str):
+    deny = _require_admin(request)
+    if deny is not None:
+        return deny
+    from app.admin_config import is_valid_tenant_id, validate_config
+    if not is_valid_tenant_id(tenant_id):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "invalid tenant_id"})
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Request body must be a JSON object"})
+    if not isinstance(body, dict):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Request body must be a JSON object"})
+    cfg = body.get("config") if isinstance(body.get("config"), dict) else body
+    if not cfg.get("tenant_id"):
+        cfg = {**cfg, "tenant_id": tenant_id}
+    errors = validate_config(cfg, expected_tenant=tenant_id)
+    if errors:
+        return JSONResponse(status_code=400, content={"ok": False, "errors": errors})
+    try:
+        saved = _admin_store().save(cfg)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    return {"ok": True, "config": saved}
+
+@app.get("/api/admin/configs/{tenant_id}")
+async def get_admin_config(request: Request, tenant_id: str):
+    deny = _require_admin(request)
+    if deny is not None:
+        return deny
+    from app.admin_config import is_valid_tenant_id
+    if not is_valid_tenant_id(tenant_id):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "invalid tenant_id"})
+    cfg = _admin_store().load(tenant_id)
+    if cfg is None:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "config not found"})
+    return {"ok": True, "config": cfg}
+
+async def _dry_run(request: Request, tenant_id: str):
+    deny = _require_admin(request)
+    if deny is not None:
+        return deny
+    from app.admin_config import is_valid_tenant_id, dry_run
+    if not is_valid_tenant_id(tenant_id):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "invalid tenant_id"})
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    cfg = body.get("config") if isinstance(body.get("config"), dict) else (body if body else None)
+    if cfg is None:
+        cfg = _admin_store().load(tenant_id)
+        if cfg is None:
+            return {"ok": False, "valid": False, "errors": ["no stored config for tenant"], "checks": [], "external_contact": False, "mutated_external": False, "persisted": False}
+    if isinstance(cfg, dict) and not cfg.get("tenant_id"):
+        cfg = {**cfg, "tenant_id": tenant_id}
+    result = dry_run(cfg, expected_tenant=tenant_id)
+    return result
+
+@app.post("/api/admin/configs/{tenant_id}/dry-run")
+async def post_admin_dry_run(request: Request, tenant_id: str):
+    return await _dry_run(request, tenant_id)
+
+@app.post("/api/admin/configs/{tenant_id}/validate")
+async def post_admin_validate(request: Request, tenant_id: str):
+    return await _dry_run(request, tenant_id)
+
+@app.post("/api/admin/configs/{tenant_id}/connection-test")
+async def post_admin_connection_test(request: Request, tenant_id: str):
+    """Read-only Stripe connection check. No writes, no persistence, no secret in logs/responses.
+
+    Integration activation is read-only until runtime policy enforcement is
+    implemented; configured policy is not enforced by Troy yet.
+    """
+    deny = _require_admin(request)
+    if deny is not None:
+        return deny
+    from app.admin_config import is_valid_tenant_id
+    from app.integrations import EnvSecretResolver, SecretResolutionError, StripeAdapter
+    if not is_valid_tenant_id(tenant_id):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "invalid tenant_id"})
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    cfg = body.get("config") if isinstance(body.get("config"), dict) else (body if body else None)
+    if cfg is None:
+        cfg = _admin_store().load(tenant_id)
+    if cfg is None:
+        return {"ok": False, "read_only": True, "mutated_external": False, "error_type": "no_config", "error": "no stored config for tenant"}
+    if isinstance(cfg, dict) and not cfg.get("tenant_id"):
+        cfg = {**cfg, "tenant_id": tenant_id}
+    integration = cfg.get("integration") if isinstance(cfg, dict) else None
+    if not isinstance(integration, dict) or str(integration.get("name") or "").lower() != "stripe":
+        return {"ok": False, "read_only": True, "mutated_external": False, "error_type": "unsupported_adapter", "error": "connection test not configured for this integration"}
+    secret_ref = str(integration.get("secret_ref") or "")
+    try:
+        secret = EnvSecretResolver().resolve(secret_ref)
+    except SecretResolutionError as e:
+        return {"ok": False, "read_only": True, "mutated_external": False, "error_type": e.error_type, "error": e.message}
+    result = await StripeAdapter().check_connection(secret, timeout_s=5.0)
+    result["integration"] = "stripe"
+    return result
 
 # ── Configuration & Models Endpoints ──────────────────────────────────────────
 
@@ -468,13 +636,34 @@ async def get_models(request: Request, provider: Optional[str] = None):
 
 @app.get("/api/auth/firebase-config")
 async def get_firebase_config():
-    proj_id = settings.firebase_project_id
+    """Expose the *operator-configured* Firebase web config.
+
+    Admin-Configured fork: no project/key defaults are shipped. When the project
+    ID or web API key is unset, fail closed (503) instead of advertising a stale
+    or placeholder project. The browser client treats a non-OK response as
+    "Firebase login unavailable".
+    """
+    proj_id = (settings.firebase_project_id or "").strip()
+    api_key = (settings.firebase_web_api_key or "").strip()
+    if not proj_id or not api_key:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "configured": False,
+                "error": "Firebase project is not configured",
+            },
+        )
     return {
-        "apiKey": settings.firebase_web_api_key,
-        "authDomain": f"{proj_id}.firebaseapp.com",
+        "ok": True,
+        "configured": True,
+        "apiKey": api_key,
+        "authDomain": (settings.firebase_auth_domain or "").strip(),
         "projectId": proj_id,
-        "storageBucket": f"{proj_id}.appspot.com",
-        "messagingSenderId": "109599031175",
+        "storageBucket": (settings.firebase_storage_bucket or "").strip(),
+        "messagingSenderId": (settings.firebase_messaging_sender_id or "").strip(),
+        "appId": (settings.firebase_app_id or "").strip(),
+        "measurementId": (settings.firebase_measurement_id or "").strip(),
     }
 
 
@@ -522,25 +711,32 @@ async def login(request: Request):
 
 @app.post("/api/auth/google")
 async def google_auth(request: Request):
-    body = await request.json()
+    """Verify a Firebase ID token and register ONLY server-decoded claims.
+
+    Admin-Configured fork: body profile/tenant fields are ignored. Signature,
+    issuer, audience, and expiry are checked by the Firebase Admin SDK. Fails
+    closed: 400 missing token, 401 invalid token, 503 verifier/config unavailable.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
     id_token = body.get("idToken")
-    if not id_token:
+    if not id_token or not isinstance(id_token, str):
         return JSONResponse(status_code=400, content={"ok": False, "error": "idToken is required"})
 
-    email = str(body.get("email") or "user@gmail.com").strip()
-    full_name = str(body.get("displayName") or "Google User").strip()
-    uid = str(body.get("uid") or f"google_{int(time.time())}").strip()
-    username = email.split("@")[0] if "@" in email else uid
+    try:
+        user = await asyncio.to_thread(firebase_verifier.verify, id_token)
+    except TokenVerificationError as e:
+        return JSONResponse(
+            status_code=e.status,
+            content={"ok": False, "error": e.message, "error_type": e.error_type},
+        )
+    if not user or not user.get("id"):
+        return JSONResponse(status_code=401, content={"ok": False, "error": "Invalid Firebase ID token"})
 
-    photo_url = str(body.get("photoURL") or body.get("photoUrl") or "").strip()
-
-    user = {
-        "id": uid,
-        "username": username,
-        "fullName": full_name,
-        "email": email,
-        "photoURL": photo_url,
-    }
     guard.register_session(id_token, user)
     response = JSONResponse(status_code=200, content={"ok": True, "user": user, "idToken": id_token})
     response.set_cookie(key="__session", value=id_token, path="/", max_age=43200, samesite="lax")
@@ -614,6 +810,14 @@ async def api_cra_classify(request: Request):
     return {"ok": True, **res_dict}
 
 
+
+# ── Admin Setup UI (served from admin_ui/, not public/) ─────────────────────
+ADMIN_UI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "admin_ui")
+if os.path.isdir(ADMIN_UI_DIR):
+    @app.get("/admin")
+    @app.get("/admin/")
+    async def serve_admin_ui():
+        return FileResponse(os.path.join(ADMIN_UI_DIR, "index.html"))
 
 # ── Static Frontend Serving ───────────────────────────────────────────────────
 

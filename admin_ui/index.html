@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Admin-Configured CRA — Setup</title>
+<style>body{font-family:system-ui,sans-serif;max-width:760px;margin:2rem auto;padding:0 1rem}label{display:block;margin:.5rem 0}input,select{width:100%;padding:.4rem}button{margin:.5rem .5rem .5rem 0;padding:.5rem 1rem}pre{background:#f4f4f4;padding:1rem;white-space:pre-wrap}.warn{background:#fff7e6;border:1px solid #e6c87a;padding:.75rem}</style>
+</head>
+<body>
+<h1>Admin-Configured CRA — Setup</h1>
+<p class="warn"><strong>Read-only activation:</strong> integration connection checks are read-only. Configured resolution policy is <em>not</em> enforced by Troy yet; no autonomous refunds or live writes are enabled. For account-specific help, provide an order ID.</p>
+
+<label>Admin token (session-only, in-memory; sent as X-Admin-Token)
+<input id="adminToken" type="password" autocomplete="off" placeholder="Enter admin token (not stored)">
+</label>
+<label>Tenant ID <input id="tenant_id" placeholder="tenant-a"></label>
+<label>Integration
+<select id="integration_name">
+<option value="stripe">stripe</option>
+<option value="salesforce">salesforce</option>
+<option value="zendesk">zendesk</option>
+<option value="hubspot">hubspot</option>
+<option value="generic">generic</option>
+</select>
+</label>
+<label>External tenant ID <input id="external_tenant_id" placeholder="acct_123"></label>
+<label>Secret reference (never a secret value) <input id="secret_ref" placeholder="env:STRIPE_API_KEY"></label>
+
+<h2>Field mappings</h2>
+<label>customer_id <input id="map_customer_id" value="customer"></label>
+<label>order_id <input id="map_order_id" value="order"></label>
+<label>transaction_id <input id="map_transaction_id" value="txn"></label>
+<label>customer_email <input id="map_customer_email" value="email"></label>
+<label>subscription_id <input id="map_subscription_id" value="subscription"></label>
+<label>invoice_id <input id="map_invoice_id" value="invoice"></label>
+<label>ticket_id <input id="map_ticket_id" value="ticket"></label>
+
+<h2>Resolution policy (not yet enforced by Troy)</h2>
+<label>Refund cap (cents) <input id="refund_cap_cents" type="number" value="5000"></label>
+<label>Approval threshold (cents) <input id="approval_threshold_cents" type="number" value="1000"></label>
+<label>Escalation target <input id="escalation_target" value="billing-queue"></label>
+
+<button id="btnLoad">Load</button>
+<button id="btnDryRun">Dry-run</button>
+<button id="btnSave">Save</button>
+<button id="btnTest">Test connection</button>
+<pre id="out"></pre>
+
+<script>
+let adminToken = ""; // in-memory only; never persisted to storage
+const $ = id => document.getElementById(id);
+$("adminToken").addEventListener("input", e => { adminToken = e.target.value; });
+function config() {
+  return {
+    tenant_id: $("tenant_id").value.trim(),
+    integration: {name: $("integration_name").value, external_tenant_id: $("external_tenant_id").value.trim(), secret_ref: $("secret_ref").value.trim()},
+    field_mappings: {customer_id: $("map_customer_id").value.trim(), order_id: $("map_order_id").value.trim(), transaction_id: $("map_transaction_id").value.trim(), customer_email: $("map_customer_email").value.trim(), subscription_id: $("map_subscription_id").value.trim(), invoice_id: $("map_invoice_id").value.trim(), ticket_id: $("map_ticket_id").value.trim()},
+    resolution_policy: {refund_cap_cents: Number($("refund_cap_cents").value), approval_threshold_cents: Number($("approval_threshold_cents").value), escalation_target: $("escalation_target").value.trim(), allow_auto_refund: false}
+  };
+}
+async function call(method, path, body) {
+  const r = await fetch(path, {method, headers: {"Content-Type": "application/json", "X-Admin-Token": adminToken}, body: body ? JSON.stringify(body) : undefined});
+  const text = await r.text();
+  $("out").textContent = r.status + " " + text;
+}
+$("btnLoad").addEventListener("click", () => call("GET", "/api/admin/configs/" + encodeURIComponent($("tenant_id").value.trim())));
+$("btnDryRun").addEventListener("click", () => call("POST", "/api/admin/configs/" + encodeURIComponent($("tenant_id").value.trim()) + "/dry-run", config()));
+$("btnSave").addEventListener("click", () => call("PUT", "/api/admin/configs/" + encodeURIComponent($("tenant_id").value.trim()), config()));
+$("btnTest").addEventListener("click", () => call("POST", "/api/admin/configs/" + encodeURIComponent($("tenant_id").value.trim()) + "/connection-test", config()));
+</script>
+</body>
+</html>

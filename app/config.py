@@ -42,11 +42,36 @@ class Settings(BaseModel):
             "KEY_ENCRYPTION_SECRET", "6c407159a54cc53fe814dda34fd67f8dc74dedb0830c0d99a5a539b73e524eb6"
         )
     )
-    firebase_project_id: str = Field(default_factory=lambda: os.getenv("FIREBASE_PROJECT_ID", "llm-council-4da2d"))
+    firebase_project_id: str = Field(default_factory=lambda: os.getenv("FIREBASE_PROJECT_ID", ""))
     firebase_web_api_key: str = Field(
-        default_factory=lambda: os.getenv("FIREBASE_WEB_API_KEY", "AIzaSyDIwGeB4nnmpb2Ufhh8AMNvw0OKFYi67gQ")
+        default_factory=lambda: os.getenv("FIREBASE_WEB_API_KEY", "")
+    )
+    # Public Firebase *web* app config, surfaced to the browser via
+    # GET /api/auth/firebase-config. Empty by default; no project values are
+    # hardcoded. These are public client values, never server credentials.
+    firebase_auth_domain: str = Field(default_factory=lambda: os.getenv("FIREBASE_AUTH_DOMAIN", ""))
+    firebase_storage_bucket: str = Field(
+        default_factory=lambda: os.getenv("FIREBASE_STORAGE_BUCKET", "")
+    )
+    firebase_messaging_sender_id: str = Field(
+        default_factory=lambda: os.getenv("FIREBASE_MESSAGING_SENDER_ID", "")
+    )
+    firebase_app_id: str = Field(default_factory=lambda: os.getenv("FIREBASE_APP_ID", ""))
+    firebase_measurement_id: str = Field(
+        default_factory=lambda: os.getenv("FIREBASE_MEASUREMENT_ID", "")
+    )
+    # Server-side Firebase Admin credentials reference. Never commit a value;
+    # set FIREBASE_SERVICE_ACCOUNT to a service-account JSON path (or inline
+    # JSON), or rely on Application Default Credentials.
+    firebase_service_account: str = Field(
+        default_factory=lambda: os.getenv("FIREBASE_SERVICE_ACCOUNT", "")
     )
     log_level: str = Field(default_factory=lambda: os.getenv("LOG_LEVEL", "info"))
+    # Admin-configured CRA (PRODUCT_VARIANT.md). Runtime-only, gitignored.
+    admin_config_dir: str = Field(
+        default_factory=lambda: os.getenv("CRA_ADMIN_CONFIG_DIR", "")
+    )
+    admin_token: str = Field(default_factory=lambda: os.getenv("CRA_ADMIN_TOKEN", ""))
 
 
 settings = Settings()

@@ -134,8 +134,81 @@ class ComplaintResolutionOrchestrator:
         raw = text if text is not None else query
         return cls.evaluate_complaint_intent(raw, category=category)
 
+    # Unique marker for the strict-JSON intent decision prompt.
+    INTENT_MARKER = "troy_intent_decision"
+
     def _active_driver(self) -> BaseLlmDriver:
         return self._run_driver or self.driver
+
+    async def decide_intent_via_llm(
+        self,
+        complaint_text: str,
+        category: Optional[str] = None,
+        driver: Optional[BaseLlmDriver] = None,
+    ) -> Dict[str, Any]:
+        """
+        Ask the configured LLM (active driver) for a strict-JSON intent decision.
+
+        Prompt uses the unique ``troy_intent_decision`` marker and asks for
+        ``database_investigation vs direct_response``.  Only the two exact
+        decision strings are accepted; any invalid output, error, timeout,
+        or missing driver defaults safely to ``direct_response`` (no DB
+        investigation / no mutation) so unverifiable claims go to human review.
+        """
+        complaint = (complaint_text or "").strip()
+        safe = {
+            "decision": "direct_response",
+            "rationale": "Defaulted to direct_response: no valid LLM intent decision.",
+            "category": category,
+        }
+        d = driver or self._active_driver()
+        if d is None:
+            return safe
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Troy's intent router. Decide whether a complaint needs "
+                    "database_investigation vs direct_response. "
+                    "database_investigation means the customer makes a concrete duplicate "
+                    "billing claim that must be verified against transaction records. "
+                    "direct_response means a policy, general, or non-duplicate inquiry that "
+                    "needs no database investigation. "
+                    "Respond with ONLY strict JSON, no markdown, no extra text: "
+                    '{"decision": "database_investigation" | "direct_response", "rationale": "string"}. '
+                    "Marker: troy_intent_decision"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"troy_intent_decision: database_investigation vs direct_response\n"
+                    f"Triage category: {category or 'Unknown'}\n"
+                    f"Customer complaint:\n{complaint}\n"
+                    "Return only the JSON object with decision and rationale."
+                ),
+            },
+        ]
+        try:
+            raw = await asyncio.wait_for(d.complete(messages, 256), timeout=10.0)
+        except Exception as e:
+            logger.info(f"LLM intent decision failed, defaulting to direct_response: {e}")
+            return safe
+        data = parse_json(raw) if raw else None
+        if not isinstance(data, dict):
+            return safe
+        decision = str(data.get("decision") or "").strip()
+        if decision not in ("database_investigation", "direct_response"):
+            return safe
+        return {
+            "decision": decision,
+            "rationale": str(data.get("rationale") or ""),
+            "category": category,
+        }
+
+    # Backwards-compatible alias
+    async def _decide_intent_via_llm(self, complaint_text: str, category: Optional[str] = None, driver=None):
+        return await self.decide_intent_via_llm(complaint_text, category=category, driver=driver)
 
     async def _complete(
         self, messages: List[Dict[str, str]], max_tokens: int = 4096, driver: Optional[BaseLlmDriver] = None
@@ -364,99 +437,193 @@ class ComplaintResolutionOrchestrator:
             remediate_duplicate_charge,
         )
 
-        # Step 2: Autonomous Intent Evaluation (Feature 10)
-        intent_info = self.evaluate_complaint_intent(complaint_text, category=pred_cat)
-        is_refund_domain = intent_info.get("intent") == "database_remediation" or pred_cat == "Refunds"
-        cat_ctx = get_category_complaint_context(category=pred_cat, query=complaint_text)
+        # Step 2: Autonomous Intent Evaluation via configured LLM (Feature 10).
+        # Only ID extraction (no routing) reuses the legacy helper shape.
+        # NOTE: get_category_complaint_context(category="Refunds", query=...) would
+        # itself call analyze_customer_transactions (DB inspection), even for a
+        # direct policy inquiry. Do not call that billing context before/on
+        # direct_response; use a neutral non-billing context without raw query.
+        _id_info = self.evaluate_complaint_intent(complaint_text, category=pred_cat)
+        intent_decision = await self.decide_intent_via_llm(complaint_text, category=pred_cat)
+        decision = intent_decision.get("decision", "direct_response")
+        if decision == "database_investigation":
+            # Avoid redundant analyze via billing context; inspect() below is the
+            # single read-only audit and cat_ctx is overridden with its result.
+            cat_ctx = get_category_complaint_context(category="Account Management", query="")
+        else:
+            _neutral_cat = "Account Management" if pred_cat == "Refunds" else pred_cat
+            cat_ctx = get_category_complaint_context(category=_neutral_cat, query="")
+        cat_ctx["is_refund"] = False
+        is_refund_domain = False
+        human_review = False
+        policy_decision: Optional[Dict[str, Any]] = None
+        direct_refund_policy = decision != "database_investigation" and pred_cat == "Refunds"
 
-        if is_refund_domain:
+        if decision == "database_investigation":
             self.sse.broadcast(
                 "system",
-                {"message": "Autonomous Intent Decision: Billing dispute / duplicate charge detected. Initiating database audit..."},
+                {"message": "Autonomous Intent Decision: LLM requested database investigation. Initiating read-only database audit..."},
             )
-            # Generic DB Inspection (Feature 6 & 12)
             txn_analysis = inspect_account_and_transactions(
-                customer_id=intent_info.get("customer_id"),
+                customer_id=_id_info.get("customer_id"),
                 query=complaint_text,
             )
-            if not txn_analysis.get("ok"):
-                txn_analysis = analyze_customer_transactions(query=complaint_text, customer_id=intent_info.get("customer_id"))
+            dup_txn = txn_analysis.get("duplicate_transaction") if txn_analysis.get("ok") else None
+            if not isinstance(dup_txn, dict):
+                dup_txn = {}
+            dup_id = dup_txn.get("transaction_id") or ""
+            # Concrete evidence only: duplicate txn present, and its order/customer
+            # match the audit record (and complaint IDs when present). No hardcoded fallbacks.
+            dup_order = str(dup_txn.get("order_id") or "").strip().upper()
+            dup_cust = str(dup_txn.get("customer_id") or "").strip().upper()
+            audit_order = str(txn_analysis.get("order_id") or "").strip().upper()
+            audit_cust = str(txn_analysis.get("customer_id") or "").strip().upper()
+            complaint_order = _id_info.get("order_id") or ""
+            complaint_cust = _id_info.get("customer_id") or ""
+            order_match = bool(dup_order) and (not audit_order or dup_order == audit_order) and (not complaint_order or dup_order == complaint_order)
+            cust_match = bool(dup_cust) and (not audit_cust or dup_cust == audit_cust) and (not complaint_cust or dup_cust == complaint_cust)
+            # Require a real positive amount (never default to $49.00).
+            try:
+                _amt_val = float(str(dup_txn.get("amount") or "").strip())
+            except (TypeError, ValueError):
+                _amt_val = 0.0
+            has_positive_amount = _amt_val > 0
+            # Unrefunded: duplicate_detected must be True. Already-refunded:
+            # explicit duplicate_verified on account/customer plus account notes.
+            _already = bool(txn_analysis.get("is_already_refunded", False))
+            _acct = txn_analysis.get("account") or {}
+            _cust = txn_analysis.get("customer") or {}
+            _dup_verified = str(_acct.get("duplicate_verified") or _cust.get("duplicate_verified") or "")
+            _acct_notes = str(_acct.get("notes") or _cust.get("notes") or "")
+            _already_verified = _already and ("yes" in _dup_verified.lower()) and bool(_acct_notes.strip())
+            _unrefunded_detected = (not _already) and bool(txn_analysis.get("duplicate_detected"))
+            has_concrete_evidence = bool(
+                txn_analysis.get("ok") and dup_id and order_match and cust_match
+                and has_positive_amount and (_unrefunded_detected or _already_verified)
+            )
 
-            is_already_refunded = txn_analysis.get("is_already_refunded", False)
-            dup_txn = txn_analysis.get("duplicate_transaction") or {}
-            dup_id = dup_txn.get("transaction_id") or intent_info.get("transaction_id")
-            if not dup_id:
-                if "ORD-81094" in complaint_text or "TXN-7712" in complaint_text or "USR-07231" in complaint_text:
-                    dup_id = "TXN-7712"
-                elif "ORD-88219" in complaint_text or "TXN-9012" in complaint_text or "USR-10492" in complaint_text:
-                    dup_id = "TXN-9012"
-
-            dup_amt = dup_txn.get("amount", "49.00") if isinstance(dup_txn, dict) else "49.00"
-            effective_order_id = intent_info.get("order_id") or txn_analysis.get("order_id") or ("ORD-81094" if dup_id == "TXN-7712" else "ORD-88219")
-
-            # Execute Generic Remediation Tool autonomously (Feature 12)
-            if not is_already_refunded and dup_id:
-                rem_res = remediate_duplicate_charge(
-                    order_id=effective_order_id,
-                    duplicate_txn_id=dup_id,
-                    refund_amount=dup_amt,
-                    processed_by="Troy (Autonomous Resolution Agent)",
-                    notes=f"Autonomous refund executed by Troy for order {effective_order_id}.",
-                )
+            if has_concrete_evidence:
+                is_refund_domain = True
+                is_already_refunded = _already
+                dup_amt = f"{_amt_val:.2f}"
+                effective_order_id = dup_order or audit_order or complaint_order
+                # Tenant policy gate (admin fork: NO bypass). Trusted tenant
+                # context is an explicit story field (never parsed from
+                # complaint text); per-user tenant membership is NOT
+                # implemented in auth/session, so this is a demo tenant
+                # context validated only against a saved config. Absent /
+                # missing / mismatched / invalid config fails closed to
+                # escalation/manual review with NO Stripe call and NO
+                # CSV/customer mutation (remediate_duplicate_charge is
+                # never called from this Troy path in this fork).
+                _tenant_id = story.get("tenant_id") or story.get("tenant") if isinstance(story, dict) else None
+                from app.admin_config import AdminConfigStore, evaluate_policy, load_policy_for_tenant
+                from pathlib import Path as _P
+                _cfg_dir = getattr(self.config, "admin_config_dir", "") or ""
+                _store = AdminConfigStore(_P(_cfg_dir) if _cfg_dir else None)
+                _amount_cents = int(round(_amt_val * 100))
+                _dry = bool(story.get("dry_run")) if isinstance(story, dict) else False
+                if _tenant_id:
+                    _cfg, _cfg_errs = load_policy_for_tenant(_store, _tenant_id)
+                    policy_decision = evaluate_policy(
+                        _cfg, tenant_id=_tenant_id, action="duplicate_refund",
+                        amount_cents=_amount_cents, dry_run=_dry,
+                    )
+                    if _cfg_errs and _cfg is None:
+                        policy_decision = evaluate_policy(
+                            None, tenant_id=_tenant_id, action="duplicate_refund",
+                            amount_cents=_amount_cents, dry_run=_dry,
+                        )
+                        policy_decision["rationale"] = f"missing/mismatched tenant config: {_cfg_errs[0]}"
+                else:
+                    policy_decision = evaluate_policy(
+                        None, tenant_id=None, action="duplicate_refund",
+                        amount_cents=_amount_cents, dry_run=_dry,
+                    )
+                    policy_decision["rationale"] = "missing trusted tenant context: no tenant_id in story (complaint text is not trusted); fail closed to escalation/manual review"
+                cat_ctx["policy_decision"] = policy_decision
+                cat_ctx["txn_analysis"] = txn_analysis
                 self.sse.broadcast(
                     "system",
-                    {"message": f"Autonomous DB Tool Executed: remediate_duplicate_charge({effective_order_id}, {dup_id}) -> Status: Refunded"},
+                    {"message": f"Tenant Policy Decision ({policy_decision.get('decision')}): {policy_decision.get('rationale')} No Stripe/live execution; no customer-data mutation."},
                 )
-                self.sse.broadcast("database_updated", rem_res)
-                is_already_refunded = True
-                ref_id = rem_res.get("refund_id") or f"REF-{effective_order_id.replace('ORD-', '')}-AUTO"
-                ref_date = rem_res.get("refunded_at") or time.strftime("%b %d, %Y")
-                # Re-query audit state so prompt reflects is_already_refunded = True
-                re_audit = inspect_account_and_transactions(customer_id=intent_info.get("customer_id"), query=complaint_text)
-                if re_audit.get("ok"):
-                    txn_analysis = re_audit
-                    is_already_refunded = True
+                is_refund_domain = False
+                human_review = True
+                cat_ctx["is_refund"] = False
+                cat_ctx["human_review"] = True
+                cat_ctx["policy_simulated"] = True
+                prompt_lines.append("TENANT POLICY DECISION (simulated, enforced before any action):")
+                prompt_lines.append(f"- Decision: {policy_decision.get('decision')}; rationale: {policy_decision.get('rationale')}")
+                prompt_lines.append(f"- Escalation target: {policy_decision.get('escalation_target') or policy_decision.get('escalated_to') or 'billing-queue'}; dry_run={policy_decision.get('dry_run')}; external_contact=False; mutated_customer_data=False")
+                prompt_lines.append(
+                    "Please deliver your assessment as Troy. State the tenant policy decision and rationale, "
+                    "that no Stripe/live refund was executed and no customer data was mutated, and route to the escalation target if denied/requiring approval. "
+                    "Do not claim a refund was issued or cite a refund ID.\n"
+                )
+                if is_refund_domain:
+                    cat_ctx["txn_analysis"] = txn_analysis
+                    cat_ctx["is_refund"] = True
+                    cat_ctx["reference_id"] = ref_id
+                    c_name = txn_analysis.get("customer_name") or dup_txn.get("customer_name") or ""
+                    c_id = txn_analysis.get("customer_id") or dup_cust
+                    c_email = txn_analysis.get("customer_email") or dup_txn.get("customer_email") or ""
+                    plan = txn_analysis.get("subscription_plan") or dup_txn.get("subscription_plan") or ""
+                    cycle = txn_analysis.get("billing_cycle") or dup_txn.get("billing_cycle") or ""
+                    txns = txn_analysis.get("transactions", [])
             else:
-                ref_id = txn_analysis.get("refund_id") or f"REF-{effective_order_id.replace('ORD-', '')}-AUTO"
-                ref_date = txn_analysis.get("refunded_at") or "Oct 21, 2026"
+                # Insufficient / mismatched evidence: no write, human review.
+                human_review = True
+                cat_ctx["txn_analysis"] = txn_analysis
+                cat_ctx["is_refund"] = False
+                cat_ctx["human_review"] = True
+                cat_ctx["insufficient_duplicate"] = True
                 self.sse.broadcast(
                     "system",
-                    {"message": f"Autonomous DB Audit: Duplicate transaction {dup_id} was already refunded under {ref_id}. Reconfirming ledger status."},
+                    {"message": "Autonomous Intent Decision: Database investigation requested but insufficient duplicate evidence. No database mutation; Resolving without database mutation and routing to human review."},
                 )
-
-            cat_ctx["txn_analysis"] = txn_analysis
-            cat_ctx["is_refund"] = True
-            cat_ctx["reference_id"] = ref_id
-
-            c_name = txn_analysis.get("customer_name", "Alex Morgan")
-            c_id = txn_analysis.get("customer_id", "USR-10492")
-            c_email = txn_analysis.get("customer_email", "alex.morgan@gmail.com")
-            plan = txn_analysis.get("subscription_plan", "Pro Tier ($49.00/mo)")
-            cycle = txn_analysis.get("billing_cycle", "October 2026")
-            txns = txn_analysis.get("transactions", [])
-
-            prompt_lines.append("DATABASE TRANSACTION RECORDS AUDIT (from data/transactions.csv):")
-            prompt_lines.append(f"- Customer: {c_name} (ID: {c_id} | Email: {c_email})")
-            prompt_lines.append(f"- Subscription Plan: {plan} | Billing Cycle: {cycle}")
-            prompt_lines.append(f"- Transaction Records in {cycle} ({len(txns)} found):")
-            for t in txns:
-                prompt_lines.append(f"  * {t.get('transaction_id')}: ${t.get('amount')} {t.get('currency', 'USD')} on {t.get('transaction_date')} [Status: {t.get('status')}] - {t.get('payment_method')}")
-            
-            if is_already_refunded:
-                prompt_lines.append(f"- Autonomous Audit Finding: Accidental duplicate debit {dup_id} (${dup_amt}) was ALREADY REFUNDED on {ref_date} under Refund ID {ref_id}.")
-                prompt_lines.append(f"- Ledger Status: Customer has 1 settled active renewal record and 1 refunded duplicate record. Current ledger balance is $0.00 in good standing.")
-                prompt_lines.append(f"- Decision: Duplicate refund prevented. Reconfirm existing refund status (ID: {ref_id}) and advise customer of payment processing timeline.\n")
+                prompt_lines.append("DATABASE TRANSACTION RECORDS AUDIT (read-only, from data/transactions.csv):")
+                prompt_lines.append(f"- Audit result: ok={txn_analysis.get('ok')}; duplicate_transaction={dup_id or 'none'}; insufficient duplicate evidence found.")
+                prompt_lines.append("- Decision: insufficient duplicate evidence - zero database mutation; human review required for unverifiable billing claim.\n")
                 prompt_lines.append(
-                    "Please deliver your formal Complaint Resolution Assessment as Troy, Lead Complaint Resolution Agent. "
-                    f"Explicitly cite your analysis of data/transactions.csv: confirm that duplicate transaction {dup_id} was ALREADY REFUNDED under Refund ID {ref_id}, that the account balance is settled at $0.00, and that no duplicate charge or payout is needed. "
+                    "Please deliver your formal Complaint Resolution Assessment as Troy. "
+                    "State that a read-only audit found insufficient duplicate evidence, that no database mutation was performed (zero database mutation), "
+                    "and that the ticket is routed to human review for manual verification. Do not claim a refund was issued.\n"
                 )
-            else:
-                prompt_lines.append(f"- Autonomous Audit Finding: Customer has {len(txns)} transaction records in a single billing cycle for a monthly subscription.")
-                prompt_lines.append(f"- Decision: Authorize immediate refund specifically for duplicate transaction {dup_id} (${dup_amt}), updating its status to 'Refunded' in data/transactions.csv.\n")
+                # Skip refund prompt construction below by falling through to direct-style context
+                is_refund_domain = False
+                # Build a direct-style human-review prompt section
+                prompt_lines.append(f"INTERNAL SYSTEM & TELEMETRY AUDIT ({cat_ctx.get('system_label', 'Master Records')}):")
+                prompt_lines.append(f"- Account ID: {cat_ctx.get('customer_id')} | Customer: {cat_ctx.get('customer_name')} ({cat_ctx.get('customer_email')})")
+                prompt_lines.append(f"- Human review: insufficient duplicate evidence; escalate to Billing specialist.\n")
                 prompt_lines.append(
-                    "Please deliver your formal Complaint Resolution Assessment as Troy, Lead Complaint Resolution Agent. "
-                    f"Explicitly cite your analysis of the transaction records in data/transactions.csv and your decision to refund the redundant transaction ({dup_id}). "
+                    f"DOMAIN RESOLUTION INSTRUCTIONS:\n"
+                    f"You are Troy, Lead Complaint Resolution Agent. This is a '{pred_cat}' ticket routed to {team}.\n"
+                    f"human review: insufficient duplicate evidence, zero database mutation. Explain the read-only audit finding, that no refund was issued, "
+                    f"and that a Billing specialist will manually verify. Provide clear next steps."
                 )
+
+            if is_refund_domain:
+                prompt_lines.append("DATABASE TRANSACTION RECORDS AUDIT (from data/transactions.csv):")
+                prompt_lines.append(f"- Customer: {c_name} (ID: {c_id} | Email: {c_email})")
+                prompt_lines.append(f"- Subscription Plan: {plan} | Billing Cycle: {cycle}")
+                prompt_lines.append(f"- Transaction Records in {cycle} ({len(txns)} found):")
+                for t in txns:
+                    prompt_lines.append(f"  * {t.get('transaction_id')}: ${t.get('amount')} {t.get('currency', 'USD')} on {t.get('transaction_date')} [Status: {t.get('status')}] - {t.get('payment_method')}")
+                if is_already_refunded:
+                    prompt_lines.append(f"- Autonomous Audit Finding: Accidental duplicate debit {dup_id} (${dup_amt}) was ALREADY REFUNDED on {ref_date} under Refund ID {ref_id}.")
+                    prompt_lines.append(f"- Ledger Status: Customer has 1 settled active renewal record and 1 refunded duplicate record. Current ledger balance is $0.00 in good standing.")
+                    prompt_lines.append(f"- Decision: Duplicate refund prevented. Reconfirm existing refund status (ID: {ref_id}) and advise customer of payment processing timeline.\n")
+                    prompt_lines.append(
+                        "Please deliver your formal Complaint Resolution Assessment as Troy, Lead Complaint Resolution Agent. "
+                        f"Explicitly cite your analysis of data/transactions.csv: confirm that duplicate transaction {dup_id} was ALREADY REFUNDED under Refund ID {ref_id}, that the account balance is settled at $0.00, and that no duplicate charge or payout is needed. "
+                    )
+                else:
+                    prompt_lines.append(f"- Autonomous Audit Finding: Customer has {len(txns)} transaction records in a single billing cycle for a monthly subscription.")
+                    prompt_lines.append(f"- Decision: Authorize immediate refund specifically for duplicate transaction {dup_id} (${dup_amt}), updating its status to 'Refunded' in data/transactions.csv.\n")
+                    prompt_lines.append(
+                        "Please deliver your formal Complaint Resolution Assessment as Troy, Lead Complaint Resolution Agent. "
+                        f"Explicitly cite your analysis of the transaction records in data/transactions.csv and your decision to refund the redundant transaction ({dup_id}). "
+                    )
         else:
             self.sse.broadcast(
                 "system",
@@ -464,21 +631,37 @@ class ComplaintResolutionOrchestrator:
             )
             cat_ctx["is_refund"] = False
 
-            # Domain-specific prompt for the other 10 categories
-            prompt_lines.append(f"INTERNAL SYSTEM & TELEMETRY AUDIT ({cat_ctx.get('system_label', 'Master Records')}):")
-            prompt_lines.append(f"- Account ID: {cat_ctx.get('customer_id')} | Customer: {cat_ctx.get('customer_name')} ({cat_ctx.get('customer_email')})")
-            prompt_lines.append(f"- Subscription Tier: {cat_ctx.get('subscription_plan')}")
-            prompt_lines.append(f"- Current Diagnostic Status: {cat_ctx.get('status_pill')}")
-            prompt_lines.append(f"- Domain Findings: {cat_ctx.get('system_details')}")
-            prompt_lines.append(f"- Recommended Autonomous Action: {cat_ctx.get('action_btn_text')} (Reference: {cat_ctx.get('reference_id')})\n")
+            if direct_refund_policy:
+                # Dedicated direct informational path for Refunds: may explain
+                # general refund guidance, must not claim account inspection,
+                # refund issuance, or known account status.
+                prompt_lines.append("DIRECT REFUND POLICY INFORMATION (general guidance only, no account inspection):")
+                prompt_lines.append("- No account was inspected, no refund was issued, and account status is not known in this direct response.")
+                prompt_lines.append("- You may explain general refund guidance in general terms without asserting exact timelines or account-specific outcomes.")
+                prompt_lines.append("- Ask the customer to provide an order ID for account-specific help so a specialist can review the specific charge.\n")
+                prompt_lines.append(
+                    f"DOMAIN RESOLUTION INSTRUCTIONS:\n"
+                    f"You are Troy, Lead Complaint Resolution Agent. This is a general refund policy inquiry routed to {team}.\n"
+                    f"Provide general refund policy guidance only. Do NOT claim an account was inspected, a refund was issued, or that account status is known. "
+                    f"Do NOT mention database transactions, payment ledgers, CSV files, or transactions.csv. "
+                    f"Ask for an order ID for account-specific help and provide clear next steps."
+                )
+            else:
+                # Domain-specific prompt for the other 10 categories
+                prompt_lines.append(f"INTERNAL SYSTEM & TELEMETRY AUDIT ({cat_ctx.get('system_label', 'Master Records')}):")
+                prompt_lines.append(f"- Account ID: {cat_ctx.get('customer_id')} | Customer: {cat_ctx.get('customer_name')} ({cat_ctx.get('customer_email')})")
+                prompt_lines.append(f"- Subscription Tier: {cat_ctx.get('subscription_plan')}")
+                prompt_lines.append(f"- Current Diagnostic Status: {cat_ctx.get('status_pill')}")
+                prompt_lines.append(f"- Domain Findings: {cat_ctx.get('system_details')}")
+                prompt_lines.append(f"- Recommended Autonomous Action: {cat_ctx.get('action_btn_text')} (Reference: {cat_ctx.get('reference_id')})\n")
 
-            prompt_lines.append(
-                f"DOMAIN RESOLUTION INSTRUCTIONS:\n"
-                f"You are Troy, Lead Complaint Resolution Agent. This is a '{pred_cat}' complaint ticket routed to {team}.\n"
-                f"CRITICAL CONSTRAINT: This ticket is strictly about '{pred_cat}'. Do NOT mention database transactions, bank charges, refunds, payment ledgers, CSV files, or transactions.csv.\n"
-                f"Address the technical and operational root cause of the {pred_cat} issue directly. "
-                f"Explain the concrete actions taking place under reference ID {cat_ctx.get('reference_id')}, and reassure the customer with clear next steps."
-            )
+                prompt_lines.append(
+                    f"DOMAIN RESOLUTION INSTRUCTIONS:\n"
+                    f"You are Troy, Lead Complaint Resolution Agent. This is a '{pred_cat}' complaint ticket routed to {team}.\n"
+                    f"CRITICAL CONSTRAINT: This ticket is strictly about '{pred_cat}'. Do NOT mention database transactions, bank charges, refunds, payment ledgers, CSV files, or transactions.csv.\n"
+                    f"Address the technical and operational root cause of the {pred_cat} issue directly. "
+                    f"Explain the concrete actions taking place under reference ID {cat_ctx.get('reference_id')}, and reassure the customer with clear next steps."
+                )
 
         base_context_str = "\n".join(prompt_lines)
 
@@ -487,6 +670,22 @@ class ComplaintResolutionOrchestrator:
                 "You are Troy, Lead Autonomous Complaint Resolution Agent (CRA) specializing in billing disputes and refund resolutions. "
                 "You analyze customer transaction records in data/transactions.csv to reconcile accounts, prevent duplicate debits, and execute or reconfirm refunds. "
                 "Provide a structured, authoritative, empathetic, and definitive resolution. Never mention 'policy simulation' or 'council'."
+            )
+        elif human_review:
+            system_instruction = (
+                "You are Troy, Lead Autonomous Complaint Resolution Agent (CRA). "
+                "A read-only transaction audit found insufficient duplicate evidence. "
+                "Explain the audit finding, that no database mutation was performed, and that the ticket is routed to human review. "
+                "Do not claim a refund was issued. Never mention 'policy simulation' or 'council'."
+            )
+        elif direct_refund_policy:
+            system_instruction = (
+                "You are Troy, Lead Autonomous Complaint Resolution Agent (CRA) providing direct refund policy information. "
+                "You may explain general refund guidance in general terms. "
+                "You must not claim an account was inspected, a refund was issued, or that account status is known. "
+                "Do not mention database transactions, payment ledgers, CSV files, or transactions.csv. "
+                "Ask the customer to provide an order ID for account-specific help. "
+                "Never mention 'policy simulation' or 'council'."
             )
         else:
             system_instruction = (
@@ -663,6 +862,7 @@ class ComplaintResolutionOrchestrator:
                 "cra_report": report,
                 "full_resolution": full_resolution_text,
                 "sections": section_results,
+                "policy_decision": policy_decision,
             },
         )
         self.sse.broadcast(
@@ -681,6 +881,7 @@ class ComplaintResolutionOrchestrator:
                 "cra_report": report,
                 "full_resolution": full_resolution_text,
                 "sections": section_results,
+                "policy_decision": policy_decision,
             },
         )
 
@@ -917,25 +1118,95 @@ class ComplaintResolutionOrchestrator:
         Generates structured, authoritative resolution fallbacks tailored to each of the 11 CRA categories.
         Used when LLM provider is offline or stream is completed.
         """
-        ref_id = cat_ctx.get("reference_id", "RES-88219-AUTO")
+        ref_id = cat_ctx.get("reference_id") or ""
 
-        if pred_cat == "Refunds" or cat_ctx.get("is_refund", False):
+        if isinstance(cat_ctx.get("policy_decision"), dict):
+            _pd = cat_ctx["policy_decision"]
+            _esc = _pd.get("escalation_target") or _pd.get("escalated_to") or team
+            return (
+                f"### Executive Assessment & Category Confirmation\n"
+                f"- **Classified Category**: {pred_cat} ({conf_pct:.1f}% confidence)\n"
+                f"- **Assigned Department**: {team} ({report.get('team_method', 'Rule-based')})\n"
+                f"- **Target SLA**: {sla_hours} hours (Risk: {report.get('sla', {}).get('sla_risk', 'Low')})\n"
+                f"- **Tenant Policy Decision**: {_pd.get('decision')} — {_pd.get('rationale')} No Stripe/live execution was performed and no customer data was mutated.\n\n"
+                f"### Root Cause Analysis & Precedent Alignment\n"
+                f"- **Root Cause**: Tenant resolution policy evaluated before any action.\n"
+                f"- **Precedent Match**: Routed per configured escalation target.\n\n"
+                f"### Customer Communication Strategy\n"
+                f"\"Dear Valued Customer, thank you for reaching out. Your case was evaluated under the configured tenant policy (decision: {_pd.get('decision')}). No refund has been issued in this response. {'Please provide additional information so we can review it.' if _pd.get('decision') in ('require_approval', 'deny', 'dry_run') else 'This would be eligible under simulated policy only; live execution is not enabled.'} Your ticket has been routed to {_esc} for next steps.\"\n\n"
+                f"### Internal Routing & Next Action Steps\n"
+                f"- **Internal Routing**: Routed to {_esc}.\n"
+                f"- **Database Sync**: No mutation; simulated tenant policy decision only."
+            )
+
+        if cat_ctx.get("human_review") or cat_ctx.get("insufficient_duplicate") or cat_ctx.get("remediation_failed"):
+            _failed = bool(cat_ctx.get("remediation_failed"))
+            _analysis = (
+                "Automated remediation failed after read-only audit of `data/transactions.csv`. "
+                "No refund was issued, no refund reference was assigned, and no database mutation was confirmed."
+                if _failed else
+                "Read-only audit of `data/transactions.csv` found insufficient duplicate evidence. "
+                "No eligible duplicate debit was identified; no refund was issued and zero database mutation was performed."
+            )
+            _root = (
+                "Automated remediation tool returned failure; manual billing review is required."
+                if _failed else
+                "Transaction ledger verification showed no unrefunded duplicate debit matching the customer inquiry."
+            )
+            return (
+                f"### Executive Assessment & Category Confirmation\n"
+                f"- **Classified Category**: {pred_cat} ({conf_pct:.1f}% confidence)\n"
+                f"- **Assigned Department**: {team} ({report.get('team_method', 'Rule-based')})\n"
+                f"- **Target SLA**: {sla_hours} hours (Risk: {report.get('sla', {}).get('sla_risk', 'Low')})\n"
+                f"- **Database Analysis**: {_analysis}\n\n"
+                f"### Root Cause Analysis & Precedent Alignment\n"
+                f"- **Root Cause**: {_root}\n"
+                f"- **Precedent Match**: Ticket escalated to human specialist under Billing Audit precedent.\n\n"
+                f"### Customer Communication Strategy\n"
+                f"\"Dear Valued Customer, thank you for reaching out. We performed a read-only audit of our transaction records. {'Our automated remediation attempt failed, so no refund has been issued at this time.' if _failed else 'We did not find an eligible duplicate debit on file.'} To ensure complete accuracy, we have escalated your ticket to our Billing Domain Specialist team for manual verification (human review). No charge has been changed at this time.\"\n\n"
+                f"### Internal Routing & Next Action Steps\n"
+                f"- **Internal Routing**: Routed to {team} for human review.\n"
+                f"- **Database Sync**: {'No refund issued; remediation failed and escalated for manual verification.' if _failed else 'Zero database mutation; escalated for manual verification.'}"
+            )
+
+        if (("policy" in (complaint_text or "").lower() or "refund policy" in (complaint_text or "").lower() or pred_cat == "Refunds") and not cat_ctx.get("is_refund", False) and not cat_ctx.get("human_review") and not cat_ctx.get("remediation_failed")):
+            return (
+                f"### Executive Assessment & Category Confirmation\n"
+                f"- **Classified Category**: {pred_cat} ({conf_pct:.1f}% confidence)\n"
+                f"- **Assigned Department**: {team} ({report.get('team_method', 'Rule-based')})\n"
+                f"- **Target SLA**: {sla_hours} hours (Risk: {report.get('sla', {}).get('sla_risk', 'Low')})\n"
+                f"- **Policy Review**: General refund policy inquiry. General informational guidance only; no account was inspected, no refund was issued, and account status is not known. Zero database ledger adjustments were made.\n\n"
+                f"### Root Cause Analysis & Precedent Alignment\n"
+                f"- **Root Cause**: Customer requested clarification regarding general refund guidance and terms.\n"
+                f"- **Precedent Match**: Direct informational response provided without account-specific review.\n\n"
+                f"### Customer Communication Strategy\n"
+                f"\"Dear Valued Customer, thank you for contacting support regarding refund policies. Generally, duplicate charges may be eligible for refund after verification, and plan changes may be eligible for prorated credit where applicable; exact eligibility and timing depend on the specific case. We have not inspected your account or issued a refund in this response. If you need help with a specific charge, please provide your order ID so we can review it.\"\n\n"
+                f"### Internal Routing & Next Action Steps\n"
+                f"- **Internal Routing**: Routed to {team}.\n"
+                f"- **Database Sync**: Zero database mutation required for policy inquiries; ask for order ID for account-specific help."
+            )
+
+        # Gate solely on verified is_refund (set only after concrete DB evidence
+        # in troy pipeline, or explicit verified context). Never on pred_cat alone,
+        # so a direct_response for a Refunds-classified ticket cannot emit a
+        # fabricated refund via fallback.
+        if cat_ctx.get("is_refund", False):
             txn_analysis = cat_ctx.get("txn_analysis") or {}
             is_already_ref = txn_analysis.get("is_already_refunded", False)
             dup_txn = txn_analysis.get("duplicate_transaction") or {}
             ret_txn = txn_analysis.get("retained_transaction") or {}
-            dup_id = dup_txn.get("transaction_id", "TXN-9012") if dup_txn else "TXN-9012"
-            ret_id = ret_txn.get("transaction_id", "TXN-9011") if ret_txn else "TXN-9011"
-            dup_amt = dup_txn.get("amount", "49.00") if dup_txn else "49.00"
-            ret_amt = ret_txn.get("amount", "49.00") if ret_txn else "49.00"
-            ref_date = txn_analysis.get("refunded_at") or dup_txn.get("refunded_at") or "2026-10-21 14:49:37"
+            dup_id = dup_txn.get("transaction_id") or ""
+            ret_id = ret_txn.get("transaction_id") or ""
+            dup_amt = dup_txn.get("amount") or ""
+            ret_amt = ret_txn.get("amount") or ""
+            ref_date = txn_analysis.get("refunded_at") or dup_txn.get("refunded_at") or ""
 
-            c_name = txn_analysis.get("customer_name") or "Alex Morgan"
+            c_name = txn_analysis.get("customer_name") or ""
             c_first = c_name.split()[0] if c_name else "Valued Customer"
-            c_cycle = txn_analysis.get("billing_cycle") or "October 2026"
-            order_ref = txn_analysis.get("order_id") or txn_analysis.get("customer", {}).get("reference_order_id", "ORD-88219")
+            c_cycle = txn_analysis.get("billing_cycle") or ""
+            order_ref = txn_analysis.get("order_id") or (txn_analysis.get("customer") or {}).get("reference_order_id") or ""
             order_num = order_ref.replace("ORD-", "")
-            active_ref = ref_id or txn_analysis.get("refund_id") or "REF-88219-AUTO"
+            active_ref = ref_id or txn_analysis.get("refund_id") or ""
 
             if is_already_ref:
                 return (
