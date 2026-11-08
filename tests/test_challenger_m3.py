@@ -84,6 +84,7 @@ def test_evaluate_intent_non_billing_categories(text, category):
         "hello support team",
         "1234567890",
     ],
+    ids=lambda x: f"len_{len(str(x))}" if x is not None and len(str(x)) > 50 else str(x),
 )
 def test_evaluate_intent_edge_cases_no_crash(edge_input):
     """Stress-tests evaluate_complaint_intent with abnormal, boundary, and edge-case inputs."""

@@ -27,6 +27,40 @@ from app.database import (
 
 START_TIME = time.time()
 
+# ── Request value resolution helpers ────────────────────────────────────────
+# The browser UI legitimately sends empty strings for values it does not
+# manage (e.g. ``apiKey: ""`` for local providers such as lmstudio). Empty,
+# falsy, or whitespace-only values must therefore *fall back* to the
+# session / server configuration instead of overriding it — an explicit
+# ``is not None`` check would keep the empty string and silently discard
+# the configured key (causing llama-server 401s and MockDriver fallback).
+
+_GENERIC_MODEL_NAMES = {"generic", "default", "auto", "none", "null", "undefined", "select model", "select-model"}
+
+
+def _clean(value: object) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _first_non_empty(*values: object) -> str:
+    """Return the first value that is non-empty after stripping."""
+    for value in values:
+        cleaned = _clean(value)
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def _resolve_model(value: object, fallback: object = None) -> str:
+    """Resolve a model name, treating empty/generic placeholders as unset."""
+    candidate = _clean(value)
+    if not candidate or candidate.lower() in _GENERIC_MODEL_NAMES:
+        candidate = _clean(fallback)
+    if not candidate or candidate.lower() in _GENERIC_MODEL_NAMES:
+        candidate = _clean(settings.llm_model)
+    return candidate
+
+
 # Shared boot-time singletons
 sse_manager = SseManager()
 state = SimulationState()
@@ -78,6 +112,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Plug-and-play SaaS integration surfaces (Phase 2) ───────────────────────
+# Mounted additively; existing /api/next, /api/stream, /api/customer/verify,
+# and /api/resolve/action endpoints below are unchanged.
+from app.api.v1.saas_routes import router as saas_router
+
+app.include_router(saas_router)
+
+WIDGET_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "widget", "troy-embed.js")
+
+
+@app.get("/widget/troy-embed.js")
+async def serve_widget():
+    if os.path.exists(WIDGET_FILE):
+        return FileResponse(WIDGET_FILE, media_type="application/javascript")
+    return JSONResponse(status_code=404, content={"error": "Widget not found"})
+
+
 
 @app.middleware("http")
 async def auth_session_middleware(request: Request, call_next):
@@ -101,9 +152,11 @@ def get_active_session(request: Request):
 async def resolve_session_config(request: Request) -> Dict[str, Any]:
     user = getattr(request.state, "session_user", None)
     stored = await key_vault.get(user)
-    provider = (stored.get("provider") if stored else None) or settings.llm_provider
-    model = (stored.get("model") if stored else None) or settings.llm_model
-    api_key = (stored.get("apiKey") if stored else None) or settings.llm_api_key
+    # Stored values may be empty/whitespace/generic (e.g. persisted by an
+    # older client); fall back to server settings in all of those cases.
+    provider = _first_non_empty(stored.get("provider") if stored else None, settings.llm_provider).lower()
+    model = _resolve_model(stored.get("model") if stored else None, settings.llm_model)
+    api_key = _first_non_empty(stored.get("apiKey") if stored else None, settings.llm_api_key)
     base_url = provider_base_url(provider) or ""
 
     session_driver = create_driver(
@@ -214,11 +267,20 @@ async def verify_customer(query: Optional[str] = None, customer_id: Optional[str
         except Exception:
             pass
 
+    # Troy's decision: does this ticket require a database mutation /
+    # human routing, or is it a direct response? The UI renders
+    # action/routing buttons only when action_required is True.
+    intent_info = Troy.evaluate_complaint_intent(query or "", category=cat or None)
+    action_required = bool(intent_info.get("requires_db_mutation"))
+
     ctx = get_category_complaint_context(category=cat, query=query or "")
     if not ctx.get("is_refund", False):
         return {
             "ok": True,
             "verified": True,
+            "action_required": action_required,
+            "requires_action": action_required,
+            "intent": intent_info,
             "category": ctx.get("category"),
             "customer_id": ctx.get("customer_id"),
             "customer_name": ctx.get("customer_name"),
@@ -245,6 +307,10 @@ async def verify_customer(query: Optional[str] = None, customer_id: Optional[str
         }
 
     res = analyze_customer_transactions(customer_id=customer_id, query=query)
+    if isinstance(res, dict):
+        res["action_required"] = action_required
+        res["requires_action"] = action_required
+        res["intent"] = intent_info
     return res
 
 
@@ -341,9 +407,13 @@ async def next_ticket(request: Request, query: str = ""):
     if not ticket_query:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Complaint ticket details have not been entered."})
 
-    provider = str(body.get("provider") if body.get("provider") is not None else sess_cfg.get("provider", "")).strip().lower()
-    api_key = str(body.get("apiKey") if body.get("apiKey") is not None else sess_cfg.get("apiKey", "")).strip()
-    model = str(body.get("model") if body.get("model") is not None else sess_cfg.get("model", "")).strip()
+    # Empty/whitespace values from the browser (e.g. apiKey: "" for
+    # lmstudio) must fall back to the session config, which itself falls
+    # back to settings.llm_api_key / settings.llm_model from the server
+    # environment — never let "" clobber the configured key or model.
+    provider = _first_non_empty(body.get("provider"), sess_cfg.get("provider"), settings.llm_provider).lower()
+    api_key = _first_non_empty(body.get("apiKey"), sess_cfg.get("apiKey"), settings.llm_api_key)
+    model = _resolve_model(body.get("model"), _first_non_empty(sess_cfg.get("model"), settings.llm_model))
 
     if not provider:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Provider has not been selected."})
@@ -423,12 +493,12 @@ async def post_config(request: Request):
         settings.show_reasoning = bool(body["showReasoning"])
 
     sess_cfg = await resolve_session_config(request)
-    provider = str(body.get("provider") or sess_cfg["provider"]).strip().lower()
+    provider = _first_non_empty(body.get("provider"), sess_cfg["provider"], settings.llm_provider).lower()
     if provider not in PROVIDER_REGISTRY:
         return JSONResponse(status_code=400, content={"ok": False, "error": f"Unsupported provider '{provider}'."})
 
-    model = str(body.get("model") if body.get("model") is not None else sess_cfg["model"]).strip()
-    api_key = str(body.get("apiKey") if body.get("apiKey") is not None else sess_cfg["apiKey"]).strip()
+    model = _resolve_model(body.get("model"), _first_non_empty(sess_cfg["model"], settings.llm_model))
+    api_key = _first_non_empty(body.get("apiKey"), sess_cfg["apiKey"], settings.llm_api_key)
 
     user = getattr(request.state, "session_user", None)
     saved = await key_vault.put(user, {"provider": provider, "model": model, "apiKey": api_key})
@@ -449,12 +519,12 @@ async def post_config(request: Request):
 @app.get("/api/models")
 async def get_models(request: Request, provider: Optional[str] = None):
     sess_cfg = await resolve_session_config(request)
-    target_provider = (provider or sess_cfg["provider"]).strip().lower()
+    target_provider = _first_non_empty(provider, sess_cfg["provider"], settings.llm_provider).lower()
 
     if target_provider not in PROVIDER_REGISTRY:
         return JSONResponse(status_code=400, content={"ok": False, "error": f"Unsupported provider '{target_provider}'."})
 
-    api_key = request.headers.get("x-api-key") or sess_cfg["apiKey"] or ""
+    api_key = _first_non_empty(request.headers.get("x-api-key"), sess_cfg["apiKey"], settings.llm_api_key)
     temp_driver = create_driver(
         target_provider,
         api_key=api_key,

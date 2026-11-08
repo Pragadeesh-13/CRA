@@ -19,6 +19,11 @@ PUBLIC_API_PATHS = {
     "/api/database/customers",
     "/api/database/tickets",
     "/api/resolve/action",
+    # Plug-and-play SaaS surfaces: embeddable widget + external webhooks
+    # (Zendesk/Intercom/Stripe/Freshdesk) cannot carry session cookies.
+    "/api/v1/saas/resolve",
+    "/api/v1/saas/info",
+    "/widget/troy-embed.js",
 }
 
 
@@ -64,6 +69,9 @@ class SessionGuard:
 
     def is_protected_path(self, path: str) -> bool:
         if path in PUBLIC_API_PATHS:
+            return False
+        # External SaaS webhooks are signed by their providers, not sessions.
+        if path.startswith("/api/v1/saas/webhooks/"):
             return False
         return path.startswith("/api/")
 

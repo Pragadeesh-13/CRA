@@ -95,7 +95,10 @@ class OpenAiDriver(BaseLlmDriver):
     ):
         super().__init__(provider=provider, **options)
         self.model = model
-        self.api_key = api_key
+        # Store the explicitly supplied key (stripped). Environment /
+        # fallback resolution happens in _effective_api_key() at call time
+        # so monkeypatched env vars and late-bound settings are honoured.
+        self.api_key = (api_key or "").strip() if api_key is not None else ""
         self.base_url = base_url or self._default_base_url()
         self.think = think
         self.public_url = public_url
@@ -114,8 +117,24 @@ class OpenAiDriver(BaseLlmDriver):
             return env_url if env_url else "http://localhost:1234/v1"
         return "https://openrouter.ai/api/v1"
 
+    def _effective_api_key(self, api_key_override: Optional[str] = None) -> str:
+        """
+        Resolve the API key to use for a request.
+
+        Priority: explicit per-call override -> instance key -> LLM_API_KEY
+        environment variable. Empty, falsy, or whitespace-only values never
+        win (the browser UI sends ``apiKey: ""`` for local providers), so a
+        blank override can no longer clobber the configured server key and
+        cause llama-server 401s / silent MockDriver fallback.
+        """
+        for candidate in (api_key_override, self.api_key, os.getenv("LLM_API_KEY")):
+            cleaned = str(candidate).strip() if candidate is not None else ""
+            if cleaned:
+                return cleaned
+        return ""
+
     def _build_headers(self, api_key_override: Optional[str] = None) -> Dict[str, str]:
-        key = api_key_override if api_key_override is not None else self.api_key
+        key = self._effective_api_key(api_key_override)
         headers = {"Content-Type": "application/json"}
         if key:
             headers["Authorization"] = f"Bearer {key}"

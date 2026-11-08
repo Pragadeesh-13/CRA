@@ -3,6 +3,7 @@ uvicorn[standard]
 pydantic
 python-dotenv
 httpx
+pyyaml
 cryptography
 pytest
 pytest-asyncio

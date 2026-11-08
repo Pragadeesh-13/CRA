@@ -94,7 +94,20 @@ class ComplaintResolutionOrchestrator:
             "overcharged", "debited twice", "double bill", "billed twice",
             "unauthorized charge", "double-billed"
         ]
-        is_billing = any(t in low for t in billing_triggers) or (category == "Refunds")
+        # A policy/how-it-works question that merely *mentions* refunds
+        # ("What is your refund policy?") is an informational direct
+        # response, not a dispute — unless it carries actual dispute
+        # markers (a charge, a duplicate, an amount, a specific order).
+        dispute_markers = [
+            "charged", "duplicate", "twice", "double", "overcharged", "debited",
+            "unauthorized", "extra charge", "my account", "my order",
+            "my statement", "my card", "$", "ord-", "txn-",
+        ]
+        is_policy_question = (
+            ("policy" in low or "how do refunds work" in low or "how does refund" in low or "refund process" in low)
+            and not any(marker in low for marker in dispute_markers)
+        )
+        is_billing = (any(t in low for t in billing_triggers) or (category == "Refunds")) and not is_policy_question
 
         order_match = re.search(r"ORD-\d+", raw, re.IGNORECASE)
         order_id = order_match.group(0).upper() if order_match else None
@@ -323,6 +336,16 @@ class ComplaintResolutionOrchestrator:
         team = report.get("recommended_team", "Tier 1 Support")
         sla_hours = report.get("sla", {}).get("estimated_hours", 4.0)
 
+        # Troy's autonomous decision: does this ticket require a database
+        # mutation / human routing, or is it a direct response Troy can
+        # resolve on its own? The UI renders action/routing buttons only
+        # when Troy signals action_required is True.
+        intent_info = self.evaluate_complaint_intent(complaint_text, category=pred_cat)
+        action_required = bool(intent_info.get("requires_db_mutation"))
+        report["intent"] = intent_info
+        report["action_required"] = action_required
+        report["requires_action"] = action_required
+
         # Broadcast the structured ML intelligence report
         self.sse.broadcast("cra_report", report)
         self.sse.broadcast(
@@ -365,8 +388,11 @@ class ComplaintResolutionOrchestrator:
         )
 
         # Step 2: Autonomous Intent Evaluation (Feature 10)
+        # Troy's intent is the single source of truth for whether this
+        # ticket needs database work / routing — the UI renders
+        # action/routing buttons only when it does (action_required).
         intent_info = self.evaluate_complaint_intent(complaint_text, category=pred_cat)
-        is_refund_domain = intent_info.get("intent") == "database_remediation" or pred_cat == "Refunds"
+        is_refund_domain = intent_info.get("intent") == "database_remediation"
         cat_ctx = get_category_complaint_context(category=pred_cat, query=complaint_text)
 
         if is_refund_domain:
@@ -660,6 +686,11 @@ class ComplaintResolutionOrchestrator:
                 "confidence": conf_pct,
                 "team": team,
                 "sla_hours": sla_hours,
+                # Troy's decision: the UI renders action/routing buttons
+                # only when action_required is True.
+                "action_required": action_required,
+                "requires_action": action_required,
+                "intent": intent_info,
                 "cra_report": report,
                 "full_resolution": full_resolution_text,
                 "sections": section_results,
@@ -678,6 +709,9 @@ class ComplaintResolutionOrchestrator:
                     ],
                     "negative": [],
                 },
+                "action_required": action_required,
+                "requires_action": action_required,
+                "intent": intent_info,
                 "cra_report": report,
                 "full_resolution": full_resolution_text,
                 "sections": section_results,

@@ -66,7 +66,14 @@ class AnthropicDriver(BaseLlmDriver):
         self.stream_idle_timeout_sec = stream_idle_timeout_ms / 1000.0
 
     def _build_headers(self, api_key_override: Optional[str] = None) -> Dict[str, str]:
-        key = api_key_override if api_key_override is not None else self.api_key
+        # An empty/whitespace override must not clobber the instance key
+        # (the UI sends apiKey: "" for providers it does not manage).
+        key = ""
+        for candidate in (api_key_override, self.api_key):
+            cleaned = str(candidate).strip() if candidate is not None else ""
+            if cleaned:
+                key = cleaned
+                break
         return {
             "Content-Type": "application/json",
             "x-api-key": key,
