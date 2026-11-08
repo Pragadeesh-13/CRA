@@ -1300,7 +1300,7 @@ const renderResolutionActionButtons = async () => {
         <div class="verify-strip-details">
           <div class="verify-detail-item"><span class="v-label">Account ID:</span> <strong>${cust.customer_id}</strong> (${cust.customer_email})</div>
           <div class="verify-detail-item"><span class="v-label">Subscription Tier:</span> <strong>${cust.subscription_plan}</strong></div>
-          <div class="verify-detail-item"><span class="v-label">Domain Findings:</span> <span class="v-settled">${verifyData?.system_details || "Verified against CRA historical precedents."}</span></div>
+          <div class="verify-detail-item"><span class="v-label">Domain Findings:</span> <span class="v-settled">${verifyData?.system_details || "Matched to the account and system records on file."}</span></div>
           <div class="verify-detail-item"><span class="v-label">Autonomous Action:</span> <strong>${agentActionLabel}</strong> (Ref: <code>${verifyData?.reference_id || activeRefId}</code>)</div>
         </div>
       </div>
@@ -1406,7 +1406,7 @@ const renderResolutionActionButtons = async () => {
       manualSteps = [
         { text: `Accessing ${targetSystem}...`, delay: 650 },
         { text: `Routing ticket #${targetRefId} to ${targetQueue} queue...`, delay: 700 },
-        { text: `Attaching CRA diagnostic report and category context (${effectiveCat}) to operator dispatch...`, delay: 750 },
+        { text: `Attaching the intake summary and category context (${effectiveCat}) to the operator dispatch...`, delay: 750 },
         { text: `Logging escalation audit record in ${verifyData?.database_file || targetSystem}...`, delay: 700 },
         { text: `Dispatching manual escalation advisory notice to ${cust.customer_email || "customer"}...`, delay: 600 },
       ];
@@ -1739,16 +1739,16 @@ const renderResolutionActionButtons = async () => {
 
 const finishTransformedStream = (fullText = "") => {
   stopTransformedStreamTicker();
-  stopMlAnalyzingCycle();
+  stopIntakeCycle();
 
   const textToUse = fullText || cachedResolutionText || streamedSpeechText || "";
   if (textToUse && (!cachedSplitParts.part1 || !cachedSplitParts.part2)) {
     cachedSplitParts = splitResolutionSections(textToUse);
   }
 
-  // Ensure preliminary assessment card is delivered if report was cached
-  if (!hasDeliveredPreliminary && cachedCraReport) {
-    deliverPreliminaryAssessment(cachedCraReport);
+  // Ensure the intake summary card is delivered if the report was cached
+  if (!hasDeliveredIntakeSummary && cachedCraReport) {
+    deliverIntakeSummary(cachedCraReport);
   }
 
   // Complete Chatbox 1: Executive Assessment & Category Confirmation
@@ -1871,15 +1871,15 @@ const startTransformedStream = (rawText) => {
     return;
   }
 
-  // If still cycling through the 5-second ML messages, store for onMlCycleComplete!
-  if (isMlCycling) {
+  // If the intake cycle is still running, store the text until it completes.
+  if (isIntakeCycling) {
     cachedResolutionText = textToParse;
     return;
   }
 
-  // Ensure preliminary assessment has been presented before resolution starts
-  if (!hasDeliveredPreliminary && cachedCraReport) {
-    deliverPreliminaryAssessment(cachedCraReport);
+  // Ensure the intake summary has been presented before resolution starts
+  if (!hasDeliveredIntakeSummary && cachedCraReport) {
+    deliverIntakeSummary(cachedCraReport);
   }
 
   const parts = splitResolutionSections(textToParse);
@@ -1948,28 +1948,31 @@ const startTransformedStream = (rawText) => {
   startStage(0);
 };
 
-// ── ML Model Analyzing Animation & Preliminary Assessment ──────────────────
+// ── Operational Intake Animation & Case Intake Summary ─────────────────────
+// While Troy works, the console cycles through the real operational steps
+// of intake: read the ticket, pull out the key references, check the
+// account/ledger, confirm routing + SLA, then draft the assessment.
 
-const ML_ANALYZING_STEPS = [
-  "Investigating ticket and extracting entity references",
-  "Auditing customer account ledger and transaction history",
-  "Evaluating SLA timeline and routing policies",
-  "Deliberating resolution strategy with local LLM",
+const INTAKE_STEPS = [
+  "Reading the ticket and pulling out order, account, and amount references",
+  "Checking the customer account and transaction ledger",
+  "Confirming category, team routing, and SLA target",
+  "Drafting the executive assessment",
 ];
 
-let mlCycleInterval = null;
-let mlCycleIndex = 0;
-let mlCycleTimer = null;
+let intakeCycleInterval = null;
+let intakeCycleIndex = 0;
+let intakeCycleTimer = null;
 let cachedCraReport = null;
 let cachedResolutionText = null;
-let hasDeliveredPreliminary = false;
-let isMlCycling = false;
+let hasDeliveredIntakeSummary = false;
+let isIntakeCycling = false;
 
-const startMlAnalyzingCycle = () => {
-  stopMlAnalyzingCycle();
-  mlCycleIndex = 0;
-  isMlCycling = true;
-  hasDeliveredPreliminary = false;
+const startIntakeCycle = () => {
+  stopIntakeCycle();
+  intakeCycleIndex = 0;
+  isIntakeCycling = true;
+  hasDeliveredIntakeSummary = false;
   cachedResolutionText = null;
 
   const troySpeech = document.getElementById("troy-speech");
@@ -1978,16 +1981,16 @@ const startMlAnalyzingCycle = () => {
     troySpeech.innerHTML = `
       <div class="troy-deliberating">
         <span class="troy-pulse-orb"></span>
-        <span class="troy-analyzing-text" id="troy-analyzing-msg">${ML_ANALYZING_STEPS[0]}${getThinkingDotsHtml()}</span>
+        <span class="troy-analyzing-text" id="troy-analyzing-msg">${INTAKE_STEPS[0]}${getThinkingDotsHtml()}</span>
       </div>
     `;
   }
-  updateLiveStatus("Troy: " + ML_ANALYZING_STEPS[0] + "...", true);
+  updateLiveStatus("Troy: " + INTAKE_STEPS[0] + "...", true);
 
   // Cycle messages every 1000ms
-  mlCycleInterval = setInterval(() => {
-    mlCycleIndex++;
-    const msg = ML_ANALYZING_STEPS[mlCycleIndex % ML_ANALYZING_STEPS.length];
+  intakeCycleInterval = setInterval(() => {
+    intakeCycleIndex++;
+    const msg = INTAKE_STEPS[intakeCycleIndex % INTAKE_STEPS.length];
     const msgEl = document.getElementById("troy-analyzing-msg");
     if (msgEl) {
       msgEl.innerHTML = `${msg}${getThinkingDotsHtml()}`;
@@ -1995,29 +1998,29 @@ const startMlAnalyzingCycle = () => {
     updateLiveStatus("Troy: " + msg + "...", true);
   }, 1000);
 
-  // Complete cycling after 5 seconds exactly
-  mlCycleTimer = setTimeout(() => {
-    onMlCycleComplete();
+  // Finish the intake cycle after 5 seconds
+  intakeCycleTimer = setTimeout(() => {
+    onIntakeCycleComplete();
   }, 5000);
 };
 
-const stopMlAnalyzingCycle = () => {
-  if (mlCycleInterval) {
-    clearInterval(mlCycleInterval);
-    mlCycleInterval = null;
+const stopIntakeCycle = () => {
+  if (intakeCycleInterval) {
+    clearInterval(intakeCycleInterval);
+    intakeCycleInterval = null;
   }
-  if (mlCycleTimer) {
-    clearTimeout(mlCycleTimer);
-    mlCycleTimer = null;
+  if (intakeCycleTimer) {
+    clearTimeout(intakeCycleTimer);
+    intakeCycleTimer = null;
   }
-  isMlCycling = false;
+  isIntakeCycling = false;
 };
 
-const onMlCycleComplete = () => {
-  stopMlAnalyzingCycle();
-  deliverPreliminaryAssessment(cachedCraReport);
+const onIntakeCycleComplete = () => {
+  stopIntakeCycle();
+  deliverIntakeSummary(cachedCraReport);
 
-  // If any multi-prompt sections already finished generating during 5s cycle, render them now
+  // If any sections already finished generating during the intake cycle, render them now
   if (cachedSplitParts.part1) {
     renderSectionChatbox(0, cachedSplitParts.part1);
     if (!cachedSplitParts.part2) {
@@ -2060,29 +2063,26 @@ const onMlCycleComplete = () => {
     renderResolutionActionButtons();
   }
 
-  // If cachedResolutionText was stored from single prompt / legacy stream
+  // If resolution text arrived while the intake cycle was still running,
+  // stream it now that the cycle has finished.
   if (cachedResolutionText && !cachedSplitParts.part1) {
     startTransformedStream(cachedResolutionText);
   }
 };
 
-const deliverPreliminaryAssessment = (report) => {
-  if (hasDeliveredPreliminary) return;
-  hasDeliveredPreliminary = true;
+const deliverIntakeSummary = (report) => {
+  if (hasDeliveredIntakeSummary) return;
+  hasDeliveredIntakeSummary = true;
 
-  // Remove old preliminary card and old intelligence card if present
-  const oldPrelim = document.getElementById("troy-preliminary-card");
-  if (oldPrelim) oldPrelim.remove();
-  const oldMlCard = document.getElementById("cra-ml-card");
-  if (oldMlCard) oldMlCard.remove();
+  // Remove any previous intake summary card
+  const oldIntake = document.getElementById("troy-intake-card");
+  if (oldIntake) oldIntake.remove();
 
   const cat = report?.predicted_category || "Subscription";
-  const conf = Math.round((report?.category_confidence || 0.65) * 100);
   const team = report?.recommended_team || "Billing Team";
   const sla = report?.sla?.estimated_hours || 18.0;
   const slaRisk = report?.sla?.sla_risk || "Low";
-  const similarCount = report?.similar_cases?.length || 3;
-  const topMatch = report?.similar_cases?.[0] ? `${Math.round(report.similar_cases[0].similarity * 100)}% match` : "72.5% match";
+  const similarCount = report?.similar_cases?.length || 0;
 
   const refs = report?.extracted_entities?.references || [];
   const dates = report?.extracted_entities?.dates || [];
@@ -2090,16 +2090,16 @@ const deliverPreliminaryAssessment = (report) => {
   const entitiesList = [...refs, ...dates, ...amounts];
 
   const entitiesHtml = entitiesList.length > 0
-    ? `<div class="preliminary-entities">
-        <span>Identified Parameters:</span>
-        ${entitiesList.map(e => `<span class="preliminary-entity-tag">${e}</span>`).join("")}
+    ? `<div class="intake-entities">
+        <span>Key References:</span>
+        ${entitiesList.map(e => `<span class="intake-entity-tag">${e}</span>`).join("")}
        </div>`
     : "";
 
-  const prelimCard = document.createElement("div");
-  prelimCard.id = "troy-preliminary-card";
-  prelimCard.className = "agent-card troy preliminary-card";
-  prelimCard.innerHTML = `
+  const intakeCard = document.createElement("div");
+  intakeCard.id = "troy-intake-card";
+  intakeCard.className = "agent-card troy intake-card";
+  intakeCard.innerHTML = `
     <div class="agent-avatar">
       <video class="agent-avatar-video" autoplay loop muted playsinline>
         <source src="/assets/images/AI_spin.webm" type="video/webm" />
@@ -2108,31 +2108,31 @@ const deliverPreliminaryAssessment = (report) => {
     </div>
     <div>
       <div class="agent-name">Troy</div>
-      <div class="agent-speech troy-speech preliminary-speech" id="troy-preliminary-speech">
-        <div class="preliminary-assessment-card">
-          <div class="preliminary-header">
-            <div class="preliminary-title">Preliminary Case Assessment</div>
-            <span class="preliminary-models-badge">Intake Triage Assessment</span>
+      <div class="agent-speech troy-speech intake-speech" id="troy-intake-speech">
+        <div class="intake-summary-card">
+          <div class="intake-header">
+            <div class="intake-title">Case Intake Summary</div>
+            <span class="intake-badge">Intake Summary</span>
           </div>
-          <div class="preliminary-desc">
-            Autonomous case intake assessment synthesized via intake heuristics and policy rules.
+          <div class="intake-desc">
+            Troy read the ticket, pulled out the key references, and routed it using your SLA rules. The full assessment follows below.
           </div>
-          <div class="preliminary-grid">
-            <div class="preliminary-item">
-              <span class="preliminary-label">Predicted Category</span>
-              <span class="preliminary-val">${cat} <span class="preliminary-highlight">(${conf}% confidence)</span></span>
+          <div class="intake-grid">
+            <div class="intake-item">
+              <span class="intake-label">Category</span>
+              <span class="intake-val">${cat}</span>
             </div>
-            <div class="preliminary-item">
-              <span class="preliminary-label">Department Routing</span>
-              <span class="preliminary-val">${team} <span class="preliminary-highlight">(Direct Routing)</span></span>
+            <div class="intake-item">
+              <span class="intake-label">Routed to</span>
+              <span class="intake-val">${team}</span>
             </div>
-            <div class="preliminary-item">
-              <span class="preliminary-label">Target SLA Timeline</span>
-              <span class="preliminary-val">${sla} Hours <span class="preliminary-highlight">(Risk: ${slaRisk})</span></span>
+            <div class="intake-item">
+              <span class="intake-label">Target SLA</span>
+              <span class="intake-val">${sla} Hours <span class="intake-highlight">(Risk: ${slaRisk})</span></span>
             </div>
-            <div class="preliminary-item">
-              <span class="preliminary-label">Historical Precedents</span>
-              <span class="preliminary-val">${similarCount} Matched Cases <span class="preliminary-highlight">(${topMatch})</span></span>
+            <div class="intake-item">
+              <span class="intake-label">Reference Cases</span>
+              <span class="intake-val">${similarCount} attached</span>
             </div>
           </div>
           ${entitiesHtml}
@@ -2144,13 +2144,13 @@ const deliverPreliminaryAssessment = (report) => {
   // Insert immediately before Troy's main resolution card
   const troyCard = document.getElementById("troy-card") || document.getElementById("booting-card");
   if (troyCard && deliberationList) {
-    deliberationList.insertBefore(prelimCard, troyCard);
+    deliberationList.insertBefore(intakeCard, troyCard);
   } else if (deliberationList) {
-    deliberationList.appendChild(prelimCard);
+    deliberationList.appendChild(intakeCard);
   }
 
-  // Initialize transparent video canvas for the preliminary avatar
-  const avatarEl = prelimCard.querySelector(".agent-avatar");
+  // Initialize transparent video canvas for the intake avatar
+  const avatarEl = intakeCard.querySelector(".agent-avatar");
   if (avatarEl) {
     initTransparentVideoCanvas(avatarEl);
   }
@@ -2158,14 +2158,14 @@ const deliverPreliminaryAssessment = (report) => {
 
 const resetTroyConsole = () => {
   stopTransformedStreamTicker();
-  stopMlAnalyzingCycle();
+  stopIntakeCycle();
   isTypingTransformed = false;
   pendingResolutionEnd = false;
   streamActionQueue = [];
   streamedSpeechText = "";
   cachedCraReport = null;
   cachedResolutionText = null;
-  hasDeliveredPreliminary = false;
+  hasDeliveredIntakeSummary = false;
 
   // Ensure live status banner exists
   let statusBanner = document.getElementById("cra-live-status");
@@ -2176,13 +2176,11 @@ const resetTroyConsole = () => {
     deliberationList?.prepend(statusBanner);
   }
   statusBanner.className = "cra-live-status running";
-  statusBanner.innerHTML = `<span class="status-dot"></span><span>Processing Complaint with CRA ML Engine...</span>`;
+  statusBanner.innerHTML = `<span class="status-dot"></span><span>Troy is working on your complaint...</span>`;
 
-  // Remove old preliminary card, root cause card, communication card, and routing card if any
-  const oldPrelim = document.getElementById("troy-preliminary-card");
-  if (oldPrelim) oldPrelim.remove();
-  const oldMlCard = document.getElementById("cra-ml-card");
-  if (oldMlCard) oldMlCard.remove();
+  // Remove old intake card, root cause card, communication card, and routing card if any
+  const oldIntake = document.getElementById("troy-intake-card");
+  if (oldIntake) oldIntake.remove();
   const oldRootCause = document.getElementById("troy-card-root-cause");
   if (oldRootCause) oldRootCause.remove();
   const oldComm = document.getElementById("troy-card-communication");
@@ -2264,7 +2262,7 @@ const startResolutionFlow = async () => {
 
   showSummarizingFeedCard(query);
   resetTroyConsole();
-  startMlAnalyzingCycle();
+  startIntakeCycle();
   setStatusTopic(query.slice(0, 40) + "...");
 
   try {
@@ -2279,7 +2277,7 @@ const startResolutionFlow = async () => {
     }
   } catch (err) {
     isResolving = false;
-    stopMlAnalyzingCycle();
+    stopIntakeCycle();
     showTopWarning(err.message || "Failed to initiate resolution.");
     if (fetchNextBtn) {
       fetchNextBtn.disabled = false;
@@ -2334,23 +2332,23 @@ const connectLiveStream = () => {
   });
 
   stream.addEventListener("resolution_start", () => {
-    if (!isMlCycling && !isTypingTransformed) {
+    if (!isIntakeCycling && !isTypingTransformed) {
       resetTroyConsole();
-      startMlAnalyzingCycle();
+      startIntakeCycle();
     }
   });
 
   stream.addEventListener("council_start", () => {
-    if (!isMlCycling && !isTypingTransformed) {
+    if (!isIntakeCycling && !isTypingTransformed) {
       resetTroyConsole();
-      startMlAnalyzingCycle();
+      startIntakeCycle();
     }
   });
 
   stream.addEventListener("system", (e) => {
     try {
       const data = JSON.parse(e.data);
-      if (data.message && !isMlCycling) {
+      if (data.message && !isIntakeCycling) {
         updateLiveStatus(data.message, true);
       }
     } catch (_) {}
@@ -2360,9 +2358,9 @@ const connectLiveStream = () => {
     try {
       const report = JSON.parse(e.data);
       cachedCraReport = report;
-      // If cycling has already finished, deliver preliminary assessment immediately
-      if (!isMlCycling && !hasDeliveredPreliminary) {
-        deliverPreliminaryAssessment(report);
+      // If the intake cycle has already finished, deliver the intake summary immediately
+      if (!isIntakeCycling && !hasDeliveredIntakeSummary) {
+        deliverIntakeSummary(report);
       }
     } catch (_) {}
   });
@@ -2378,7 +2376,7 @@ const connectLiveStream = () => {
       activeMultiPromptText = "";
       streamedSpeechText = "";
 
-      if (!isMlCycling) {
+      if (!isIntakeCycling) {
         const def = SECTION_DEFINITIONS[secIdx] || SECTION_DEFINITIONS[0];
         const card = def.cardId === "troy-card"
           ? (document.getElementById("troy-card") || document.getElementById("booting-card"))
@@ -2409,7 +2407,7 @@ const connectLiveStream = () => {
         activeMultiPromptText += data.delta;
         streamedSpeechText += data.delta;
 
-        if (!isMlCycling && activeMultiPromptStage !== undefined) {
+        if (!isIntakeCycling && activeMultiPromptStage !== undefined) {
           const def = SECTION_DEFINITIONS[activeMultiPromptStage] || SECTION_DEFINITIONS[0];
           const speechEl = document.getElementById(def.speechId);
           if (speechEl) {
@@ -2438,7 +2436,7 @@ const connectLiveStream = () => {
       cachedSplitParts[partKey] = fullText;
       cachedResolutionText = fullText;
 
-      if (!isMlCycling) {
+      if (!isIntakeCycling) {
         renderSectionChatbox(secIdx, fullText);
         const nextIdx = secIdx + 1;
         if (nextIdx < SECTION_DEFINITIONS.length) {
@@ -2485,7 +2483,7 @@ const connectLiveStream = () => {
     console.warn("[SSE]", msg);
     if (e?.data && isResolving) {
       isResolving = false;
-      stopMlAnalyzingCycle();
+      stopIntakeCycle();
       stopTransformedStreamTicker();
       showTopWarning(msg);
       if (fetchNextBtn) {
@@ -2525,9 +2523,9 @@ fetchNextBtn?.addEventListener("click", () => {
   startResolutionFlow();
 });
 
-// ── Category Presets from Training Dataset (11 Categories) ───────────────────
+// ── Category Presets (11 Categories) ────────────────────────────────────────
 
-const DATASET_CATEGORY_PRESETS = [
+const CATEGORY_PRESETS = [
   {
     category: "Refunds",
     icon: "💳",
@@ -2590,7 +2588,7 @@ const initCategoryPresets = () => {
   if (!container) return;
   container.innerHTML = "";
 
-  DATASET_CATEGORY_PRESETS.forEach((item, index) => {
+  CATEGORY_PRESETS.forEach((item, index) => {
     const pill = document.createElement("button");
     pill.type = "button";
     pill.className = `category-pill-btn ${index === 0 ? "active" : ""}`;
@@ -2612,7 +2610,7 @@ const initCategoryPresets = () => {
 
   // Pre-load the first preset if topicInput is empty
   if (topicInput && !topicInput.value.trim()) {
-    topicInput.value = DATASET_CATEGORY_PRESETS[0].text;
+    topicInput.value = CATEGORY_PRESETS[0].text;
     autoResizeTopicInput();
   }
 };

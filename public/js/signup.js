@@ -168,7 +168,7 @@ const initTypographicRotator = () => {
 
   const phrases = [
     "Welcome to Agentic complaint resolution system.",
-    "Simulate any complaint resolution.",
+    "Resolve any complaint.",
     "Sign up to Continue.",
   ];
 

@@ -162,7 +162,7 @@
         }
         await finalizeSignIn(credential);
         if (typeof onStatusUpdate === "function") {
-          onStatusUpdate("Signed in! Redirecting to council...");
+          onStatusUpdate("Signed in! Redirecting...");
         }
         // Brief 400ms delay so user sees the signing in confirmation
         await new Promise((r) => setTimeout(r, 450));
