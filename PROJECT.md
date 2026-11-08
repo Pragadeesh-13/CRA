@@ -22,13 +22,13 @@ The system is a FastAPI web application serving an agentic customer complaint re
 | 6 | Generic Database Inspection Tools | Provide `query_customer_account`, `query_transactions`, and `inspect_account_and_transactions` | M2 | R3 / Survey 3 | DONE |
 | 7 | Generic Database Remediation Tools | Provide `update_transaction`, `update_customer_account`, and `remediate_duplicate_charge` with atomic multi-table sync and idempotency | M2 | R3 / Survey 3 | DONE |
 | 8 | Database Test Isolation Fixture | Introduce `isolated_database` fixture in `tests/conftest.py` copying CSVs to temporary directory to prevent test pollution | M2 | Acceptance Criteria / Survey 3 | DONE (by E2E Track) |
-| 9 | LM Studio Provider Default & Config | Default base URL to `http://localhost:1234/v1` and support `LMSTUDIO_BASE_URL` env var override | M3 | R2 / Survey 2 | PLANNED |
-| 10 | Autonomous Intent Decision | Troy analyzes complaint context to choose between direct response (inquiries) vs database tool execution (billing disputes) | M3 | R2, R3 / Survey 2, 3 | PLANNED |
-| 11 | Local LLM Client & Mock Fallback | Connect to OpenAI-compatible endpoint with automatic fallback to deterministic streaming mock when server offline | M3 | R2 / Survey 2 | PLANNED |
-| 12 | End-to-End Duplicate Charge Remediation | Troy audits customer transactions, identifies duplicate debit (`TXN-9012` / `TXN-7712`), invokes remediation tool, and crafts customer reassurance | M3 | R2, R3 / Survey 2, 3 | PLANNED |
-| 13 | Frontend UI Compatibility Preservation | Maintain 100% frozen `public/` files; preserve all SSE events, `/api/customer/verify`, `/api/resolve/action`, and 4-stage markdown format | M3 | R4 / Survey 2 | PLANNED |
+| 9 | LM Studio Provider Default & Config | Default base URL to `http://localhost:1234/v1` and support `LMSTUDIO_BASE_URL` env var override | M3 | R2 / Survey 2 | DONE |
+| 10 | Autonomous Intent Decision | Troy analyzes complaint context to choose between direct response (inquiries) vs database tool execution (billing disputes) | M3 | R2, R3 / Survey 2, 3 | DONE |
+| 11 | Local LLM Client & Mock Fallback | Connect to OpenAI-compatible endpoint with automatic fallback to deterministic streaming mock when server offline | M3 | R2 / Survey 2 | DONE |
+| 12 | End-to-End Duplicate Charge Remediation | Troy audits customer transactions, identifies duplicate debit (`TXN-9012` / `TXN-7712`), invokes remediation tool, and crafts customer reassurance | M3 | R2, R3 / Survey 2, 3 | DONE |
+| 13 | Frontend UI Compatibility Preservation | Maintain 100% frozen `public/` files; preserve all SSE events, `/api/customer/verify`, `/api/resolve/action`, and 4-stage markdown format | M3 | R4 / Survey 2 | DONE |
 | 14 | Opaque-Box E2E Test Suite | Comprehensive 4-tier requirement-driven test suite validating startup, fallback, duplicate charge remediation, and UI contracts | M4 / E2E Track | Acceptance Criteria | DONE (by E2E Track) |
-| 15 | Adversarial Coverage Hardening | White-box stress testing and edge-case hardening (Tier 5) | M4 | Methodology | PLANNED |
+| 15 | Adversarial Coverage Hardening | White-box stress testing and edge-case hardening (Tier 5) | M4 | Methodology | DONE |
 
 ---
 
@@ -38,8 +38,8 @@ The system is a FastAPI web application serving an agentic customer complaint re
 | E2E | E2E Testing Suite Track | Design test infrastructure and 4-tier test cases covering Features 1-13; publish `TEST_READY.md` | none | DONE |
 | 1 | Legacy ML Removal & Startup Decoupling | Delete `CRA_Models/`, `app/cra/`; clean `requirements.txt`; decouple `app/main.py:lifespan`; create lightweight non-ML triage; update existing tests | none | DONE |
 | 2 | Generic Database Tools & Ledger Remediation | Fix query fallback; implement generic inspection and remediation tools; ensure atomic CSV updates; add test isolation fixture | none | DONE |
-| 3 | Troy Local LLM Engine & Autonomous Tool Execution | Configure LM Studio port 1234 & env var; implement autonomous decision flow; implement local LLM client with mock fallback; execute DB tools on duplicate charges; preserve UI contracts | M1, M2 | IN_PROGRESS |
-| 4 | Final Milestone: E2E Test Pass & Hardening | Phase 1: Pass 100% of E2E tests (Tiers 1-4); Phase 2: Adversarial coverage hardening (Tier 5) | M3, E2E | PLANNED |
+| 3 | Troy Local LLM Engine & Autonomous Tool Execution | Configure LM Studio port 1234 & env var; implement autonomous decision flow; implement local LLM client with mock fallback; execute DB tools on duplicate charges; preserve UI contracts | M1, M2 | DONE |
+| 4 | Final Milestone: E2E Test Pass & Hardening | Phase 1: Pass 100% of E2E tests (Tiers 1-4); Phase 2: Adversarial coverage hardening (Tier 5) | M3, E2E | DONE (PASS) |
 
 ---
 

@@ -14,7 +14,30 @@ class MockDriver(BaseLlmDriver):
         user_messages = [m.get("content", "") for m in (messages or []) if m.get("role") == "user"]
         latest_user_prompt = user_messages[-1].lower() if user_messages else prompt_text
 
-        # 0. Triage and Case Assessment JSON (triage_complaint / predict_category)
+        # 0. Autonomous Intent Decision JSON (production LLM routing)
+        # Deterministic: concrete duplicate-claim language -> investigation;
+        # refund-policy / general inquiries -> direct. Bare order numbers alone
+        # do not trigger investigation, and duplicate claims win over generic
+        # "how to" wording so actual disputes are not misrouted to direct.
+        if "troy_intent_decision" in prompt_text or "database_investigation vs direct_response" in prompt_text:
+            complaint_prompt = latest_user_prompt
+            is_duplicate_dispute = any(k in complaint_prompt for k in (
+                "charged twice", "billed twice", "double charge", "duplicate charge",
+                "double debit", "duplicate debit", "duplicate bill", "accidental second debit",
+                "debited twice", "double-billed", "charged again", "double renewal",
+                "two charges", "double billed", "debited twice",
+            ))
+            is_policy_inquiry = any(k in complaint_prompt for k in (
+                "refund policy", "how do refunds work", "what is your refund policy",
+                "refund process", "can you explain", "general inquiry",
+            )) or ("policy" in complaint_prompt and not is_duplicate_dispute)
+            decision = "database_investigation" if (is_duplicate_dispute and not is_policy_inquiry) else "direct_response"
+            return json.dumps({
+                "decision": decision,
+                "rationale": "Verified duplicate billing claim requiring database investigation" if decision == "database_investigation" else "General inquiry or policy question resolved directly",
+            })
+
+        # 0b. Triage and Case Assessment JSON (triage_complaint / predict_category)
         if any(k in prompt_text for k in ("predicted_category", "11 standard cra categories", "triage agent", "intake triage")):
             complaint_prompt = latest_user_prompt
             order_m = re.search(r"ord-\d+", prompt_text, re.IGNORECASE)
@@ -182,6 +205,9 @@ class MockDriver(BaseLlmDriver):
             or "documentation" in prompt_text or "webhook" in prompt_text or "login" in prompt_text
             or "access" in prompt_text or "crash" in prompt_text or "bug" in prompt_text
             or "technical support" in prompt_text
+            or "policy" in prompt_text or "refund policy" in prompt_text
+            or "human review" in prompt_text or "insufficient duplicate" in prompt_text
+            or "zero database mutation" in prompt_text
         )
 
         is_watson = "81094" in prompt_text or "emily" in prompt_text or "7712" in prompt_text
@@ -199,9 +225,9 @@ class MockDriver(BaseLlmDriver):
                 return (
                     "<thought>Logging operational audit trail and closing support ticket.</thought>"
                     "### **Internal Routing & Next Action Steps**\n\n"
-                    "1. Dispatched telemetry alert to Identity & Security Operations.\n"
+                    "1. Dispatched telemetry alert to Tier 1 Support / Operations.\n"
                     "2. Confirmed zero database mutation required for inquiries.\n"
-                    "3. Ticket marked Resolved under technical support SLA."
+                    "3. Ticket marked Resolved under technical support SLA or routed for specialist review."
                 )
             return (
                 "<thought>Recording database audit trail and transitioning ticket status.</thought>"
@@ -213,6 +239,24 @@ class MockDriver(BaseLlmDriver):
 
         if "section 3" in eval_prompt or ("customer communication" in eval_prompt and "do not" not in eval_prompt):
             if is_inquiry:
+                if "policy" in prompt_text or "refund policy" in prompt_text:
+                    return (
+                        "<thought>Drafting general refund policy guidance for the customer.</thought>"
+                        "### **Customer Communication Strategy**\n\n"
+                        "**Subject:** Information regarding our Refund Policy & Billing Guidelines\n\n"
+                        "Dear Valued Customer,\n\n"
+                        "Thank you for contacting support regarding refund policies. Generally, duplicate charges may be eligible for refund after verification, and plan changes may be eligible for prorated credit where applicable; exact eligibility and timing depend on the specific case. We have not inspected your account or issued a refund in this response, and we do not know your account status. If you need help with a specific charge, please provide your order ID so we can review it.\n\n"
+                        "Sincerely,\nTroy (Autonomous Resolution Agent)\nLead Complaint Resolution Agent"
+                    )
+                if "insufficient duplicate" in prompt_text or "human review" in prompt_text:
+                    return (
+                        "<thought>Explaining transaction audit findings and human review escalation.</thought>"
+                        "### **Customer Communication Strategy**\n\n"
+                        "**Subject:** Update on your billing inquiry & transaction review\n\n"
+                        "Dear Valued Customer,\n\n"
+                        "Thank you for reaching out. We performed a read-only audit of our transaction records and did not find an eligible duplicate debit on file. To ensure complete accuracy, we have escalated your ticket to our Billing Domain Specialist team for manual verification.\n\n"
+                        "Sincerely,\nTroy (Autonomous Resolution Agent)\nLead Complaint Resolution Agent"
+                    )
                 return (
                     "<thought>Drafting personalized technical guidance for the customer.</thought>"
                     "### **Customer Communication Strategy**\n\n"
@@ -232,6 +276,21 @@ class MockDriver(BaseLlmDriver):
 
         if "section 2" in eval_prompt or ("root cause" in eval_prompt and "do not" not in eval_prompt):
             if is_inquiry:
+                if "policy" in prompt_text or "refund policy" in prompt_text:
+                    return (
+                        "<thought>Aligning inquiry with general refund guidance.</thought>"
+                        "### **Root Cause Analysis & Precedent Alignment**\n\n"
+                        "Customer requested clarification regarding general refund guidance and terms. "
+                        "Direct informational response provided; no account was inspected and no refund was issued. "
+                        "For account-specific help, an order ID is required."
+                    )
+                if "insufficient duplicate" in prompt_text or "human review" in prompt_text:
+                    return (
+                        "<thought>Evaluating transaction ledger records against complaint assertion.</thought>"
+                        "### **Root Cause Analysis & Precedent Alignment**\n\n"
+                        "- **Root Cause**: Transaction ledger verification showed no unrefunded duplicate debit matching customer inquiry.\n"
+                        "- **Precedent Match**: Ticket escalated to human specialist under Billing Audit precedent REF-AUDIT-202."
+                    )
                 return (
                     "<thought>Investigating SMS gateway logs and delivery retry queues.</thought>"
                     "### **Root Cause Analysis & Precedent Alignment**\n\n"
@@ -247,6 +306,22 @@ class MockDriver(BaseLlmDriver):
 
         if "section 1" in eval_prompt or "executive assessment" in eval_prompt:
             if is_inquiry:
+                if "policy" in prompt_text or "refund policy" in prompt_text:
+                    return (
+                        "<thought>Evaluating general refund policy inquiry.</thought>"
+                        "### **Executive Assessment & Category Confirmation**\n\n"
+                        "The customer inquiry regarding general refund guidance has been reviewed. "
+                        "General informational guidance applies with zero database ledger adjustments required. "
+                        "No account was inspected, no refund was issued, and account status is not known. "
+                        "Please provide an order ID for account-specific help."
+                    )
+                if "insufficient duplicate" in prompt_text or "human review" in prompt_text:
+                    return (
+                        "<thought>Auditing customer transaction ledger for duplicate debit evidence.</thought>"
+                        "### **Executive Assessment & Category Confirmation**\n\n"
+                        "The customer complaint regarding duplicate billing was evaluated against data/transactions.csv. "
+                        "Read-only audit did not identify an eligible duplicate charge. Ticket routed to Billing specialist for manual verification without automated mutation."
+                    )
                 return (
                     "<thought>Evaluating inquiry details against authentication system telemetry.</thought>"
                     "### **Executive Assessment & Category Confirmation**\n\n"
