@@ -1951,11 +1951,10 @@ const startTransformedStream = (rawText) => {
 // ── ML Model Analyzing Animation & Preliminary Assessment ──────────────────
 
 const ML_ANALYZING_STEPS = [
-  "Running Fine-Tuned DistilBERT Category Classifier",
-  "Extracting ticket entities, order references, and monetary values",
-  "Executing SBERT Vector Semantic Search across 248K historical precedents",
-  "Evaluating XGBoost SLA timeline estimation & breach risk",
-  "Synthesizing historical resolution patterns & department routing rules",
+  "Investigating ticket and extracting entity references",
+  "Auditing customer account ledger and transaction history",
+  "Evaluating SLA timeline and routing policies",
+  "Deliberating resolution strategy with local LLM",
 ];
 
 let mlCycleInterval = null;
@@ -2113,10 +2112,10 @@ const deliverPreliminaryAssessment = (report) => {
         <div class="preliminary-assessment-card">
           <div class="preliminary-header">
             <div class="preliminary-title">Preliminary Case Assessment</div>
-            <span class="preliminary-models-badge">DistilBERT + SBERT + XGBoost</span>
+            <span class="preliminary-models-badge">Intake Triage Assessment</span>
           </div>
           <div class="preliminary-desc">
-            Autonomous case intake assessment synthesized via Fine-Tuned DistilBERT Classifier and vector similarity search.
+            Autonomous case intake assessment synthesized via intake heuristics and policy rules.
           </div>
           <div class="preliminary-grid">
             <div class="preliminary-item">
