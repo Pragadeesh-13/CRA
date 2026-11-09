@@ -34,7 +34,7 @@ reference (file-by-file APIs, classes, and functions), see
    ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐
    │ app/core/        │  │ app/core/        │  │ app/providers/       │
    │ saas_config.py   │  │ adapter.py       │  │ base / openai /      │
-   │ product config,  │  │ InMemory / CSV / │  │ anthropic / mock     │
+   │ product config,  │  │ InMemory / CSV / │  │ anthropic            │
    │ entity regexes,  │  │ RestApi adapters │  │ LLM drivers          │
    │ categories, SLAs │  └────────┬─────────┘  └──────────────────────┘
    └──────────────────┘           │
@@ -63,9 +63,12 @@ reference (file-by-file APIs, classes, and functions), see
 ## 2. Design principles
 
 1. **Zero setup by default.** `troy.Troy()` / `troy.resolve("...")` works
-   offline with no API keys and no network: a default product config, an
-   empty in-memory adapter, the built-in tool set, and a deterministic
-   mock LLM driver.
+   out of the box with no API keys: a default product config, an
+   empty in-memory adapter, the built-in tool set, and a local
+   LM Studio LLM driver (`OpenAiDriver(provider='lmstudio')`).
+   Resolution still succeeds (with templated customer communication)
+   when the local LLM is unavailable, because LLM failures are
+   caught and the templated message is used.
 2. **One agent, one product.** Configuration is a single `SaaSConfig`
    (`product_name`, domain, support email, branding, entity patterns,
    categories + SLAs, policies). Point Troy at a different product by
@@ -163,17 +166,19 @@ The default registry ships `issue_refund` (aliases: `refund`,
 LLM access goes through the `BaseLlmDriver` interface
 (`complete` / `stream` / `fetch_models`):
 
-- `MockDriver` — deterministic, offline, zero dependencies. This is the
-  default, which is why Troy works with no keys and no network.
 - `OpenAiDriver` — OpenAI-compatible chat completions; also serves
   OpenRouter, Groq, and local **LM Studio** (default preset
-  `qwen/qwen3.5-9b` on `http://localhost:1234/v1`).
+  `qwen/qwen3.5-9b` on `http://localhost:1234/v1`). This is the
+  default driver (`OpenAiDriver(provider='lmstudio')`). When an LLM
+  call fails, the real error propagates to the caller — for customer
+  communication generation, Troy falls back to its templated message.
 - `AnthropicDriver` — Claude models via the Anthropic Messages API.
 
-`TroyClient` picks the OpenAI driver automatically when `OPENAI_API_KEY`
-is set, otherwise the mock driver. In the interactive console, the
-provider/model/key come from the session configuration
-(`app/config.py` settings + the key vault), never from the complaint.
+`TroyClient` uses `OpenAiDriver(provider='lmstudio')` by default. In the
+interactive console, the provider/model/key come from the session
+configuration (`app/config.py` settings + the key vault), never from
+the complaint. Tests that need a deterministic driver use the
+test-only mock in `tests/mock_driver.py`.
 
 ## 8. HTTP surfaces (optional)
 
@@ -204,7 +209,7 @@ app/
   core/                  saas_config, adapter, tool_registry
   simulation/            ComplaintResolutionOrchestrator, state, round barrier
   api/v1/saas_routes.py  REST + webhook routes
-  providers/             base / openai / anthropic / mock LLM drivers
+  providers/             base / openai / anthropic LLM drivers
   http/                  SSE manager for live streaming
   auth/ · prompts/ · utils/ · reference/
 data/                    Bundled CSV ledger (transactions, customer accounts)

@@ -1,3 +1,10 @@
+"""Test-only deterministic LLM driver.
+
+This mock exists solely for unit tests that need offline assertions.
+Production code under ``app/`` has no mock fallback driver; the default
+driver is ``OpenAiDriver(provider='lmstudio')`` (see ``app/sdk/client.py``).
+"""
+
 import asyncio
 import json
 import re
@@ -126,7 +133,7 @@ class MockDriver(BaseLlmDriver):
                 sla = {"estimated_hours": 6.0, "sla_target_hours": 24.0, "sla_risk": "Low", "priority": "P3 - Normal"}
                 entities = {"references": ["USR-DIR-8770"], "dates": ["today"], "amounts": [], "products": ["dashboard"], "order_id": None, "transaction_id": None, "customer_id": usr_id, "account_number": None, "merchant": None}
                 summary = "Customer inquiry regarding organization profile consolidation or account settings."
-                similar = [{"ticket_id": 87701, "description": "Customer requested organization profile consolidation and workspace ownership transfer.", "category": "Account Management", "resolution": "Consolidated duplicate enterprise tenant records, transferred admin rights to verified primary contact.", "assigned_team": "Tier 1 Support", "resolution_time_hours": 6.0, "similarity": 0.89}]
+                similar = [{"ticket_id": 87701, "description": "Customer requested organization profile consolidation and workspace ownership transfer.", "category": "Account Management", "resolution": "Consolidated duplicate enterprise account records, transferred admin rights to verified primary contact.", "assigned_team": "Tier 1 Support", "resolution_time_hours": 6.0, "similarity": 0.89}]
 
             top_3 = [
                 {"category": cat, "score": round(conf, 4)},

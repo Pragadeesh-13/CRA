@@ -14,7 +14,7 @@ from app.database import (
     read_all_customers,
 )
 from app.http.sse_manager import SseManager
-from app.providers.mock_driver import MockDriver
+from mock_driver import MockDriver
 from app.simulation.state import SimulationState
 from app.simulation.troy import Troy
 

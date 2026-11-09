@@ -33,7 +33,7 @@ START_TIME = time.time()
 # falsy, or whitespace-only values must therefore *fall back* to the
 # session / server configuration instead of overriding it — an explicit
 # ``is not None`` check would keep the empty string and silently discard
-# the configured key (causing llama-server 401s and MockDriver fallback).
+# the configured key (causing llama-server 401s).
 
 _GENERIC_MODEL_NAMES = {"generic", "default", "auto", "none", "null", "undefined", "select model", "select-model"}
 

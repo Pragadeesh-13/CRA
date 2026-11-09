@@ -157,7 +157,7 @@ class ComplaintResolutionOrchestrator:
         LLM-backed intent evaluation with heuristic fallback.
 
         Asks the active LLM driver (any provider — Qwen via LM Studio,
-        OpenAI, Anthropic, or Mock) to classify the complaint as
+        OpenAI, or Anthropic) to classify the complaint as
         ``database_remediation`` (a billing/ledger/transaction action is
         required) or ``direct_response`` (Troy can answer directly). The
         decision is validated and merged with the regex-extracted entity

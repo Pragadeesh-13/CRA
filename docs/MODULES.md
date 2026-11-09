@@ -80,8 +80,8 @@ Imports `app.core.adapter`, `app.core.saas_config`, and
 The SDK entry point. A client bundles four things: a `SaaSConfig`, a
 data-store adapter, a `TroyToolRegistry`, and an LLM driver. With no
 arguments it is fully zero-setup (default config, empty
-`InMemoryDataAdapter`, built-in tools, `MockDriver` — or an OpenAI driver
-when `OPENAI_API_KEY` is set).
+`InMemoryDataAdapter`, built-in tools, and
+`OpenAiDriver(provider='lmstudio')` for the local LM Studio endpoint).
 
 ```python
 from app.sdk import TroyClient
@@ -107,7 +107,7 @@ Public API:
 | Properties | `config`, `adapter` (aliases `store`, `data_adapter`), `tool_registry` (alias `registry`), `driver`, `product_name`. |
 
 Internal helpers: `_jsonable` (recursive JSON-safe conversion),
-`_default_driver` / `_coerce_driver` (mock vs OpenAI selection), and the
+`_default_driver` / `_coerce_driver` (lmstudio default-driver selection), and the
 default tool implementations (`issue_refund`, `get_customer`,
 `get_transactions`, `update_customer_account`,
 `inspect_account_and_transactions`) built per-client so they always act
@@ -307,9 +307,7 @@ provider into Troy's canonical shape:
 - **generic** (and fallback for all) — `complaint`/`query`/`text`/
   `message`/`description`, `customer_id`/`user_id`, `order_id`, etc.
 
-Backwards-compatible stubs (`tenant_registry = None`,
-`registry = None`, `get_tenant_registry = lambda: None`) exist only so
-older imports keep working; Troy has a single client.
+Troy has a single client; no registries are involved.
 
 ### `app/main.py` — FastAPI application
 
@@ -346,14 +344,17 @@ on_delta, on_reasoning_delta)`, and `fetch_models(api_key, base_url)`.
 | File | Driver | Behaviour |
 |---|---|---|
 | `base_driver.py` | `BaseLlmDriver` | Abstract interface; stores `provider` + options. |
-| `openai_driver.py` | `OpenAiDriver` | OpenAI-compatible chat completions over `httpx`, with streaming, thinking-mode handling, and curated model lists per backend (`openai`, `openrouter`, `groq`, `lmstudio`). Falls back to `MockDriver` on failure. |
+| `openai_driver.py` | `OpenAiDriver` | OpenAI-compatible chat completions over `httpx`, with streaming, thinking-mode handling, and curated model lists per backend (`openai`, `openrouter`, `groq`, `lmstudio`). A failed call raises the real error instead of silently switching drivers. |
 | `anthropic_driver.py` | `AnthropicDriver` | Claude via the Anthropic Messages API; `format_anthropic_payload()` maps chat messages to the Anthropic shape (system prompt split out). |
-| `mock_driver.py` | `MockDriver` | Deterministic offline driver. Pattern-matches the prompt (triage JSON, duplicate charge, 2FA lockout, bugs, …) and returns canned structured responses, so demos, the CLI, and tests work with no keys and no network. |
+
+Production code has no mock driver. Tests that need a deterministic
+offline driver use the test-only mock in `tests/mock_driver.py`
+(excluded from the `app/` package).
 
 Local LLM usage: set `LLM_PROVIDER=lmstudio` (the default) with
 `LLM_MODEL` and `LMSTUDIO_BASE_URL` in `.env` (see `app/config.py`), or
-`LLM_PROVIDER=openai` with `LLM_API_KEY`. `TroyClient` uses the mock
-driver unless `OPENAI_API_KEY` is present.
+`LLM_PROVIDER=openai` with `LLM_API_KEY`. `TroyClient` defaults to
+`OpenAiDriver(provider='lmstudio')`.
 
 ---
 
@@ -401,7 +402,8 @@ Turns a complaint into a category, team, and SLA:
   `async_predict_category` / `async_triage_complaint` (async) — ask the
   LLM driver for a structured triage report (predicted category,
   confidence, entities, similar precedents, team, SLA), with a
-  deterministic mock fallback when offline. Used by
+  deterministic heuristic fallback computed directly from category
+  defaults when the LLM is unavailable. Used by
   `POST /api/cra/resolve` and `POST /api/cra/classify` in `app/main.py`.
 
 ---

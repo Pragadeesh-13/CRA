@@ -4,7 +4,7 @@ FastAPI integration for TroyClient.
 ``create_troy_router(client)`` returns an :class:`APIRouter` exposing:
 
   - ``POST /resolve``        — resolve a complaint ticket
-  - ``GET  /health``         — tenant product name, registered tools, adapter type
+  - ``GET  /health``         — product name, registered tools, adapter type
   - ``POST /tools/execute``  — execute a registered tool by name
 
 plus ``GET /tools`` and ``GET /info`` for discovery. Request bodies are

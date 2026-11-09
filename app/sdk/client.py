@@ -1,7 +1,7 @@
 """
 TroyClient — the plug-and-play SDK entry point for Troy.
 
-A SaaS operator creates one client, optionally supplying their
+A developer creates one client, optionally supplying their
 :class:`~app.core.saas_config.SaaSConfig`, a data-store adapter, a tool
 registry, and an LLM driver::
 
@@ -9,7 +9,7 @@ registry, and an LLM driver::
     from app.core.adapter import InMemoryDataAdapter
 
     client = TroyClient(
-        config={"product_name": "CloudScribe", "domain": "cloudscribe.io"},
+        config={"product_name": "MyApp", "domain": "example.com"},
         adapter=InMemoryDataAdapter(customers=[...], transactions=[...]),
     )
     result = await client.resolve_ticket(
@@ -18,9 +18,8 @@ registry, and an LLM driver::
 
 With no arguments the client is fully zero-setup: a default
 ``SaaSConfig``, an empty :class:`InMemoryDataAdapter`, a tool registry
-pre-populated with standard refund/account tools, and a ``MockDriver``
-for offline/test use (an OpenAI driver is used instead when an
-``OPENAI_API_KEY`` is present in the environment).
+pre-populated with standard refund/account tools, and an
+``OpenAiDriver(provider='lmstudio')`` for the local LM Studio endpoint.
 """
 
 from __future__ import annotations
@@ -91,24 +90,10 @@ def _parse_amount(value: Any, default: float = 49.0) -> float:
 
 
 def _default_driver() -> Any:
-    """MockDriver for offline/test use, or OpenAI driver if available."""
-    api_key = os.getenv("OPENAI_API_KEY") or ""
-    provider_hint = (os.getenv("TROY_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "").strip().lower()
-    if api_key and provider_hint in {"", "openai"}:
-        try:
-            from app.providers.openai_driver import OpenAiDriver
+    """Default LLM driver: OpenAiDriver for the local LM Studio endpoint."""
+    from app.providers.openai_driver import OpenAiDriver
 
-            return OpenAiDriver(
-                provider="openai",
-                model=os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "gpt-4o-mini",
-                api_key=api_key,
-                base_url=os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1",
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("OpenAI driver unavailable, falling back to MockDriver: %s", exc)
-    from app.providers.mock_driver import MockDriver
-
-    return MockDriver()
+    return OpenAiDriver(provider="lmstudio")
 
 
 def _coerce_driver(driver: Any) -> Any:
@@ -117,9 +102,9 @@ def _coerce_driver(driver: Any) -> Any:
     if isinstance(driver, str):
         name = driver.strip().lower()
         if name in {"mock", "test", "offline"}:
-            from app.providers.mock_driver import MockDriver
+            from app.providers.openai_driver import OpenAiDriver
 
-            return MockDriver()
+            return OpenAiDriver(provider="lmstudio")
         if name == "openai":
             from app.providers.openai_driver import OpenAiDriver
 
@@ -145,9 +130,8 @@ class TroyClient:
         adapter: data-store adapter. Defaults to ``InMemoryDataAdapter()``.
         tool_registry: tool registry. Defaults to a fresh registry
             pre-populated with standard refund/account tools.
-        driver: LLM driver. Defaults to ``MockDriver()`` for
-            zero-dependency offline/test mode, or an OpenAI driver when
-            ``OPENAI_API_KEY`` is available.
+        driver: LLM driver. Defaults to
+            ``OpenAiDriver(provider='lmstudio')`` (local LM Studio).
     """
 
     def __init__(
@@ -160,7 +144,7 @@ class TroyClient:
     ) -> None:
         # Accept a few alias spellings without breaking the spec'd signature.
         if config is None:
-            config = kwargs.pop("saas_config", None) or kwargs.pop("tenant_config", None)
+            config = kwargs.pop("saas_config", None) or kwargs.pop("product_config", None)
         if adapter is None:
             adapter = kwargs.pop("store", None) or kwargs.pop("data_adapter", None) or kwargs.pop("data_store", None)
         if tool_registry is None:
@@ -347,13 +331,13 @@ class TroyClient:
     # -- introspection ------------------------------------------------------------
 
     def get_info(self) -> Dict[str, Any]:
-        """Tenant and capability metadata (used by /health and /info routes)."""
+        """Product and capability metadata (used by /health and /info routes)."""
         return _jsonable(
             {
                 "ok": True,
                 "product_name": self.config.product_name,
-                "tenant_product_name": self.config.product_name,
-                "tenant": {
+                "product_product_name": self.config.product_name,
+                "product": {
                     "product_name": self.config.product_name,
                     "domain": self.config.domain,
                     "support_email": self.config.support_email,
@@ -421,10 +405,20 @@ class TroyClient:
         driver = self.driver
         if driver is None or not hasattr(driver, "complete"):
             return fallback, None
-        # The deterministic MockDriver is used for offline/test mode; the
-        # templated communication is cleaner and fully deterministic there.
-        if type(driver).__name__ == "MockDriver" or str(getattr(driver, "provider", "")).lower() == "mock":
-            return fallback, None
+        # Fast offline check for a local endpoint: if LM Studio is not
+        # listening, skip the doomed network call and use the templated
+        # message (the same outcome as a failed LLM call below).
+        base_url = str(getattr(driver, "base_url", "") or "")
+        if "localhost" in base_url or "127.0.0.1" in base_url:
+            try:
+                import socket
+                from urllib.parse import urlparse
+
+                parsed = urlparse(base_url if "://" in base_url else f"http://{base_url}")
+                with socket.create_connection((parsed.hostname or "127.0.0.1", parsed.port or 1234), timeout=0.05):
+                    pass
+            except Exception:
+                return fallback, None
         system = (
             f"You are Troy, the empathetic AI resolution specialist for "
             f"{self.config.product_name}. Write only the customer-facing "
@@ -817,7 +811,7 @@ class TroyClient:
             "ok": True,
             "status": status,
             "product_name": product,
-            "tenant": product,
+            "product": product,
             "complaint": complaint,
             "query": complaint,
             "customer_id": effective_customer_id,

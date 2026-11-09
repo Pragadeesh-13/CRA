@@ -21,7 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.providers.mock_driver import MockDriver
+from mock_driver import MockDriver
 from app.simulation.troy import ComplaintResolutionOrchestrator
 
 client = TestClient(app)

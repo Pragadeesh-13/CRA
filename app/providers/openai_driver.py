@@ -5,7 +5,6 @@ import re
 from typing import List, Dict, Any, Callable, Optional, Union
 import httpx
 from app.providers.base_driver import BaseLlmDriver
-from app.providers.mock_driver import MockDriver
 from app.utils.thought_buffer import ThoughtBuffer
 
 logger = logging.getLogger("provider:openai")
@@ -104,8 +103,6 @@ class OpenAiDriver(BaseLlmDriver):
         self.public_url = public_url
         self.timeout_sec = timeout_ms / 1000.0
         self.stream_idle_timeout_sec = stream_idle_timeout_ms / 1000.0
-        self._fallback_driver = MockDriver()
-        self._offline_detected = False
 
     def _default_base_url(self) -> str:
         if self.provider == "openai":
@@ -125,7 +122,7 @@ class OpenAiDriver(BaseLlmDriver):
         environment variable. Empty, falsy, or whitespace-only values never
         win (the browser UI sends ``apiKey: ""`` for local providers), so a
         blank override can no longer clobber the configured server key and
-        cause llama-server 401s / silent MockDriver fallback.
+        cause llama-server 401s.
         """
         for candidate in (api_key_override, self.api_key, os.getenv("LLM_API_KEY")):
             cleaned = str(candidate).strip() if candidate is not None else ""
@@ -185,9 +182,6 @@ class OpenAiDriver(BaseLlmDriver):
         max_tokens: int = 4096,
         **options: Any,
     ) -> str:
-        if self._offline_detected:
-            return await self._fallback_driver.complete(messages, max_tokens, **options)
-
         base = normalize_base_url(options.get("baseUrl") or self.base_url)
         endpoint = f"{base}/v1/chat/completions"
         headers = self._build_headers(options.get("apiKey"))
@@ -222,17 +216,9 @@ class OpenAiDriver(BaseLlmDriver):
                         content = lines[-1] if lines else reasoning[:200]
                 return content
 
-        try:
-            return await _make_call(include_think=True, use_max_completion=False)
-        except (httpx.RequestError, httpx.HTTPStatusError, ConnectionError, OSError, Exception) as e:
-            if self.provider == "lmstudio" or self.options.get("fallback_to_mock", True):
-                logger.warning(
-                    f"LLM provider '{self.provider}' at '{endpoint}' unreachable ({type(e).__name__}: {e}). "
-                    f"Falling back to deterministic MockDriver."
-                )
-                self._offline_detected = True
-                return await self._fallback_driver.complete(messages, max_tokens, **options)
-            raise
+        # Let the real error propagate: callers decide how to handle a
+        # failed LLM call, rather than silently switching drivers.
+        return await _make_call(include_think=True, use_max_completion=False)
 
     async def stream(
         self,
@@ -242,11 +228,6 @@ class OpenAiDriver(BaseLlmDriver):
         on_reasoning_delta: Optional[Callable[[str], None]] = None,
         **options: Any,
     ) -> str:
-        if self._offline_detected:
-            return await self._fallback_driver.stream(
-                messages, max_tokens, on_delta=on_delta, on_reasoning_delta=on_reasoning_delta, **options
-            )
-
         base = normalize_base_url(options.get("baseUrl") or self.base_url)
         endpoint = f"{base}/v1/chat/completions"
         headers = self._build_headers(options.get("apiKey"))
@@ -316,19 +297,8 @@ class OpenAiDriver(BaseLlmDriver):
 
             return full_text
 
-        try:
-            return await _stream_call(include_think=True, use_max_completion=False)
-        except (httpx.RequestError, httpx.HTTPStatusError, ConnectionError, OSError, Exception) as e:
-            if self.provider == "lmstudio" or self.options.get("fallback_to_mock", True):
-                logger.warning(
-                    f"LLM provider '{self.provider}' at '{endpoint}' unreachable ({type(e).__name__}: {e}). "
-                    f"Falling back to deterministic streaming MockDriver."
-                )
-                self._offline_detected = True
-                return await self._fallback_driver.stream(
-                    messages, max_tokens, on_delta=on_delta, on_reasoning_delta=on_reasoning_delta, **options
-                )
-            raise
+        # Let the real error propagate instead of silently switching drivers.
+        return await _stream_call(include_think=True, use_max_completion=False)
 
     async def fetch_models(
         self,

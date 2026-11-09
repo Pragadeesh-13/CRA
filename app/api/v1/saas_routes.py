@@ -50,15 +50,6 @@ get_client = get_saas_client
 
 
 # ---------------------------------------------------------------------------
-# Backwards-compatible stubs
-# ---------------------------------------------------------------------------
-# Kept so older imports do not break; they carry no behaviour.
-tenant_registry = None
-registry = None
-get_tenant_registry = lambda: None
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -374,7 +365,7 @@ def _info_payload(client: TroyClient) -> Dict[str, Any]:
         **info,
         "ok": True,
         "product_name": client.config.product_name,
-        "tenant": info.get("tenant"),
+        "product": info.get("product"),
         "capabilities": {
             "resolve": True,
             "webhooks": SUPPORTED_PROVIDERS,
@@ -492,10 +483,6 @@ __all__ = [
     "normalize_payload",
     "normalize_webhook",
     "SUPPORTED_PROVIDERS",
-    # Backwards-compatible stubs.
-    "tenant_registry",
-    "registry",
-    "get_tenant_registry",
     "client",
     "default_client",
     "troy_client",

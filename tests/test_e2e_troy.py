@@ -1176,7 +1176,7 @@ def test_tier2_feature10_intent_preserves_ticket_context():
 @pytest.mark.asyncio
 async def test_tier1_feature11_complete_mock_fallback_when_server_offline():
     """Feature 11: complete() transparently falls back to mock response when local server offline."""
-    from app.providers.mock_driver import MockDriver
+    from mock_driver import MockDriver
     driver = MockDriver()
     res = await driver.complete([{"role": "user", "content": "Please summarize complaint ORD-88219"}])
     assert isinstance(res, str)
@@ -1186,7 +1186,7 @@ async def test_tier1_feature11_complete_mock_fallback_when_server_offline():
 @pytest.mark.asyncio
 async def test_tier1_feature11_stream_mock_fallback_when_server_offline():
     """Feature 11: stream() falls back to token chunks when local server offline."""
-    from app.providers.mock_driver import MockDriver
+    from mock_driver import MockDriver
     driver = MockDriver()
     chunks = []
     full = await driver.stream(
@@ -1199,7 +1199,7 @@ async def test_tier1_feature11_stream_mock_fallback_when_server_offline():
 
 def test_tier1_feature11_mock_driver_fetch_models():
     """Feature 11: fetch_models() returns curated models list when local server is offline."""
-    from app.providers.mock_driver import MockDriver
+    from mock_driver import MockDriver
     driver = MockDriver()
     loop = asyncio.new_event_loop()
     res = loop.run_until_complete(driver.fetch_models())
@@ -1211,7 +1211,7 @@ def test_tier1_feature11_mock_driver_fetch_models():
 @pytest.mark.asyncio
 async def test_tier1_feature11_connection_refused_handling():
     """Feature 11: Connection refused to offline port 1234 does not raise unhandled exception."""
-    from app.providers.mock_driver import MockDriver
+    from mock_driver import MockDriver
     # OpenAiDriver with mock fallback or direct MockDriver executes without crash
     driver = MockDriver()
     res = await driver.complete([{"role": "user", "content": "Test prompt"}])
@@ -1221,7 +1221,7 @@ async def test_tier1_feature11_connection_refused_handling():
 @pytest.mark.asyncio
 async def test_tier1_feature11_mock_driver_produces_valid_structure():
     """Feature 11: Mock driver output conforms to expected structure."""
-    from app.providers.mock_driver import MockDriver
+    from mock_driver import MockDriver
     driver = MockDriver()
     res = await driver.complete([{"role": "user", "content": 'Generate title and summary json with keys "title" and "summary"'}])
     assert "title" in res.lower()
@@ -1232,7 +1232,7 @@ async def test_tier1_feature11_mock_driver_produces_valid_structure():
 @pytest.mark.asyncio
 async def test_tier2_feature11_mock_fallback_preserves_prompt_entities():
     """Feature 11 Boundary: Mock driver handles Android PDF export crash keyword."""
-    from app.providers.mock_driver import MockDriver
+    from mock_driver import MockDriver
     driver = MockDriver()
     res = await driver.complete([{"role": "user", "content": 'title and summary json with keys "title" and "summary" for Android PDF crash'}])
     data = json.loads(res)
@@ -1243,7 +1243,7 @@ async def test_tier2_feature11_mock_fallback_preserves_prompt_entities():
 @pytest.mark.asyncio
 async def test_tier2_feature11_stream_empty_messages():
     """Feature 11 Boundary: stream() handles empty messages list safely."""
-    from app.providers.mock_driver import MockDriver
+    from mock_driver import MockDriver
     driver = MockDriver()
     res = await driver.stream([])
     assert isinstance(res, str)
@@ -1252,7 +1252,7 @@ async def test_tier2_feature11_stream_empty_messages():
 @pytest.mark.asyncio
 async def test_tier2_feature11_complete_timeout_handling():
     """Feature 11 Boundary: Driver with zero or tiny timeout does not hang."""
-    from app.providers.mock_driver import MockDriver
+    from mock_driver import MockDriver
     driver = MockDriver(timeout_ms=10)
     res = await driver.complete([{"role": "user", "content": "hello"}])
     assert isinstance(res, str)
@@ -1261,7 +1261,7 @@ async def test_tier2_feature11_complete_timeout_handling():
 @pytest.mark.asyncio
 async def test_tier2_feature11_repeated_fallback_stability():
     """Feature 11 Boundary: 10 sequential fallback completions execute stably."""
-    from app.providers.mock_driver import MockDriver
+    from mock_driver import MockDriver
     driver = MockDriver()
     for _ in range(10):
         res = await driver.complete([{"role": "user", "content": "Ping"}])
@@ -1271,7 +1271,7 @@ async def test_tier2_feature11_repeated_fallback_stability():
 @pytest.mark.asyncio
 async def test_tier2_feature11_mock_driver_streaming_delays_safe():
     """Feature 11 Boundary: Streaming does not block asyncio event loop."""
-    from app.providers.mock_driver import MockDriver
+    from mock_driver import MockDriver
     driver = MockDriver()
     t0 = time.time()
     await driver.stream([{"role": "user", "content": "Fast stream"}])
@@ -1527,7 +1527,7 @@ def test_tier2_feature13_root_serves_index_html(client):
 def test_tier3_offline_fallback_with_alex_morgan_duplicate_remediation(isolated_database):
     """Tier 3: Offline local server + Alex Morgan duplicate dispute -> fallback triggers DB remediation + response."""
     import app.database as database
-    from app.providers.mock_driver import MockDriver
+    from mock_driver import MockDriver
 
     # Ensure offline driver works
     driver = MockDriver()
@@ -1550,7 +1550,7 @@ def test_tier3_offline_fallback_with_alex_morgan_duplicate_remediation(isolated_
 def test_tier3_offline_fallback_with_emily_watson_duplicate_remediation(isolated_database):
     """Tier 3: Offline local server + Emily Watson duplicate dispute -> fallback triggers DB remediation + response."""
     import app.database as database
-    from app.providers.mock_driver import MockDriver
+    from mock_driver import MockDriver
 
     driver = MockDriver()
     loop = asyncio.new_event_loop()
@@ -1572,7 +1572,7 @@ def test_tier3_offline_fallback_with_emily_watson_duplicate_remediation(isolated
 def test_tier3_offline_fallback_with_general_inquiry_no_db_write(isolated_database):
     """Tier 3: Offline local server + technical inquiry -> fallback generates response without DB write."""
     import app.database as database
-    from app.providers.mock_driver import MockDriver
+    from mock_driver import MockDriver
 
     before = database.read_all_transactions()
     driver = MockDriver()

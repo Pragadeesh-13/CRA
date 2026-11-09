@@ -25,7 +25,7 @@ import app.database as db
 from app.simulation.troy import Troy
 from app.http.sse_manager import SseManager
 from app.simulation.state import SimulationState
-from app.providers.mock_driver import MockDriver
+from mock_driver import MockDriver
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent

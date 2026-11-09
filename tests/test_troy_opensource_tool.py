@@ -1,7 +1,7 @@
 """
 Tests for Troy as a clean, plug-and-play, open-source tool.
 
-Troy is intentionally **not** tenant-based: ``import troy`` gives you a
+Troy is a clean open-source tool: ``import troy`` gives you a
 single agent with a one-call ``resolve()``, a ``Troy`` class you can
 instantiate and extend with ``@agent.tool``, three data adapters, a
 ``load_config`` helper, and a CLI (``python troy.py ...``).
@@ -126,8 +126,8 @@ class TestDirectUsage:
         assert result["customer_communication"]
         json.dumps(result)  # JSON-serialisable
 
-    def test_module_level_resolve_requires_no_tenant(self):
-        # The whole point of the open-source tool: no tenant_id anywhere.
+    def test_module_level_resolve_is_zero_config(self):
+        # The whole point of the open-source tool: zero-config, one call.
         result = troy.resolve("How do I reset my password?")
         assert result["ok"] is True
 

@@ -9,7 +9,7 @@ Covers:
   - ToolRegistry: decorator + programmatic registration, schema
     validation, idempotency replay, dry-run, audit trail.
   - TroyClient (SDK): inquiries, autonomous duplicate-charge
-    remediation, idempotent re-resolution, custom tenant config,
+    remediation, idempotent re-resolution, custom product config,
     dry-run, resolve_ticket_sync.
   - SaaS API & webhooks via FastAPI TestClient, and the embed widget.
 """
@@ -139,13 +139,13 @@ class TestSaaSConfig:
             entity_patterns={
                 "charges": [r"ch_\d+"],
                 "invoices": [r"INV-\d+"],
-                "tenants": [r"org_\d+"],
+                "organizations": [r"org_\d+"],
             },
         )
-        found = config.extract_entities("Stripe charge ch_123, invoice INV-99, tenant org_88")
+        found = config.extract_entities("Stripe charge ch_123, invoice INV-99, organization org_88")
         assert found["charges"] == ["ch_123"]
         assert found["invoices"] == ["INV-99"]
-        assert found["tenants"] == ["org_88"]
+        assert found["organizations"] == ["org_88"]
 
     def test_default_entity_extractors(self):
         found = SaaSConfig().extract_entities("Order ORD-88219 for USR-10492, TXN-9012")
@@ -480,11 +480,12 @@ class TestTroyClient:
         client = TroyClient()
         assert client.config.product_name == "Troy Demo SaaS"
         assert isinstance(client.adapter, InMemoryDataAdapter)
-        assert type(client.driver).__name__ == "MockDriver"
+        assert type(client.driver).__name__ == "OpenAiDriver"
+        assert client.driver.provider == "lmstudio"
         assert "issue_refund" in client.tool_registry.tool_names()
         assert "update_customer_account" in client.tool_registry.tool_names()
 
-    def test_custom_tenant_configuration_cloudscribe(self):
+    def test_custom_product_configuration_cloudscribe(self):
         client = TroyClient(config={"product_name": "CloudScribe", "domain": "cloudscribe.io"})
         assert client.config.product_name == "CloudScribe"
         result = client.resolve_ticket_sync("How do I invite my team?")
@@ -561,7 +562,7 @@ class TestTroyClient:
     def test_register_tool_helper(self):
         client = TroyClient()
 
-        @client.tool(name="reset_api_quota", description="Reset a tenant API quota")
+        @client.tool(name="reset_api_quota", description="Reset an organization API quota")
         def reset_api_quota(customer_id: str = "", **kwargs):
             return {"ok": True, "customer_id": customer_id, "quota": "reset"}
 

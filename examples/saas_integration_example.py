@@ -6,7 +6,7 @@ Self-contained and runnable with no network access and no API keys:
     python examples/saas_integration_example.py
 
 It demonstrates, end to end:
-  1. Creating a SaaSConfig tenant profile for "CloudScribe AI"
+  1. Creating a SaaSConfig product profile for "CloudScribe AI"
      (custom entity patterns, categories/SLAs, approval policy).
   2. Connecting a data-store adapter (InMemory here; swap in
      CsvDataAdapter or RestApiDataAdapter in production).
@@ -33,7 +33,7 @@ from app.sdk import TroyClient
 
 
 def build_config() -> SaaSConfig:
-    """Tenant profile for CloudScribe AI."""
+    """Product profile for CloudScribe AI."""
     return SaaSConfig(
         product_name="CloudScribe AI",
         domain="cloudscribe.ai",
@@ -44,7 +44,7 @@ def build_config() -> SaaSConfig:
             "transactions": [r"TXN-\d+"],
             "charges": [r"ch_\d+"],
             "invoices": [r"INV-\d+"],
-            "tenants": [r"org_\d+"],
+            "organizations": [r"org_\d+"],
         },
         categories=[
             {"name": "Refunds", "sla_hours": 2.0, "sla_risk": "Low", "team": "Billing"},
@@ -124,7 +124,7 @@ def register_custom_tools(client: TroyClient) -> None:
 
     @client.tool(
         name="reset_api_quota",
-        description="Reset the API quota for a CloudScribe tenant customer.",
+        description="Reset the API quota for a CloudScribe organization customer.",
         schema={
             "type": "object",
             "required": ["customer_id"],
@@ -138,7 +138,7 @@ def register_custom_tools(client: TroyClient) -> None:
                 "customer_id": customer_id,
                 "updates": {
                     "account_status": "Active - API Quota Reset",
-                    "notes": "API quota reset by Troy for tenant org_88.",
+                    "notes": "API quota reset by Troy for organization org_88.",
                 },
             },
         )
@@ -146,7 +146,7 @@ def register_custom_tools(client: TroyClient) -> None:
             "ok": bool(result.get("ok")),
             "customer_id": customer_id,
             "quota": "reset",
-            "tenant": "org_88",
+            "organization": "org_88",
         }
 
     def issue_credit_refund(transaction_id: str = "", amount: float = 0.0, **kwargs) -> dict:
@@ -222,7 +222,7 @@ async def main() -> None:
     )
     _summary("2. Same ticket again — already refunded (idempotent)", again)
 
-    # 3. Custom domain tool: reset the API quota for tenant org_88.
+    # 3. Custom domain tool: reset the API quota for organization org_88.
     quota = client.execute_tool("reset_api_quota", {"customer_id": "USR-20481"})
     print("\n=== 3. Custom tool: reset_api_quota ===")
     print(json.dumps(quota, indent=2, default=str))

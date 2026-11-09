@@ -3,7 +3,6 @@ from typing import Dict, Type, Optional
 from app.providers.base_driver import BaseLlmDriver
 from app.providers.openai_driver import OpenAiDriver
 from app.providers.anthropic_driver import AnthropicDriver
-from app.providers.mock_driver import MockDriver
 
 PROVIDER_REGISTRY: Dict[str, Type[BaseLlmDriver]] = {
     "openrouter": OpenAiDriver,
@@ -11,7 +10,6 @@ PROVIDER_REGISTRY: Dict[str, Type[BaseLlmDriver]] = {
     "groq": OpenAiDriver,
     "anthropic": AnthropicDriver,
     "lmstudio": OpenAiDriver,
-    "mock": MockDriver,
 }
 
 PROVIDER_BASE_URLS: Dict[str, str] = {
@@ -51,7 +49,6 @@ __all__ = [
     "BaseLlmDriver",
     "OpenAiDriver",
     "AnthropicDriver",
-    "MockDriver",
     "PROVIDER_REGISTRY",
     "PROVIDER_BASE_URLS",
     "provider_base_url",

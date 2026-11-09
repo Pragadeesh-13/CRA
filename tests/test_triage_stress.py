@@ -27,7 +27,7 @@ from app.triage import (
     generate_intelligence_report,
 )
 from app.providers.base_driver import BaseLlmDriver
-from app.providers.mock_driver import MockDriver
+from mock_driver import MockDriver
 from app.utils.json_extractor import parse_json
 from fastapi.testclient import TestClient
 from app.main import app

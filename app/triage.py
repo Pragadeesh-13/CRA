@@ -1,8 +1,9 @@
 """
 Local LLM-powered intake triage and categorization engine (Requirement R1).
-Replaces legacy Python heuristics and machine learning models with an autonomous
-OpenAI-compatible LLM triage client (LM Studio on port 1234, configurable via
-LMSTUDIO_BASE_URL), backed by transparent deterministic mock fallback when offline.
+Uses an autonomous OpenAI-compatible LLM triage client (LM Studio on
+port 1234, configurable via LMSTUDIO_BASE_URL), with a deterministic
+heuristic fallback computed directly from category defaults when the
+LLM is unavailable.
 """
 
 import asyncio
@@ -16,7 +17,6 @@ from typing import Dict, Any, List, Optional, Union
 
 from app.providers.base_driver import BaseLlmDriver
 from app.providers.openai_driver import OpenAiDriver
-from app.providers.mock_driver import MockDriver
 from app.utils.json_extractor import parse_json
 
 logger = logging.getLogger("cra.triage")
@@ -185,7 +185,7 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "ticket_id": 92900,
             "description": "REST API returning 401 unauthorized following secret key rotation.",
             "category": "Integrations & API",
-            "resolution": "Re-propagated KMS tenant keys to edge nodes; invalidated stale authorization cache.",
+            "resolution": "Re-propagated KMS client keys to edge nodes; invalidated stale authorization cache.",
             "assigned_team": "Engineering",
             "resolution_time_hours": 4.0,
             "similarity": 0.88,
@@ -276,7 +276,7 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "ticket_id": 87701,
             "description": "Customer requested organization profile consolidation and workspace ownership transfer.",
             "category": "Account Management",
-            "resolution": "Consolidated duplicate enterprise tenant records, transferred admin rights to verified primary contact.",
+            "resolution": "Consolidated duplicate enterprise account records, transferred admin rights to verified primary contact.",
             "assigned_team": "Tier 1 Support",
             "resolution_time_hours": 6.0,
             "similarity": 0.89,
@@ -351,11 +351,12 @@ Output format MUST be a valid JSON object with the following schema:
 Respond ONLY with raw JSON. No explanation, no markdown backticks, no conversational text."""
 
 _GLOBAL_TRIAGE_DRIVER: Optional[OpenAiDriver] = None
+_TRIAGE_LLM_UNAVAILABLE = False
 
 
 def get_triage_driver(driver: Optional[BaseLlmDriver] = None) -> BaseLlmDriver:
     """Retrieve or initialize the singleton OpenAiDriver for local triage."""
-    global _GLOBAL_TRIAGE_DRIVER
+    global _GLOBAL_TRIAGE_DRIVER, _TRIAGE_LLM_UNAVAILABLE
     if driver is not None:
         return driver
     target_url = (os.getenv("LMSTUDIO_BASE_URL") or "http://localhost:1234/v1").strip()
@@ -365,18 +366,19 @@ def get_triage_driver(driver: Optional[BaseLlmDriver] = None) -> BaseLlmDriver:
             base_url=target_url,
             timeout_ms=int(os.getenv("LLM_TIMEOUT_MS", "5000")),
         )
-        # Fast offline check for localhost to avoid stalling tests when LM Studio is offline
+        _TRIAGE_LLM_UNAVAILABLE = False
+        # Fast offline check for localhost so triage does not stall on a
+        # doomed network call when LM Studio is not running.
         if "localhost" in target_url or "127.0.0.1" in target_url:
             try:
                 import socket
                 from urllib.parse import urlparse
-                p = urlparse(target_url)
-                host = p.hostname or "127.0.0.1"
-                port = p.port or 1234
-                with socket.create_connection((host, port), timeout=0.03):
+
+                parsed = urlparse(target_url)
+                with socket.create_connection((parsed.hostname or "127.0.0.1", parsed.port or 1234), timeout=0.03):
                     pass
             except Exception:
-                _GLOBAL_TRIAGE_DRIVER._offline_detected = True
+                _TRIAGE_LLM_UNAVAILABLE = True
     return _GLOBAL_TRIAGE_DRIVER
 
 
@@ -565,22 +567,84 @@ def _normalize_llm_report(data: Dict[str, Any], complaint: str = "") -> Dict[str
 
 
 def _deterministic_fallback_report(complaint: str) -> Dict[str, Any]:
-    mock = MockDriver()
-    messages = [
-        {"role": "system", "content": SYSTEM_TRIAGE_PROMPT},
-        {"role": "user", "content": f"Please triage the following customer complaint:\n\n{complaint}"},
+    """Compute a triage report directly from heuristics + category defaults.
+
+    No LLM or mock driver is involved: keyword heuristics pick a
+    category, and ``_build_canonical_report`` fills in the team, SLA,
+    extracted entities, and precedent cases from the canonical defaults.
+    """
+    low = (complaint or "").lower()
+    rules = [
+        (
+            ("double bill", "billed twice", "charged twice", "double charge", "duplicate charge",
+             "duplicate debit", "double debit", "duplicate bill", "charged again", "refund",
+             "overcharge", "debited twice", "twice"),
+            "Refunds", 0.98,
+        ),
+        (
+            ("2fa", "two-factor", "mfa", "otp", "sms", "authenticator", "locked out",
+             "account locked", "cannot log in", "can't log in", "login fail", "password",
+             "sso", "access"),
+            "Authentication & Access", 0.95,
+        ),
+        (
+            ("crash", "500 error", "internal server error", "unhandled exception", "exception",
+             "traceback", "stack trace", "null pointer", "pdf", "bug", "defect", "glitch", "broken"),
+            "Bugs & Errors", 0.92,
+        ),
+        (
+            ("webhook", "rate limit", "429", "504", "gateway timeout", "rest api", "endpoint",
+             "sdk", "integration"),
+            "Integrations & API", 0.92,
+        ),
+        (
+            ("sync", "offline queue", "desync", "divergence", "reconcil", "merge conflict", "replication"),
+            "Data Sync", 0.91,
+        ),
+        (
+            ("slow", "sluggish", "high latency", "latency", "load time", "loading", "bottleneck",
+             "p99", "seconds to load", "speed", "performance"),
+            "Performance", 0.90,
+        ),
+        (
+            ("security", "unauthorized", "suspicious", "compromised", "breach", "threat",
+             "malicious", "gdpr", "personal data", "deletion", "data deletion", "privacy",
+             "ip allowlist", "jwt"),
+            "Security", 0.95,
+        ),
+        (
+            ("downgrade", "proration", "prorated", "cancel", "renewal", "upgrade plan",
+             "starter tier", "pro tier", "subscription"),
+            "Subscription", 0.92,
+        ),
+        (
+            ("vat", "tax invoice", "tax id", "vies", "invoice", "receipt", "declined",
+             "card declined", "credit card", "402", "billing", "payment"),
+            "Billing", 0.93,
+        ),
+        (
+            ("how to", "how do i", "get started", "getting started", "invite", "invitation",
+             "tutorial", "guide", "dark mode", "feature request", "toggle", "csv export"),
+            "Onboarding & How-To", 0.91,
+        ),
     ]
-    raw = mock._determine_response(messages)
-    data = parse_json(raw)
-    if isinstance(data, dict) and "predicted_category" in data:
-        return _normalize_llm_report(data, complaint=complaint)
-    return _build_canonical_report("Account Management", confidence=0.70, complaint=complaint, team_method="Deterministic Fallback")
+    for keywords, category, confidence in rules:
+        if any(keyword in low for keyword in keywords):
+            return _build_canonical_report(
+                category, confidence=confidence, complaint=complaint,
+                team_method="Deterministic Fallback",
+            )
+    return _build_canonical_report(
+        "Account Management", confidence=0.88, complaint=complaint,
+        team_method="Deterministic Fallback",
+    )
 
 
 async def async_triage_complaint(complaint_text: str, driver: Optional[BaseLlmDriver] = None) -> Dict[str, Any]:
     """
     Asynchronous LLM complaint intake and triage pipeline.
-    Dispatches prompt to local LLM with fallback to MockDriver when offline.
+    Dispatches prompt to local LLM; on failure, computes a deterministic
+    fallback report directly from category defaults and heuristics.
     """
     raw = str(complaint_text or "").strip()
     if not raw:
@@ -591,6 +655,8 @@ async def async_triage_complaint(complaint_text: str, driver: Optional[BaseLlmDr
             return _build_canonical_report(cat, confidence=0.99, complaint=raw, team_method="Exact Match")
 
     d = get_triage_driver(driver)
+    if driver is None and _TRIAGE_LLM_UNAVAILABLE:
+        return _deterministic_fallback_report(raw)
     messages = [
         {"role": "system", "content": SYSTEM_TRIAGE_PROMPT},
         {"role": "user", "content": f"Please triage the following customer complaint:\n\n{raw[:4000]}"},
@@ -603,6 +669,8 @@ async def async_triage_complaint(complaint_text: str, driver: Optional[BaseLlmDr
             return _normalize_llm_report(data, complaint=raw)
     except Exception as e:
         logger.warning(f"Local LLM triage encountered error: {e}; using deterministic fallback.")
+        if driver is None:
+            globals()["_TRIAGE_LLM_UNAVAILABLE"] = True
 
     return _deterministic_fallback_report(raw)
 

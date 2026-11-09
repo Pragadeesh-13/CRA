@@ -223,7 +223,7 @@ class SaaSConfig(BaseModel):
 
         # Alias: name / product -> product_name
         if "product_name" not in data:
-            for alias in ("name", "product", "tenant_name", "tenant"):
+            for alias in ("name", "product", "organization_name", "organization"):
                 if alias in data and data[alias]:
                     data["product_name"] = data.pop(alias)
                     break

@@ -10,17 +10,17 @@ Rather than functioning as a traditional chatbot that offers generic canned resp
 ## Troy as an Open-Source Tool
 
 Troy is a clean, plug-and-play, **open-source tool you can use directly** —
-it is **not tenant-based**. There is no tenant to create, register, or
-configure: you install the repo, import `troy`, and call it. Works
-offline out of the box (mock LLM driver + in-memory data) with no API
-keys required; bring your own config, data adapter, or LLM when you want.
+zero-config: there is nothing to create, register, or configure first.
+You install the repo, import `troy`, and call it. Works out of the box
+with in-memory data and a local LLM (LM Studio) with no API keys
+required; bring your own config, data adapter, or LLM when you want.
 
 ### Open-source Python library usage
 
 ```python
 import troy
 
-# One-shot resolution — no agent instance, no tenant required:
+# One-shot resolution — no agent instance required:
 result = troy.resolve('complaint text')
 print(result['ok'], result['customer_communication'])
 
