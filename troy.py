@@ -1,8 +1,9 @@
 """
 Troy — a clean, plug-and-play, open-source complaint-resolution tool.
 
-Troy is **not** tenant-based. There is no ``tenant_id``, no registry, and
-no multi-tenant plumbing to set up: you create one agent and call it.
+Troy is a single, self-contained agent: you create one agent and call
+it. No registries or per-customer setup are required, and it works
+offline out of the box with no API keys.
 
 Python usage::
 
@@ -41,6 +42,9 @@ Command-line usage::
 
 Canonical exports: ``Troy``, ``resolve``, ``tool``, ``load_config``,
 ``CsvDataAdapter``, ``InMemoryDataAdapter``, ``RestApiDataAdapter``.
+
+See ``docs/ARCHITECTURE.md`` and ``docs/MODULES.md`` for the full
+module reference.
 """
 
 from __future__ import annotations
@@ -104,7 +108,7 @@ def load_config(source: Any = None, **overrides: Any):
 
 
 # ---------------------------------------------------------------------------
-# Troy agent (single, non-tenant based)
+# Troy agent (single open-source agent)
 # ---------------------------------------------------------------------------
 
 
@@ -113,7 +117,7 @@ class Troy(TroyClient):
     The Troy complaint-resolution agent.
 
     A plain :class:`~app.sdk.client.TroyClient` with a synchronous,
-    ergonomic front door — no tenant / multi-tenant concepts required::
+    ergonomic front door for open-source use::
 
         agent = Troy()                                   # zero setup
         agent = Troy(product_name="MyApp")               # custom product

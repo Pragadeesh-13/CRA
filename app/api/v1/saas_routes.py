@@ -1,9 +1,8 @@
 """
-SaaS REST & webhook integration surfaces for Troy.
+REST & webhook integration surfaces for Troy (open-source tool).
 
-Troy is a clean, single-product open-source tool — not a multi-tenant
-platform. There is one Troy client (no tenant registry, no
-``X-Tenant-ID`` resolution, no tenant CRUD).
+Troy is a clean, single-product open-source tool: one Troy client, one
+product configuration, no registries to set up.
 
 Mounted into the FastAPI app (see ``app/main.py``) at ``/api/v1/saas``:
 
@@ -16,6 +15,8 @@ Mounted into the FastAPI app (see ``app/main.py``) at ``/api/v1/saas``:
 The module-level ``router`` uses a lazily-created default
 :class:`~app.sdk.TroyClient`. Use :func:`create_saas_router` to mount the
 same routes against a custom (e.g. seeded) client.
+
+See ``docs/MODULES.md`` for the full module reference.
 """
 
 from __future__ import annotations
@@ -49,10 +50,9 @@ get_client = get_saas_client
 
 
 # ---------------------------------------------------------------------------
-# Backwards-compatible stubs (multi-tenant support was removed)
+# Backwards-compatible stubs
 # ---------------------------------------------------------------------------
-# Troy is now a single-product open-source tool. These names are kept so
-# older imports do not break; they carry no behaviour.
+# Kept so older imports do not break; they carry no behaviour.
 tenant_registry = None
 registry = None
 get_tenant_registry = lambda: None
@@ -402,9 +402,8 @@ def create_saas_router(client: Optional[TroyClient] = None, **_ignored: Any) -> 
     without one they resolve the shared default client via dependency
     injection (so tests can override ``get_saas_client``).
 
-    Any extra keyword arguments (e.g. the former multi-tenant
-    ``tenant_registry``) are accepted and ignored — Troy is now a
-    single-product open-source tool with no tenant concept.
+    Any extra keyword arguments are accepted and ignored, for
+    backwards compatibility with older callers.
     """
     router = APIRouter(prefix="/api/v1/saas", tags=["saas"])
     bound_client = client
@@ -477,7 +476,7 @@ def create_saas_router(client: Optional[TroyClient] = None, **_ignored: Any) -> 
 router = create_saas_router()
 saas_router = router
 
-# Default client handles (for callers that want to seed/inspect tenant data).
+# Default client handles (for callers that want to seed/inspect data).
 client = get_saas_client()
 default_client = client
 troy_client = client
@@ -493,7 +492,7 @@ __all__ = [
     "normalize_payload",
     "normalize_webhook",
     "SUPPORTED_PROVIDERS",
-    # Backwards-compatible stubs (multi-tenant support removed).
+    # Backwards-compatible stubs.
     "tenant_registry",
     "registry",
     "get_tenant_registry",

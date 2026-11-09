@@ -1,18 +1,21 @@
 """
-Plug-and-play SaaS configuration for Troy.
+Product configuration for Troy (open-source complaint-resolution tool).
 
-Defines tenant / product settings a SaaS operator can supply (as Python
-objects, dicts, JSON, or YAML) so Troy can be pointed at *any* product
-without code changes.
+Defines the product settings a developer can supply — as Python objects,
+dicts, JSON, or YAML — so Troy can be pointed at *any* product without
+code changes: product name, domain, support email, branding, entity
+regexes, categories + SLAs, and policies.
 
 Example:
     from app.core.saas_config import SaaSConfig, load_saas_config
 
-    config = SaaSConfig(product_name="CloudScribe", domain="cloudscribe.io")
-    config = load_saas_config("saas.yaml")          # YAML / JSON file
+    config = SaaSConfig(product_name="MyApp", domain="example.com")
+    config = load_saas_config("config.yaml")          # YAML / JSON file
     config = load_saas_config({"product_name": "DevMetrics"})  # dict
     data = config.to_dict()
-    config.save("saas.json")
+    config.save("config.json")
+
+Used by ``troy.load_config`` and by ``TroyClient`` (via ``troy.Troy``).
 """
 
 from __future__ import annotations
@@ -184,10 +187,10 @@ SaaSPolicy = PolicyConfig
 
 class SaaSConfig(BaseModel):
     """
-    Tenant / product configuration for Troy.
+    Product configuration for Troy.
 
     Fields (all optional except where validated):
-      - product_name: e.g. ``'CloudScribe'`` (defaults to ``'Troy Demo SaaS'``)
+      - product_name: e.g. ``'MyApp'`` (defaults to ``'Troy Demo SaaS'``)
       - support_email, domain, branding
       - entity_patterns: regex patterns for orders / customers / invoices /
         subscriptions / transactions / tickets
