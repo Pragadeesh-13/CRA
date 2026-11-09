@@ -1,9 +1,82 @@
 
 # Complaint Resolution Agent (CRA) — Troy
 
-**Troy** is an autonomous AI agent designed to investigate, triage, and resolve customer complaints end-to-end. 
+**Troy** is an autonomous AI agent designed to investigate, triage, and resolve customer complaints end-to-end.
 
 Rather than functioning as a traditional chatbot that offers generic canned responses or links to FAQs, Troy acts as an autonomous resolution specialist: he diagnoses issues, verifies live customer records, retrieves precedent solutions from hundreds of thousands of past tickets, and executes concrete remediations (such as issuing refunds, adjusting account balances, resetting locked accounts, or dispatching invoices) in real time.
+
+---
+
+## Troy as an Open-Source Tool
+
+Troy is a clean, plug-and-play, **open-source tool you can use directly** —
+it is **not tenant-based**. There is no tenant to create, register, or
+configure: you install the repo, import `troy`, and call it. Works
+offline out of the box (mock LLM driver + in-memory data) with no API
+keys required; bring your own config, data adapter, or LLM when you want.
+
+### Open-source Python library usage
+
+```python
+import troy
+
+# One-shot resolution — no agent instance, no tenant required:
+result = troy.resolve('complaint text')
+print(result['ok'], result['customer_communication'])
+
+# Or create an agent instance for your app:
+agent = troy.Troy(product_name='MyApp')
+
+# Register your own custom tool with the @agent.tool decorator:
+@agent.tool(name="reset_quota", description="Reset a customer's quota")
+def reset_quota(customer_id: str = "", **kwargs):
+    return {"ok": True, "customer_id": customer_id, "quota": "reset"}
+
+result = agent.resolve('complaint text')
+print(result['ok'], result['status'], result['customer_communication'])
+```
+
+Canonical exports: `Troy`, `resolve`, `tool`, `load_config`,
+`CsvDataAdapter`, `InMemoryDataAdapter`, `RestApiDataAdapter`.
+
+```python
+import troy
+
+config = troy.load_config({'product_name': 'MyApp', 'domain': 'example.com'})
+agent = troy.Troy(
+    config=config,
+    adapter=troy.InMemoryDataAdapter(customers=[...], transactions=[...]),
+    # or: troy.CsvDataAdapter() / troy.RestApiDataAdapter("https://api.example.com")
+)
+result = agent.resolve('complaint text', dry_run=True)  # preview, no changes
+```
+
+### CLI usage
+
+```bash
+# Resolve a complaint from the command line:
+python troy.py 'complaint text'
+
+# Same, as machine-readable JSON:
+python troy.py 'complaint text' --json
+
+# Preview without mutating data / control auto-execution:
+python troy.py 'complaint text' --dry-run --json
+python troy.py 'complaint text' --auto-execute --json
+
+# Serve Troy over HTTP (FastAPI app):
+python troy.py --serve --port 3000
+
+# Other CLI commands:
+python troy.py --help
+python troy.py --version
+```
+
+### Tests
+
+```bash
+python -m pytest tests/test_troy_opensource_tool.py tests/test_saas_plug_and_play.py -v
+```
 
 ---
 
