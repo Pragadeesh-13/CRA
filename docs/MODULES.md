@@ -251,6 +251,15 @@ assumed. Remediation goes through
 `app.database.remediate_duplicate_charge`, and the resulting refund ID
 comes from the database result.
 
+`RESOLUTION_TEMPLATES` (module level, outside the class) holds the 11
+per-category resolution templates formerly inlined in
+`_build_category_fallback`: each key is a category name and each value
+is a function taking `(ref_id, team, sla_hours, conf_pct, report)`
+(the Refunds template also accepts an optional `cat_ctx`) and returning
+the structured string. `_build_category_fallback` is now a ~20-line
+lookup: `RESOLUTION_TEMPLATES.get(pred_cat, RESOLUTION_TEMPLATES['Account Management'])(...)`,
+with the Refunds branch passed `cat_ctx` for ledger details.
+
 ### `app/simulation/state.py` — `SimulationState`
 
 Thread-safe session state: a running flag (with `acquire_lock` /
@@ -344,7 +353,7 @@ on_delta, on_reasoning_delta)`, and `fetch_models(api_key, base_url)`.
 | File | Driver | Behaviour |
 |---|---|---|
 | `base_driver.py` | `BaseLlmDriver` | Abstract interface; stores `provider` + options. |
-| `openai_driver.py` | `OpenAiDriver` | OpenAI-compatible chat completions over `httpx`, with streaming, thinking-mode handling, and curated model lists per backend (`openai`, `openrouter`, `groq`, `lmstudio`). A failed call raises the real error instead of silently switching drivers. |
+| `openai_driver.py` | `OpenAiDriver` | OpenAI-compatible chat completions over `httpx`, with streaming, thinking-mode handling, and curated model lists per backend (`openai`, `openrouter`, `groq`, `lmstudio`). A failed call raises the real error instead of silently switching drivers. `OpenAiDriver(..., max_retries=2)` retries `httpx.ConnectError`/`TimeoutException` up to `max_retries` times with 1-second backoff, and retries HTTP 5xx once; 400/401/403/404 are never retried and propagate immediately. |
 | `anthropic_driver.py` | `AnthropicDriver` | Claude via the Anthropic Messages API; `format_anthropic_payload()` maps chat messages to the Anthropic shape (system prompt split out). |
 
 Production code has no mock driver. Tests that need a deterministic
@@ -366,6 +375,16 @@ The system of record for the bundled demo data
 (`data/transactions.csv`, `data/customer_accounts.csv`), guarded by a
 re-entrant lock and safe to monkey-patch in tests
 (`DATABASE_FILE`, `CUSTOMER_ACCOUNTS_FILE`, `DATA_DIR`).
+
+Reads are cached in a module-level `_CACHE` dict (guarded by
+`_CACHE_LOCK`): `read_all_transactions()` and `read_all_customers()`
+(via `read_all_customer_accounts()`) store results with a `_cache_ts`
+timestamp and the file mtime, and serve cached copies while the mtime
+is unchanged and the entry is ≤ 5 seconds old. Copy-on-read keeps
+callers from mutating the cache. `_invalidate_cache()` clears the
+cache and is called by `write_all_transactions()`,
+`write_all_customer_accounts()`, `remediate_duplicate_charge()`,
+`execute_agent_resolution()`, and `execute_manual_resolution()`.
 
 Key functions:
 
@@ -420,7 +439,10 @@ Turns a complaint into a category, team, and SLA:
 - `app/prompts/` — ticket title/summary and policy prompt builders used
   by the orchestrator and triage.
 - `app/utils/` — `sanitizer` (model output cleanup), `json_extractor`
-  (lenient JSON parsing from LLM text), `thought_buffer`.
+  (lenient JSON parsing from LLM text), `thought_buffer`, and
+  `time_utils.py` — the single canonical `_utcnow_iso()` helper,
+  imported by `app/core/adapter.py`, `app/core/tool_registry.py`, and
+  `app/sdk/client.py` (re-exported from `app/utils/__init__.py`).
 - `app/reference/` — reasoning/output reference used by the orchestrator.
 - `run.py` — launch the full app with uvicorn on an available port
   (`settings.port`, default 3000).

@@ -8,6 +8,34 @@ import pytest
 root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
+# Also make test helpers (e.g. tests/mock_driver.py) importable as
+# top-level modules, as pytest's prepend mode already does for test files.
+_tests_dir = os.path.dirname(os.path.abspath(__file__))
+if _tests_dir not in sys.path:
+    sys.path.insert(0, _tests_dir)
+
+
+_LLM_ENV_VARS = ("LMSTUDIO_BASE_URL", "LLM_API_KEY", "LLM_PROVIDER", "LLM_MODEL")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _snapshot_llm_env():
+    """Snapshot LLM-related env vars at session start (for isolation)."""
+    yield {name: os.environ.get(name) for name in _LLM_ENV_VARS}
+
+
+@pytest.fixture(autouse=True)
+def clean_env(monkeypatch):
+    """Isolate each test from local ``.env`` LLM values.
+
+    In particular, ``LMSTUDIO_BASE_URL`` is reset to the canonical
+    ``http://localhost:1234/v1`` for every test (tests that need a
+    different value can still ``monkeypatch.setenv`` it themselves,
+    which runs after this fixture), and the original value is restored
+    after the test.
+    """
+    monkeypatch.setenv("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")
+    yield
 
 
 @pytest.fixture

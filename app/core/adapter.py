@@ -27,15 +27,12 @@ import copy
 import logging
 import threading
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
 
+from app.utils.time_utils import _utcnow_iso
+
 logger = logging.getLogger(__name__)
-
-
-def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _norm(value: Any) -> str:

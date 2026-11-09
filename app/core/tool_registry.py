@@ -36,14 +36,11 @@ import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Union
 
+from app.utils.time_utils import _utcnow_iso
+
 logger = logging.getLogger(__name__)
-
-
-def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _fingerprint(params: Mapping[str, Any]) -> str:

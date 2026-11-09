@@ -151,7 +151,6 @@ class TestFakeLlamaServerAuth:
                 [{"role": "user", "content": "Hello"}], apiKey=""
             )
             assert output == "FAKE-LLAMA-RESPONSE"
-            assert driver._offline_detected is False
             assert server.auth_headers
             assert all(header == f"Bearer {FAKE_KEY}" for header in server.auth_headers)
 

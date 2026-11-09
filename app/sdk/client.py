@@ -30,19 +30,15 @@ import logging
 import os
 import re
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
 from app.core.adapter import DataStoreAdapter, InMemoryDataAdapter
 from app.core.saas_config import SaaSConfig, load_saas_config
 from app.core.tool_registry import TroyToolRegistry
+from app.utils.time_utils import _utcnow_iso
 
 logger = logging.getLogger(__name__)
-
-
-def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _jsonable(value: Any) -> Any:

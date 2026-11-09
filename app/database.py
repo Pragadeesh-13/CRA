@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -18,6 +19,53 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 _DB_LOCK = threading.RLock()
+
+# Simple in-memory read cache for the CSV ledger. Entries are keyed by
+# file path and validated against the file mtime + a short TTL, so test
+# isolation (monkeypatched paths) and external writes are honoured.
+_CACHE: Dict[str, Dict[str, Any]] = {}
+_CACHE_LOCK = threading.RLock()
+_CACHE_TTL_SECONDS = 5.0
+
+
+def _invalidate_cache() -> None:
+    """Clear the CSV read cache (called by all write operations)."""
+    with _CACHE_LOCK:
+        _CACHE.clear()
+
+
+def _cache_lookup(path: Path) -> Optional[List[Dict[str, str]]]:
+    """Return a cached copy of ``path``'s records, or None on a miss."""
+    key = str(path)
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    with _CACHE_LOCK:
+        entry = _CACHE.get(key)
+        if entry is None:
+            return None
+        if entry.get("mtime") != mtime:
+            return None
+        if time.monotonic() - entry.get("_cache_ts", 0.0) > _CACHE_TTL_SECONDS:
+            return None
+        return [dict(r) for r in entry["records"]]
+
+
+def _cache_store(path: Path, records: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Store ``records`` in the cache and return a caller-safe copy."""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    with _CACHE_LOCK:
+        _CACHE[str(path)] = {
+            "mtime": mtime,
+            "_cache_ts": time.monotonic(),
+            "cache_ts": time.monotonic(),
+            "records": [dict(r) for r in records],
+        }
+    return [dict(r) for r in records]
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DATABASE_FILE = DATA_DIR / "transactions.csv"
@@ -388,6 +436,9 @@ def read_all_transactions() -> List[Dict[str, str]]:
     """Reads all transaction rows from data/transactions.csv."""
     with _DB_LOCK:
         db_path = ensure_database_file()
+        cached = _cache_lookup(db_path)
+        if cached is not None:
+            return cached
         records: List[Dict[str, str]] = []
         try:
             with open(db_path, "r", newline="", encoding="utf-8") as f:
@@ -396,7 +447,7 @@ def read_all_transactions() -> List[Dict[str, str]]:
                     records.append(dict(row))
         except Exception as e:
             logger.error(f"Error reading {db_path}: {e}")
-        return records
+        return _cache_store(db_path, records)
 
 
 def write_all_transactions(records: List[Dict[str, str]]) -> bool:
@@ -412,6 +463,7 @@ def write_all_transactions(records: List[Dict[str, str]]) -> bool:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, db_path)
+            _invalidate_cache()
             return True
         except Exception as e:
             logger.error(f"Error writing to {db_path}: {e}")
@@ -428,6 +480,9 @@ def read_all_customer_accounts() -> List[Dict[str, str]]:
     with _DB_LOCK:
         if not CUSTOMER_ACCOUNTS_FILE.exists():
             return []
+        cached = _cache_lookup(CUSTOMER_ACCOUNTS_FILE)
+        if cached is not None:
+            return cached
         records = []
         try:
             with open(CUSTOMER_ACCOUNTS_FILE, "r", newline="", encoding="utf-8") as f:
@@ -436,7 +491,7 @@ def read_all_customer_accounts() -> List[Dict[str, str]]:
                     records.append(dict(row))
         except Exception as e:
             logger.error(f"Error reading {CUSTOMER_ACCOUNTS_FILE}: {e}")
-        return records
+        return _cache_store(CUSTOMER_ACCOUNTS_FILE, records)
 
 
 def write_all_customer_accounts(records: List[Dict[str, str]]) -> bool:
@@ -452,6 +507,7 @@ def write_all_customer_accounts(records: List[Dict[str, str]]) -> bool:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, CUSTOMER_ACCOUNTS_FILE)
+            _invalidate_cache()
             return True
         except Exception as e:
             logger.error(f"Error writing to {CUSTOMER_ACCOUNTS_FILE}: {e}")
@@ -533,6 +589,7 @@ def remediate_duplicate_charge(
     Reconciles customer account to '$0.00 (Settled)' balance and 'Active - In Good Standing' status.
     Idempotent: if transaction is already refunded, returns success without duplicate edits or payouts.
     """
+    _invalidate_cache()
     if not duplicate_txn_id:
         return {
             "ok": False,
@@ -1559,6 +1616,7 @@ def execute_agent_resolution(
     - For Bugs & Errors: Logs defect in engineering queue with reproduction trace.
     - For other categories: Executes the domain action and records audit logs.
     """
+    _invalidate_cache()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     context = get_category_complaint_context(category=category or "", query=query or "")
 
@@ -1793,6 +1851,7 @@ def execute_manual_resolution(
     - For Refunds: Audits and flags duplicate transaction in data/transactions.csv.
     - For all other categories: Routes ticket to the dedicated specialist queue without touching transactions.csv.
     """
+    _invalidate_cache()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     context = get_category_complaint_context(category=category or "", query=query or "")
     cat_name = context.get("category", "General Support")

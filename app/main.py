@@ -315,11 +315,21 @@ async def verify_customer(query: Optional[str] = None, customer_id: Optional[str
 
 
 @app.get("/api/database/transactions")
-@app.get("/api/database/customers")
-@app.get("/api/database/tickets")
 async def get_database_transactions():
     transactions = read_all_transactions()
     return {"ok": True, "transactions": transactions, "customers": transactions, "count": len(transactions), "database_file": "data/transactions.csv"}
+
+
+@app.get("/api/database/customers")
+async def get_database_customers():
+    customers = read_all_customers()
+    return {"ok": True, "customers": customers, "count": len(customers), "database_file": "data/customer_accounts.csv"}
+
+
+@app.get("/api/database/tickets")
+async def get_database_tickets():
+    tickets = read_all_tickets()
+    return {"ok": True, "tickets": tickets, "count": len(tickets), "database_file": "data/transactions.csv"}
 
 
 @app.post("/api/resolve/action")
@@ -414,6 +424,8 @@ async def next_ticket(request: Request, query: str = ""):
     provider = _first_non_empty(body.get("provider"), sess_cfg.get("provider"), settings.llm_provider).lower()
     api_key = _first_non_empty(body.get("apiKey"), sess_cfg.get("apiKey"), settings.llm_api_key)
     model = _resolve_model(body.get("model"), _first_non_empty(sess_cfg.get("model"), settings.llm_model))
+    if provider == "lmstudio" and not model:
+        model = "qwen/qwen3.5-9b"
 
     if not provider:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Provider has not been selected."})

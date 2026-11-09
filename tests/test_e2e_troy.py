@@ -999,8 +999,9 @@ def test_tier2_feature8_data_dir_monkeypatched(isolated_database):
 
 # ── Tier 1: Feature 9 Coverage ────────────────────────────────────────────────
 
-def test_tier1_feature9_provider_base_url_lmstudio_default():
+def test_tier1_feature9_provider_base_url_lmstudio_default(monkeypatch):
     """Feature 9: LM Studio provider base URL defaults to http://localhost:1234/v1 (port 1234)."""
+    monkeypatch.delenv("LMSTUDIO_BASE_URL", raising=False)
     url = provider_base_url("lmstudio")
     assert url == "http://localhost:1234/v1", f"Expected 'http://localhost:1234/v1', got '{url}'"
 
@@ -1012,8 +1013,9 @@ def test_tier1_feature9_lmstudio_base_url_env_override(monkeypatch):
     assert url == "http://192.168.1.150:1234/v1"
 
 
-def test_tier1_feature9_create_driver_lmstudio():
+def test_tier1_feature9_create_driver_lmstudio(monkeypatch):
     """Feature 9: create_driver('lmstudio') creates an OpenAiDriver pointing to port 1234."""
+    monkeypatch.delenv("LMSTUDIO_BASE_URL", raising=False)
     driver = create_driver("lmstudio")
     assert hasattr(driver, "base_url")
     assert "1234" in driver.base_url
@@ -1444,12 +1446,15 @@ def test_tier1_feature13_api_resolve_action_endpoint(client, isolated_database):
     assert data.get("ok") is True
 
 
-def test_tier1_feature13_api_next_endpoint(client):
+def test_tier1_feature13_api_next_endpoint(client, monkeypatch):
     """Feature 13: POST /api/next accepts complaint submission and returns started: true."""
+    from mock_driver import MockDriver
+
+    monkeypatch.setattr("app.main.create_driver", lambda *a, **k: MockDriver())
     payload = {
         "query": "ORD-88219 double renewal charge",
-        "provider": "mock",
-        "model": "mock-gpt-4o",
+        "provider": "lmstudio",
+        "model": "qwen/qwen3.5-9b",
         "apiKey": "",
     }
     res = client.post("/api/next", json=payload)
@@ -1756,18 +1761,21 @@ def test_tier4_scenario3_general_inquiry_technical_no_db_modification(client, is
     assert database.read_all_customers() == accs_before
 
 
-def test_tier4_scenario4_offline_fallback_mock(client):
+def test_tier4_scenario4_offline_fallback_mock(client, monkeypatch):
     """
     Tier 4 Scenario 4: Offline local server (LM Studio down).
     End-to-end user workflow:
-    1. Complaint submitted via POST /api/next with provider='mock' or offline endpoint.
+    1. Complaint submitted via POST /api/next with provider='lmstudio' (offline endpoint).
     2. Troy detects offline state and switches seamlessly to deterministic mock fallback.
     3. Structured 4-stage markdown response generated without crashing or throwing 500 error.
     """
+    from mock_driver import MockDriver
+
+    monkeypatch.setattr("app.main.create_driver", lambda *a, **k: MockDriver())
     payload = {
         "query": "Accidental double charge of $49 for ORD-88219",
-        "provider": "mock",
-        "model": "mock-gpt-4o",
+        "provider": "lmstudio",
+        "model": "qwen/qwen3.5-9b",
         "apiKey": "",
     }
     res = client.post("/api/next", json=payload)
@@ -1777,7 +1785,7 @@ def test_tier4_scenario4_offline_fallback_mock(client):
     assert data.get("started") is True
 
 
-def test_tier4_scenario5_frontend_ui_api_compatibility(client, isolated_database):
+def test_tier4_scenario5_frontend_ui_api_compatibility(client, isolated_database, monkeypatch):
     """
     Tier 4 Scenario 5: Full UI API compatibility journey.
     Verifies all frontend contracts consumed by public/js/app.js:
@@ -1793,7 +1801,10 @@ def test_tier4_scenario5_frontend_ui_api_compatibility(client, isolated_database
     assert ver_res.json().get("ok") is True
 
     # 2. Next ticket endpoint
-    next_res = client.post("/api/next", json={"query": "ORD-88219 double renewal", "provider": "mock", "model": "mock-gpt-4o", "apiKey": ""})
+    from mock_driver import MockDriver
+
+    monkeypatch.setattr("app.main.create_driver", lambda *a, **k: MockDriver())
+    next_res = client.post("/api/next", json={"query": "ORD-88219 double renewal", "provider": "lmstudio", "model": "qwen/qwen3.5-9b", "apiKey": ""})
     assert next_res.status_code == 200
     assert next_res.json().get("ok") is True
 

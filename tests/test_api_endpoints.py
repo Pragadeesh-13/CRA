@@ -113,7 +113,8 @@ def test_auth_required_redirect():
         settings.auth_mode = orig_mode
 
 
-def test_lmstudio_config_and_driver():
+def test_lmstudio_config_and_driver(monkeypatch):
+    monkeypatch.delenv("LMSTUDIO_BASE_URL", raising=False)
     # Configure LM Studio provider with a custom model name and no API key
     res = client.post(
         "/api/config",
@@ -206,12 +207,12 @@ def test_database_customers_endpoint():
     assert "customers" in data
     assert isinstance(data["customers"], list)
     assert data["count"] >= 1
-    # Check customer & transaction ledger schema
+    # Check customer ledger schema
     first = data["customers"][0]
     assert "customer_id" in first
     assert "customer_name" in first
     assert "subscription_plan" in first
-    assert "transaction_id" in first
+    assert "customer_email" in first
 
 
 def test_database_transactions_endpoint():

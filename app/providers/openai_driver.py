@@ -1,3 +1,4 @@
+import asyncio
 import os
 import json
 import logging
@@ -90,10 +91,12 @@ class OpenAiDriver(BaseLlmDriver):
         public_url: str = "http://localhost:3000",
         timeout_ms: int = 60000,
         stream_idle_timeout_ms: int = 90000,
+        max_retries: int = 2,
         **options: Any,
     ):
         super().__init__(provider=provider, **options)
         self.model = model
+        self.max_retries = int(max_retries)
         # Store the explicitly supplied key (stripped). Environment /
         # fallback resolution happens in _effective_api_key() at call time
         # so monkeypatched env vars and late-bound settings are honoured.
@@ -216,9 +219,28 @@ class OpenAiDriver(BaseLlmDriver):
                         content = lines[-1] if lines else reasoning[:200]
                 return content
 
-        # Let the real error propagate: callers decide how to handle a
-        # failed LLM call, rather than silently switching drivers.
-        return await _make_call(include_think=True, use_max_completion=False)
+        # Retry network failures with backoff; let the real error
+        # propagate after retries are exhausted (caller errors such as
+        # 400/401/403/404 are never retried).
+        max_retries = max(0, int(getattr(self, "max_retries", 2)))
+        attempts = 0
+        while True:
+            try:
+                return await _make_call(include_think=True, use_max_completion=False)
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code if e.response is not None else 0
+                if status >= 500 and attempts < 1:
+                    attempts += 1
+                    await asyncio.sleep(1.0)
+                    continue
+                raise
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.TimeoutException) as e:
+                if attempts < max_retries:
+                    attempts += 1
+                    logger.warning(f"LLM call failed ({type(e).__name__}); retry {attempts}/{max_retries} in 1s")
+                    await asyncio.sleep(1.0)
+                    continue
+                raise
 
     async def stream(
         self,
