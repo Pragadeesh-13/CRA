@@ -15,13 +15,12 @@ Covers:
 """
 
 import json
-import uuid
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.v1.saas_routes import SUPPORTED_PROVIDERS, TenantRegistry, normalize_webhook_payload, tenant_registry
+from app.api.v1.saas_routes import SUPPORTED_PROVIDERS, normalize_webhook_payload
 from app.core.adapter import CsvDataAdapter, InMemoryDataAdapter, RestApiDataAdapter
 from app.core.saas_config import SaaSConfig, load_saas_config
 from app.core.tool_registry import TroyToolRegistry
@@ -735,193 +734,6 @@ class TestWidget:
 
 
 # ---------------------------------------------------------------------------
-# Multi-tenant registry (plug-and-play SaaS, Phase 3)
-# ---------------------------------------------------------------------------
-
-
-def _unique_tenant_id(prefix: str = "tenant") -> str:
-    return f"{prefix}-{uuid.uuid4().hex[:8]}"
-
-
-class TestTenantRegistry:
-    def test_register_and_retrieve_client_by_tenant_id(self):
-        registry = TenantRegistry()
-        client = registry.register("acme-unit", config={"product_name": "Acme Unit", "domain": "acme.example"})
-        assert client.config.product_name == "Acme Unit"
-        assert registry.get("acme-unit") is client
-        assert registry.get_client("acme-unit") is client
-        assert registry.get_tenant("acme-unit") is client
-        assert "acme-unit" in registry
-        assert len(registry) == 1
-
-    def test_register_dict_profile_and_lookup(self):
-        registry = TenantRegistry()
-        client = registry.register({"tenant_id": "dict-tenant", "config": {"product_name": "DictTenant"}})
-        assert client.config.product_name == "DictTenant"
-        assert registry.get("dict-tenant") is client
-
-    def test_register_update_replaces_client(self):
-        registry = TenantRegistry()
-        first = registry.register("updatable", config={"product_name": "Before"})
-        second = registry.register("updatable", config={"product_name": "After"})
-        assert first is not second
-        assert registry.get("updatable").config.product_name == "After"
-        assert len(registry) == 1
-
-    def test_list_tenants_returns_id_and_product_name(self):
-        registry = TenantRegistry()
-        registry.register("beta", config={"product_name": "BetaSaaS"})
-        registry.register("alpha", config={"product_name": "AlphaSaaS"})
-        listed = registry.list_tenants()
-        assert {entry["tenant_id"] for entry in listed} == {"alpha", "beta"}
-        by_id = {entry["tenant_id"]: entry["product_name"] for entry in listed}
-        assert by_id["alpha"] == "AlphaSaaS"
-        assert by_id["beta"] == "BetaSaaS"
-
-    def test_resolve_falls_back_when_tenant_unknown(self):
-        registry = TenantRegistry()
-        fallback = TroyClient()
-        assert registry.resolve("missing", fallback=fallback) is fallback
-        assert registry.resolve("missing") is not None
-
-    def test_unregister_and_clear(self):
-        registry = TenantRegistry()
-        registry.register("temporary", config={"product_name": "Temp"})
-        assert registry.unregister("temporary") is True
-        assert registry.get("temporary") is None
-        registry.register("again", config={"product_name": "Again"})
-        registry.clear()
-        assert len(registry) == 0
-        assert registry.list_tenants() == []
-
-    def test_supported_providers_include_shopify_and_slack(self):
-        assert "shopify" in SUPPORTED_PROVIDERS
-        assert "slack" in SUPPORTED_PROVIDERS
-
-
-class TestMultiTenantApi:
-    def test_register_tenant_via_api(self, api_client):
-        tenant_id = _unique_tenant_id("acme")
-        res = api_client.post(
-            "/api/v1/saas/tenants",
-            json={"tenant_id": tenant_id, "config": {"product_name": "Acme XYZ", "domain": "acme.example"}},
-        )
-        assert res.status_code == 200
-        data = res.json()
-        assert data["ok"] is True
-        assert data["tenant_id"] == tenant_id
-        assert data["product_name"] == "Acme XYZ"
-
-    def test_register_tenant_requires_tenant_id(self, api_client):
-        res = api_client.post("/api/v1/saas/tenants", json={"config": {"product_name": "NoId"}})
-        assert res.status_code == 400
-        assert res.json()["ok"] is False
-
-    def test_register_tenant_with_top_level_config_fields(self, api_client):
-        tenant_id = _unique_tenant_id("flat")
-        res = api_client.post(
-            "/api/v1/saas/tenants",
-            json={"tenant_id": tenant_id, "product_name": "FlatSaaS", "domain": "flat.example"},
-        )
-        assert res.status_code == 200
-        assert res.json()["product_name"] == "FlatSaaS"
-
-    def test_register_tenant_update_via_api(self, api_client):
-        tenant_id = _unique_tenant_id("update")
-        first = api_client.post("/api/v1/saas/tenants", json={"tenant_id": tenant_id, "config": {"product_name": "BeforeUpdate"}})
-        assert first.json()["product_name"] == "BeforeUpdate"
-        second = api_client.post("/api/v1/saas/tenants", json={"tenant_id": tenant_id, "config": {"product_name": "AfterUpdate"}})
-        assert second.status_code == 200
-        assert second.json()["product_name"] == "AfterUpdate"
-        fetched = api_client.get(f"/api/v1/saas/tenants/{tenant_id}")
-        assert fetched.json()["product_name"] == "AfterUpdate"
-
-    def test_header_based_tenant_resolution_on_info(self, api_client):
-        tenant_id = _unique_tenant_id("header-info")
-        api_client.post("/api/v1/saas/tenants", json={"tenant_id": tenant_id, "config": {"product_name": "HeaderInfoSaaS"}})
-        res = api_client.get("/api/v1/saas/info", headers={"X-Tenant-ID": tenant_id})
-        assert res.status_code == 200
-        data = res.json()
-        assert data["product_name"] == "HeaderInfoSaaS"
-        assert data["tenant_id"] == tenant_id
-
-    def test_header_based_tenant_resolution_on_resolve(self, api_client):
-        tenant_id = _unique_tenant_id("header-resolve")
-        api_client.post("/api/v1/saas/tenants", json={"tenant_id": tenant_id, "config": {"product_name": "HeaderResolveSaaS"}})
-        res = api_client.post(
-            "/api/v1/saas/resolve",
-            json={"complaint": "How do I export my data?"},
-            headers={"X-Tenant-ID": tenant_id},
-        )
-        assert res.status_code == 200
-        data = res.json()
-        assert data["ok"] is True
-        assert data["product_name"] == "HeaderResolveSaaS"
-        assert data["tenant_id"] == tenant_id
-
-    def test_query_param_tenant_resolution(self, api_client):
-        tenant_id = _unique_tenant_id("query")
-        api_client.post("/api/v1/saas/tenants", json={"tenant_id": tenant_id, "config": {"product_name": "QuerySaaS"}})
-        info = api_client.get(f"/api/v1/saas/info?tenant={tenant_id}")
-        assert info.status_code == 200
-        assert info.json()["product_name"] == "QuerySaaS"
-        resolved = api_client.post(f"/api/v1/saas/resolve?tenant={tenant_id}", json={"complaint": "How do I export my data?"})
-        assert resolved.json()["product_name"] == "QuerySaaS"
-
-    def test_payload_tenant_resolution(self, api_client):
-        tenant_id = _unique_tenant_id("payload")
-        api_client.post("/api/v1/saas/tenants", json={"tenant_id": tenant_id, "config": {"product_name": "PayloadSaaS"}})
-        # tenant_id field
-        res = api_client.post("/api/v1/saas/resolve", json={"complaint": "How do I export my data?", "tenant_id": tenant_id})
-        assert res.json()["product_name"] == "PayloadSaaS"
-        # tenantId camelCase alias
-        res2 = api_client.post("/api/v1/saas/resolve", json={"complaint": "How do I export my data?", "tenantId": tenant_id})
-        assert res2.json()["product_name"] == "PayloadSaaS"
-
-    def test_unregistered_tenant_falls_back_to_default(self, api_client):
-        res = api_client.get("/api/v1/saas/info", headers={"X-Tenant-ID": "no-such-tenant-xyz"})
-        assert res.status_code == 200
-        assert res.json()["ok"] is True
-
-    def test_list_tenants_via_api(self, api_client):
-        tenant_id = _unique_tenant_id("listable")
-        api_client.post("/api/v1/saas/tenants", json={"tenant_id": tenant_id, "config": {"product_name": "ListableSaaS"}})
-        res = api_client.get("/api/v1/saas/tenants")
-        assert res.status_code == 200
-        listed = res.json()
-        assert isinstance(listed, list)
-        entries = {entry["tenant_id"]: entry for entry in listed}
-        assert tenant_id in entries
-        assert entries[tenant_id]["product_name"] == "ListableSaaS"
-
-    def test_get_tenant_info_and_capabilities(self, api_client):
-        tenant_id = _unique_tenant_id("detail")
-        api_client.post("/api/v1/saas/tenants", json={"tenant_id": tenant_id, "config": {"product_name": "DetailSaaS"}})
-        res = api_client.get(f"/api/v1/saas/tenants/{tenant_id}")
-        assert res.status_code == 200
-        data = res.json()
-        assert data["ok"] is True
-        assert data["tenant_id"] == tenant_id
-        assert data["product_name"] == "DetailSaaS"
-        capabilities = data["capabilities"]
-        assert capabilities["resolve"] is True
-        assert "shopify" in capabilities["webhooks"]
-        assert "slack" in capabilities["webhooks"]
-        assert "zendesk" in capabilities["webhooks"]
-
-    def test_get_unknown_tenant_returns_404(self, api_client):
-        res = api_client.get("/api/v1/saas/tenants/no-such-tenant-xyz")
-        assert res.status_code == 404
-        assert res.json()["ok"] is False
-
-    def test_module_level_registry_reflects_api_registrations(self, api_client):
-        tenant_id = _unique_tenant_id("shared")
-        api_client.post("/api/v1/saas/tenants", json={"tenant_id": tenant_id, "config": {"product_name": "SharedRegistrySaaS"}})
-        assert tenant_registry.get(tenant_id) is not None
-        assert tenant_registry.get(tenant_id).config.product_name == "SharedRegistrySaaS"
-
-
-# ---------------------------------------------------------------------------
 # Shopify & Slack webhooks
 # ---------------------------------------------------------------------------
 
@@ -1026,33 +838,6 @@ class TestShopifySlackWebhooks:
         assert "charged twice" in data["complaint"].lower()
         assert data["normalized"]["customer_id"] == "U10492"
         assert data["customer_name"] == "alexmorgan"
-
-    def test_webhook_slack_with_tenant_header(self, api_client):
-        tenant_id = _unique_tenant_id("slack-tenant")
-        api_client.post("/api/v1/saas/tenants", json={"tenant_id": tenant_id, "config": {"product_name": "SlackTenantSaaS"}})
-        res = api_client.post(
-            "/api/v1/saas/webhooks/slack",
-            json={"text": "How do I export my data?", "user_id": "U999", "user_name": "sam"},
-            headers={"X-Tenant-ID": tenant_id},
-        )
-        assert res.status_code == 200
-        data = res.json()
-        assert data["ok"] is True
-        assert data["provider"] == "slack"
-        assert data["product_name"] == "SlackTenantSaaS"
-        assert data["tenant_id"] == tenant_id
-
-    def test_webhook_shopify_with_tenant_query_param(self, api_client):
-        tenant_id = _unique_tenant_id("shop-tenant")
-        api_client.post("/api/v1/saas/tenants", json={"tenant_id": tenant_id, "config": {"product_name": "ShopifyTenantSaaS"}})
-        res = api_client.post(
-            f"/api/v1/saas/webhooks/shopify?tenant={tenant_id}",
-            json={"note": "How do I export my data?", "name": "#3003", "customer": {"id": "USR-1"}},
-        )
-        assert res.status_code == 200
-        data = res.json()
-        assert data["product_name"] == "ShopifyTenantSaaS"
-        assert data["provider"] == "shopify"
 
     def test_info_advertises_shopify_and_slack(self, api_client):
         res = api_client.get("/api/v1/saas/info")

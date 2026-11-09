@@ -517,15 +517,22 @@ class ComplaintResolutionOrchestrator:
 
             is_already_refunded = txn_analysis.get("is_already_refunded", False)
             dup_txn = txn_analysis.get("duplicate_transaction") or {}
-            dup_id = dup_txn.get("transaction_id") or intent_info.get("transaction_id")
-            if not dup_id:
-                if "ORD-81094" in complaint_text or "TXN-7712" in complaint_text or "USR-07231" in complaint_text:
-                    dup_id = "TXN-7712"
-                elif "ORD-88219" in complaint_text or "TXN-9012" in complaint_text or "USR-10492" in complaint_text:
-                    dup_id = "TXN-9012"
+            # Rely solely on dynamic extraction — no hardcoded order /
+            # transaction fallbacks. intent_info and txn_analysis both
+            # carry the ids extracted from the complaint / ledger.
+            dup_id = (
+                dup_txn.get("transaction_id")
+                or intent_info.get("transaction_id")
+                or txn_analysis.get("transaction_id")
+            )
 
             dup_amt = dup_txn.get("amount", "49.00") if isinstance(dup_txn, dict) else "49.00"
-            effective_order_id = intent_info.get("order_id") or txn_analysis.get("order_id") or ("ORD-81094" if dup_id == "TXN-7712" else "ORD-88219")
+            effective_order_id = (
+                intent_info.get("order_id")
+                or txn_analysis.get("order_id")
+                or (dup_txn.get("order_id") if isinstance(dup_txn, dict) else None)
+                or ""
+            )
 
             # Execute Generic Remediation Tool autonomously (Feature 12)
             if not is_already_refunded and dup_id:
@@ -542,7 +549,7 @@ class ComplaintResolutionOrchestrator:
                 )
                 self.sse.broadcast("database_updated", rem_res)
                 is_already_refunded = True
-                ref_id = rem_res.get("refund_id") or f"REF-{effective_order_id.replace('ORD-', '')}-AUTO"
+                ref_id = rem_res.get("refund_id") or (f"REF-{effective_order_id.replace('ORD-', '')}-AUTO" if effective_order_id else f"REF-{str(dup_id).replace('TXN-', '')}-AUTO")
                 ref_date = rem_res.get("refunded_at") or time.strftime("%b %d, %Y")
                 # Re-query audit state so prompt reflects is_already_refunded = True
                 re_audit = inspect_account_and_transactions(customer_id=intent_info.get("customer_id"), query=complaint_text)
@@ -550,7 +557,7 @@ class ComplaintResolutionOrchestrator:
                     txn_analysis = re_audit
                     is_already_refunded = True
             else:
-                ref_id = txn_analysis.get("refund_id") or f"REF-{effective_order_id.replace('ORD-', '')}-AUTO"
+                ref_id = txn_analysis.get("refund_id") or (f"REF-{effective_order_id.replace('ORD-', '')}-AUTO" if effective_order_id else (f"REF-{str(dup_id).replace('TXN-', '')}-AUTO" if dup_id else ""))
                 ref_date = txn_analysis.get("refunded_at") or "Oct 21, 2026"
                 self.sse.broadcast(
                     "system",
