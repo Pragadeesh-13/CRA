@@ -3267,6 +3267,27 @@ body {
   color: var(--muted);
 }
 
+.intake-case-references {
+  border-top: 1px dashed var(--panel-subtle-border);
+  margin-top: 8px;
+  padding-top: 8px;
+  overflow-wrap: anywhere;
+}
+
+.intake-case-references ul {
+  margin: 6px 0 0;
+  padding-inline-start: 20px;
+}
+
+.intake-case-references li + li {
+  margin-top: 8px;
+}
+
+.intake-case-references p {
+  margin: 2px 0;
+  white-space: pre-wrap;
+}
+
 .intake-entity-tag {
   background: var(--feed-input-bg);
   border: 1px solid var(--feed-input-border);

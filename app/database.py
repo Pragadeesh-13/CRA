@@ -12,6 +12,8 @@ import os
 import re
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -71,6 +73,22 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DATABASE_FILE = DATA_DIR / "transactions.csv"
 CUSTOMER_ACCOUNTS_FILE = DATA_DIR / "customer_accounts.csv"
 
+_ledger_paths = ContextVar("ledger_paths", default=None)
+
+
+@contextmanager
+def use_ledger_files(transactions: Path, accounts: Path):
+    token = _ledger_paths.set((transactions, accounts))
+    try:
+        yield
+    finally:
+        _ledger_paths.reset(token)
+
+
+def _paths():
+    return _ledger_paths.get() or (DATABASE_FILE, CUSTOMER_ACCOUNTS_FILE)
+
+
 FIELDNAMES = [
     "transaction_id",
     "customer_id",
@@ -128,14 +146,14 @@ DEFAULT_CUSTOMER_ACCOUNTS: List[Dict[str, str]] = [
         "transaction_1": "TXN-9011 ($49.00 on 2026-10-20) [Settled Renewal]",
         "transaction_2": "TXN-9012 ($49.00 on 2026-10-23) [Refunded: REF-88219-AUTO]",
         "duplicate_verified": "Yes - Accidental Double Charge Detected",
-        "refund_status": "Refunded ($49.00 via Stripe API)",
+        "refund_status": "Refunded ($49.00 in the local demo ledger)",
         "refund_id": "REF-88219-AUTO",
         "account_balance": "$0.00 (Settled)",
         "account_status": "Active - In Good Standing",
         "last_verified_by": "Troy (Autonomous Resolution Agent)",
         "updated_by": "Troy (Autonomous Resolution Agent)",
         "last_updated": "2026-10-23 02:20:53",
-        "notes": "Autonomous override executed by Troy. Accidental double renewal debit reversed in Stripe API under REF-88219-AUTO.",
+        "notes": "Autonomous override executed by Troy. Accidental double renewal debit marked refunded in the local demo ledger under REF-88219-AUTO.",
     },
     {
         "customer_id": "USR-08914",
@@ -408,28 +426,32 @@ DEFAULT_TRANSACTIONS = [
 def ensure_database_file() -> Path:
     """Ensures data directory, transactions CSV, and customer accounts CSV exist and are seeded."""
     with _DB_LOCK:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        if not DATABASE_FILE.exists():
-            with open(DATABASE_FILE, "w", newline="", encoding="utf-8") as f:
+        transactions, accounts = _paths()
+        transactions.parent.mkdir(parents=True, exist_ok=True)
+        accounts.parent.mkdir(parents=True, exist_ok=True)
+        if not transactions.exists():
+            with open(transactions, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
                 writer.writeheader()
-                writer.writerows(DEFAULT_TRANSACTIONS)
-            logger.info(f"Initialized transactions database at {DATABASE_FILE}")
+                if _ledger_paths.get() is None:
+                    writer.writerows(DEFAULT_TRANSACTIONS)
+            logger.info(f"Initialized transactions database at {transactions}")
 
-        if not CUSTOMER_ACCOUNTS_FILE.exists():
-            with open(CUSTOMER_ACCOUNTS_FILE, "w", newline="", encoding="utf-8") as f:
+        if not accounts.exists():
+            with open(accounts, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=CUSTOMER_ACCOUNT_FIELDNAMES)
                 writer.writeheader()
-                writer.writerows(DEFAULT_CUSTOMER_ACCOUNTS)
-            logger.info(f"Initialized customer accounts database at {CUSTOMER_ACCOUNTS_FILE}")
+                if _ledger_paths.get() is None:
+                    writer.writerows(DEFAULT_CUSTOMER_ACCOUNTS)
+            logger.info(f"Initialized customer accounts database at {accounts}")
 
-        return DATABASE_FILE
+        return transactions
 
 
 def ensure_customer_accounts_file() -> Path:
     """Ensures customer accounts CSV exists and is seeded, returning its Path."""
     ensure_database_file()
-    return CUSTOMER_ACCOUNTS_FILE
+    return _paths()[1]
 
 
 def read_all_transactions() -> List[Dict[str, str]]:
@@ -450,14 +472,26 @@ def read_all_transactions() -> List[Dict[str, str]]:
         return _cache_store(db_path, records)
 
 
+def _ledger_fieldnames(path: Path, defaults: List[str], records: List[Dict[str, str]]) -> List[str]:
+    existing = ()
+    if path.exists():
+        with path.open(newline="", encoding="utf-8") as stream:
+            existing = next(csv.reader(stream), ())
+    fields = dict.fromkeys((*existing, *defaults))
+    for record in records:
+        fields.update(dict.fromkeys(key for key in record if isinstance(key, str)))
+    return list(fields)
+
+
 def write_all_transactions(records: List[Dict[str, str]]) -> bool:
     """Writes all transaction rows to data/transactions.csv atomically."""
     with _DB_LOCK:
         db_path = ensure_database_file()
         tmp_path = db_path.with_suffix(".tmp")
         try:
+            fieldnames = _ledger_fieldnames(db_path, FIELDNAMES, records)
             with open(tmp_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=FIELDNAMES, extrasaction="ignore")
+                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
                 writer.writeheader()
                 writer.writerows(records)
                 f.flush()
@@ -478,39 +512,42 @@ def write_all_transactions(records: List[Dict[str, str]]) -> bool:
 def read_all_customer_accounts() -> List[Dict[str, str]]:
     """Reads all rows from data/customer_accounts.csv."""
     with _DB_LOCK:
-        if not CUSTOMER_ACCOUNTS_FILE.exists():
+        accounts = _paths()[1]
+        if not accounts.exists():
             return []
-        cached = _cache_lookup(CUSTOMER_ACCOUNTS_FILE)
+        cached = _cache_lookup(accounts)
         if cached is not None:
             return cached
         records = []
         try:
-            with open(CUSTOMER_ACCOUNTS_FILE, "r", newline="", encoding="utf-8") as f:
+            with open(accounts, "r", newline="", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     records.append(dict(row))
         except Exception as e:
-            logger.error(f"Error reading {CUSTOMER_ACCOUNTS_FILE}: {e}")
-        return _cache_store(CUSTOMER_ACCOUNTS_FILE, records)
+            logger.error(f"Error reading {accounts}: {e}")
+        return _cache_store(accounts, records)
 
 
 def write_all_customer_accounts(records: List[Dict[str, str]]) -> bool:
     """Writes all rows to data/customer_accounts.csv atomically."""
     with _DB_LOCK:
-        CUSTOMER_ACCOUNTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = CUSTOMER_ACCOUNTS_FILE.with_suffix(".tmp")
+        accounts = _paths()[1]
+        accounts.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = accounts.with_suffix(".tmp")
         try:
+            fieldnames = _ledger_fieldnames(accounts, CUSTOMER_ACCOUNT_FIELDNAMES, records)
             with open(tmp_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=CUSTOMER_ACCOUNT_FIELDNAMES, extrasaction="ignore")
+                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
                 writer.writeheader()
                 writer.writerows(records)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_path, CUSTOMER_ACCOUNTS_FILE)
+            os.replace(tmp_path, accounts)
             _invalidate_cache()
             return True
         except Exception as e:
-            logger.error(f"Error writing to {CUSTOMER_ACCOUNTS_FILE}: {e}")
+            logger.error(f"Error writing to {accounts}: {e}")
             if tmp_path.exists():
                 try:
                     tmp_path.unlink()
@@ -663,7 +700,7 @@ def remediate_duplicate_charge(
                 target_txn["refunded_at"] = existing_ref_date
 
             if target_acc:
-                target_acc["refund_status"] = f"Refunded (${existing_ref_amt} via Stripe API)"
+                target_acc["refund_status"] = f"Refunded (${existing_ref_amt} in the local demo ledger)"
                 target_acc["refund_id"] = existing_ref_id
                 target_acc["account_balance"] = "$0.00 (Settled)"
                 target_acc["account_status"] = "Active - In Good Standing"
@@ -722,7 +759,7 @@ def remediate_duplicate_charge(
 
         # 2. Update customer account row
         if target_acc:
-            target_acc["refund_status"] = f"Refunded (${effective_refund_amount} via Stripe API)"
+            target_acc["refund_status"] = f"Refunded (${effective_refund_amount} in the local demo ledger)"
             target_acc["refund_id"] = effective_refund_id
             target_acc["account_balance"] = "$0.00 (Settled)"
             target_acc["account_status"] = "Active - In Good Standing"
@@ -739,7 +776,7 @@ def remediate_duplicate_charge(
             target_acc["last_verified_by"] = audit_processor
             target_acc["updated_by"] = audit_processor
             target_acc["last_updated"] = now_str
-            target_acc["notes"] = notes if notes else f"Autonomous override executed by {audit_processor}. Accidental double renewal debit reversed in Stripe API under {effective_refund_id}."
+            target_acc["notes"] = notes if notes else f"Autonomous override executed by {audit_processor}. Accidental double renewal debit marked refunded in the local demo ledger under {effective_refund_id}."
 
         # 3. Synchronous multi-table persistence with rollback
         tx_ok = write_all_transactions(all_txns)
@@ -1156,10 +1193,13 @@ def analyze_customer_transactions(
     ret_id = retained_valid_txn.get("transaction_id", "TXN-9011") if retained_valid_txn else "TXN-9011"
     plan_rate = str(first.get("amount", "49.00"))
 
+    record_summary = ", ".join(
+        f"{row.get('transaction_id')} (${row.get('amount')}, {row.get('status')})" for row in cycle_txns
+    )
     if is_already_refunded:
         summary_text = (
             f"Analyzed data/transactions.csv: Found {len(cycle_txns)} transaction records in {cycle} for {cust_name} ({cust_id}). "
-            f"Records: {', '.join([f'{t.get('transaction_id')} (${t.get('amount')}, {t.get('status')})' for t in cycle_txns])}. "
+            f"Records: {record_summary}. "
             f"Accidental duplicate debit {dup_id} was ALREADY REFUNDED on {ref_date} (Refund ID: {ref_id}). "
             f"Current ledger has 1 valid active renewal ({ret_id}: ${retained_valid_txn.get('amount', plan_rate)}, Settled). "
             f"Account balance is $0.00. No further refund required."
@@ -1167,13 +1207,13 @@ def analyze_customer_transactions(
     elif has_duplicate_settled:
         summary_text = (
             f"Analyzed data/transactions.csv: Found {len(cycle_txns)} transaction records in {cycle} for {cust_name} ({cust_id}). "
-            f"Records: {', '.join([f'{t.get('transaction_id')} (${t.get('amount')}, {t.get('status')})' for t in cycle_txns])}. "
+            f"Records: {record_summary}. "
             f"Multiple settled debits detected in a single monthly cycle. Candidate transaction for refund: {dup_id}."
         )
     else:
         summary_text = (
             f"Analyzed data/transactions.csv: Found {len(cycle_txns)} transaction records in {cycle} for {cust_name} ({cust_id}). "
-            f"Records: {', '.join([f'{t.get('transaction_id')} (${t.get('amount')}, {t.get('status')})' for t in cycle_txns])}. "
+            f"Records: {record_summary}. "
             f"Ledger reconciled. No duplicate charges found."
         )
 
@@ -1182,7 +1222,7 @@ def analyze_customer_transactions(
         {"text": "Accessing internal customer transaction ledger (data/transactions.csv)...", "delay": 650},
         {"text": f"Locating account records for {cust_name} ({cust_id})...", "delay": 700},
         {"text": f"Ledger Audit: Duplicate {dup_id} is {'ALREADY marked as Refunded under ' + ref_id if is_already_refunded else f'verified as redundant second debit in {cycle}'}...", "delay": 750},
-        {"text": f"{'Verifying account balance: Account balance is $0.00 with 1 active renewal ' + ret_id if is_already_refunded else f'Authorizing ${plan_rate} refund reversal via Stripe Gateway API ({ref_id})'}...", "delay": 750},
+        {"text": f"{'Verifying account balance: Account balance is $0.00 with 1 active renewal ' + ret_id if is_already_refunded else f'Authorizing ${plan_rate} refund reversal in the local demo ledger ({ref_id})'}...", "delay": 750},
         {"text": f"{'Duplicate payout prevention active: Secondary refund blocked' if is_already_refunded else f'Updating data/transactions.csv: {dup_id} status set to Refunded'}...", "delay": 700},
         {"text": f"Dispatching refund confirmation receipt ({ref_id}) to {cust_email}...", "delay": 600},
     ]
@@ -1275,7 +1315,7 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
                 {"text": "Accessing internal customer transaction ledger (data/transactions.csv)...", "delay": 650},
                 {"text": "Auditing customer billing cycle records and transaction history...", "delay": 700},
                 {"text": "Verifying transaction settlement status and duplicate charge flags...", "delay": 750},
-                {"text": "Preparing automated refund authorization via Stripe Gateway API...", "delay": 750},
+                {"text": "Preparing automated refund authorization in the local demo ledger...", "delay": 750},
                 {"text": "Updating database records to reflect refund reversal status...", "delay": 700},
                 {"text": "Dispatching customer confirmation notification...", "delay": 600},
             ]
@@ -1600,83 +1640,66 @@ def get_category_complaint_context(category: str, query: str = "") -> Dict[str, 
         }
 
 
+def _verified_console_duplicate(analysis: Dict[str, Any], customer_id: Optional[str], query: Optional[str]) -> bool:
+    """Only modify a duplicate supported by two matching local ledger entries."""
+    if re.search(r"\b(?:do not|don['’]t|never|not|avoid|without)\s+(?:[\w-]+\s+){0,3}refund\b", query or "", re.I):
+        return False
+    duplicate = analysis.get("duplicate_transaction") or {}
+    original = analysis.get("retained_transaction") or {}
+    if not duplicate.get("transaction_id") or duplicate["transaction_id"] == original.get("transaction_id"):
+        return False
+    if not all(duplicate.get(k) and duplicate[k] == original.get(k) for k in ("customer_id", "order_id", "amount", "billing_cycle")):
+        return False
+    if duplicate.get("currency") != original.get("currency") or original.get("status") != "Settled":
+        return False
+    try:
+        amount = float(duplicate["amount"])
+        if not 0 < amount < float("inf"):
+            return False
+    except (TypeError, ValueError):
+        return False
+    if customer_id and customer_id.strip().upper() != duplicate["customer_id"].upper():
+        return False
+    identifiers = {"USR": "customer_id", "ORD": "order_id", "TXN": "transaction_id"}
+    for prefix, field in identifiers.items():
+        refs = re.findall(rf"\b{prefix}-[a-z0-9]+\b", query or "", flags=re.I)
+        if any(ref.upper() != duplicate[field].upper() for ref in refs):
+            return False
+    return True
+
+
 def execute_agent_resolution(
     customer_id: Optional[str] = None,
     query: Optional[str] = None,
-    action: str = "Refund Initiated ($49.00 via Stripe API)",
+    action: str = "Refund Initiated ($49.00 in the local demo ledger)",
     notes: Optional[str] = None,
     category: Optional[str] = None,
     **kwargs,
 ) -> Dict[str, Any]:
-    """
-    Troy (LLM Agent) executes the resolution corresponding to the complaint's category:
-    - For Refunds: Audits and updates duplicate transactions in data/transactions.csv.
-    - For Authentication & Access: Resets 2FA lockout and issues bypass token in customer records.
-    - For Security: Terminates active sessions and updates firewall allowlists.
-    - For Bugs & Errors: Logs defect in engineering queue with reproduction trace.
-    - For other categories: Executes the domain action and records audit logs.
-    """
+    """Update a verified duplicate in the local ledger or return a demo example."""
     _invalidate_cache()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     context = get_category_complaint_context(category=category or "", query=query or "")
 
     # If Refunds or duplicate charge issue
     if context.get("is_refund", False):
-        all_txns = read_all_transactions()
         analysis = analyze_customer_transactions(customer_id=customer_id, query=query)
-        dup_txn = analysis.get("duplicate_transaction")
-        target_txn_id = dup_txn.get("transaction_id") if dup_txn else "TXN-9012"
-        is_already_ref = analysis.get("is_already_refunded", False)
-        existing_ref_id = dup_txn.get("refund_id") or "REF-88219-AUTO" if dup_txn else "REF-88219-AUTO"
-        existing_ref_date = dup_txn.get("refunded_at") or now_str if dup_txn else now_str
-
-        updated_txn: Optional[Dict[str, str]] = None
-
-        if is_already_ref:
-            for row in all_txns:
-                if row.get("transaction_id") == target_txn_id:
-                    updated_txn = row
-                    break
-            logger.info(f"Database verify: Transaction {target_txn_id} was ALREADY refunded under {existing_ref_id}.")
-            res_action = f"Transaction {target_txn_id} was already refunded under {existing_ref_id} on {existing_ref_date}. Reconfirmed without duplicate payout."
-        else:
-            ref_code = analysis.get("refund_id") or "REF-88219-AUTO"
-            for row in all_txns:
-                if row.get("transaction_id") == target_txn_id:
-                    row["status"] = "Refunded"
-                    row["refund_id"] = ref_code
-                    row["refund_amount"] = row.get("amount", "49.00")
-                    row["refunded_at"] = now_str
-                    row["processed_by"] = "Troy (Autonomous Resolution Agent)"
-                    row["notes"] = notes or f"Refunded by Troy: Duplicate subscription charge in {analysis.get('billing_cycle', 'cycle')}."
-                    updated_txn = row
-                    break
-            write_all_transactions(all_txns)
-            logger.info(f"Database updated: Transaction {target_txn_id} marked as Refunded in data/transactions.csv.")
-            res_action = f"Transaction {target_txn_id} Refunded (${updated_txn.get('amount', '49.00') if updated_txn else '49.00'} via Stripe Gateway API)"
-
-        plan_rate = analysis.get("retained_transaction", {}).get("amount", "49.00")
-        active_ref_id = existing_ref_id if is_already_ref else (updated_txn.get("refund_id") if updated_txn else ref_code)
-
-        # Synchronize and update data/customer_accounts.csv
-        accounts = read_all_customer_accounts()
-        target_cust_id = analysis.get("customer_id")
-        for acc in accounts:
-            if acc.get("customer_id") == target_cust_id:
-                acc["refund_status"] = f"Refunded (${plan_rate} via Stripe API)"
-                acc["refund_id"] = active_ref_id
-                acc["account_balance"] = "$0.00 (Settled)"
-                acc["account_status"] = "Active - In Good Standing"
-                acc["duplicate_verified"] = "Yes - Accidental Double Charge Detected"
-                acc["total_billed_this_month"] = f"{plan_rate} (Net after ${plan_rate} refund)"
-                if target_txn_id in acc.get("transaction_2", "") or not acc.get("transaction_2") or acc.get("transaction_2") == "None":
-                    acc["transaction_2"] = f"{target_txn_id} (${plan_rate} on {now_str[:10]}) [Refunded: {active_ref_id}]"
-                acc["last_verified_by"] = "Troy (Autonomous Resolution Agent)"
-                acc["updated_by"] = "Troy (Autonomous Resolution Agent)"
-                acc["last_updated"] = now_str
-                acc["notes"] = f"Autonomous override executed by Troy. Accidental double renewal debit reversed in Stripe API under {active_ref_id}."
-                break
-        write_all_customer_accounts(accounts)
+        if not _verified_console_duplicate(analysis, customer_id, query):
+            return {"ok": False, "status": "needs_review", "category": "Refunds",
+                    "error": "The ledger does not confirm a matching duplicate charge."}
+        dup_txn = analysis["duplicate_transaction"]
+        target_txn_id = dup_txn["transaction_id"]
+        plan_rate = dup_txn["amount"]
+        result = remediate_duplicate_charge(dup_txn["order_id"], target_txn_id, plan_rate, notes=notes or "")
+        if not result["ok"]:
+            return result
+        is_already_ref = result["already_refunded"]
+        active_ref_id = result["refund_id"]
+        existing_ref_date = result["refunded_at"]
+        updated_txn = {**dup_txn, "status": "Refunded", "refund_id": active_ref_id,
+                       "refunded_at": existing_ref_date, "refund_amount": result["refund_amount"],
+                       "notes": result["notes"], "processed_by": result["processed_by"]}
+        res_action = result["message"]
 
         order_num = analysis.get("order_id") or analysis.get("customer", {}).get("reference_order_id", "ORD-88219")
         ticket_num = order_num.replace("ORD-", "")
@@ -1684,6 +1707,8 @@ def execute_agent_resolution(
         return {
             "ok": True,
             "action": "agent_resolve",
+            "execution_mode": "local_demo_ledger",
+            "status": "already_refunded" if is_already_ref else "refunded",
             "category": "Refunds",
             "already_refunded": is_already_ref,
             "is_already_refunded": is_already_ref,
@@ -1698,11 +1723,11 @@ def execute_agent_resolution(
                 "subscription_plan": analysis.get("subscription_plan", "Pro Tier ($49.00/mo)"),
                 "status": "Resolved",
                 "account_status": "Active - In Good Standing",
-                "refund_status": f"Refunded (${plan_rate} via Stripe API)",
+                "refund_status": f"Refunded (${plan_rate} in the local demo ledger)",
                 "refund_id": active_ref_id,
                 "refunded_at": existing_ref_date if is_already_ref else now_str,
                 "account_balance": "$0.00 (Settled)",
-                "customer_notified": f"Yes - Confirmation Dispatched ({active_ref_id})",
+                "customer_notified": False,
             },
             "ticket": {
                 "ticket_id": ticket_num,
@@ -1712,7 +1737,7 @@ def execute_agent_resolution(
                 "status": "Resolved",
                 "resolution_action": res_action,
                 "refund_id": active_ref_id,
-                "customer_notified": f"Yes - Email Dispatched ({active_ref_id})",
+                "customer_notified": False,
             },
             "database_file": "data/transactions.csv",
             "timestamp": now_str,
@@ -1726,13 +1751,13 @@ def execute_agent_resolution(
     cust_email = context.get("customer_email", "customer@enterprise.org")
     plan = context.get("subscription_plan", "Enterprise Tier")
     sys_file = context.get("database_file") or context.get("system_label", "System Directory")
-    res_action = action if (action and "Refund" not in action) else (context.get("action_btn_text") or f"{cat_name} autonomously resolved by Troy under reference {ref_id}.")
-
-    logger.info(f"Autonomous resolution executed for category [{cat_name}] on account {cust_id} ({ref_id}).")
+    res_action = "Demo scenario only. No live action or customer notice was sent."
 
     return {
         "ok": True,
         "action": "agent_resolve",
+        "status": "simulated",
+        "database_updated": False,
         "category": cat_name,
         "reference_id": ref_id,
         "already_refunded": False,
@@ -1743,22 +1768,20 @@ def execute_agent_resolution(
             "customer_name": cust_name,
             "customer_email": cust_email,
             "subscription_plan": plan,
-            "status": "Resolved",
-            "account_status": f"Active - {cat_name} Reconciled",
+            "status": "Demo only",
+            "account_status": "Demo fixture",
             "reference_id": ref_id,
-            "refund_id": ref_id,
-            "account_balance": "$0.00 (Settled)",
-            "customer_notified": f"Yes - Confirmation Dispatched ({ref_id})",
+            "customer_notified": False,
         },
         "ticket": {
             "ticket_id": ref_id,
             "category": cat_name,
             "customer_name": cust_name,
             "customer_email": cust_email,
-            "status": "Resolved",
+            "status": "Demo only",
             "resolution_action": res_action,
             "reference_id": ref_id,
-            "customer_notified": f"Yes - Notice Dispatched ({ref_id})",
+            "customer_notified": False,
         },
         "database_file": sys_file,
         "timestamp": now_str,
@@ -1846,11 +1869,7 @@ def execute_manual_resolution(
     category: Optional[str] = None,
     **kwargs,
 ) -> Dict[str, Any]:
-    """
-    Escalates complaint for human intervention according to its specific category.
-    - For Refunds: Audits and flags duplicate transaction in data/transactions.csv.
-    - For all other categories: Routes ticket to the dedicated specialist queue without touching transactions.csv.
-    """
+    """Flag a verified local transaction or recommend a demo specialist queue."""
     _invalidate_cache()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     context = get_category_complaint_context(category=category or "", query=query or "")
@@ -1873,7 +1892,10 @@ def execute_manual_resolution(
         all_txns = read_all_transactions()
         analysis = analyze_customer_transactions(customer_id=customer_id, query=query)
         dup_txn = analysis.get("duplicate_transaction")
-        target_txn_id = dup_txn.get("transaction_id") if dup_txn else "TXN-9012"
+        if not _verified_console_duplicate(analysis, customer_id, query):
+            return {"ok": False, "status": "needs_review", "category": "Refunds",
+                    "error": "The ledger does not confirm a matching duplicate charge."}
+        target_txn_id = dup_txn["transaction_id"]
 
         for row in all_txns:
             if row.get("transaction_id") == target_txn_id:
@@ -1881,7 +1903,8 @@ def execute_manual_resolution(
                 row["processed_by"] = f"Escalated by Troy -> {assigned_queue}"
                 break
 
-        write_all_transactions(all_txns)
+        if not write_all_transactions(all_txns):
+            return {"ok": False, "error": "Could not flag the transaction for review."}
         logger.info(f"Database updated: Transaction {target_txn_id} flagged for manual review in data/transactions.csv.")
 
         order_num = analysis.get("order_id") or analysis.get("customer", {}).get("reference_order_id", "ORD-88219")
@@ -1890,6 +1913,8 @@ def execute_manual_resolution(
         return {
             "ok": True,
             "action": "manual_resolve",
+            "execution_mode": "local_demo_ledger",
+            "status": "flagged_for_review",
             "category": "Refunds",
             "assigned_queue": assigned_queue,
             "resolution_action": escalation_action,
@@ -1900,14 +1925,14 @@ def execute_manual_resolution(
                 "subscription_plan": analysis.get("subscription_plan", "Pro Tier ($49.00/mo)"),
                 "account_status": account_status,
                 "status": "Escalated",
-                "customer_notified": "Yes - Escalation Notice Sent",
+                "customer_notified": False,
             },
             "ticket": {
                 "ticket_id": ticket_num,
                 "order_id": order_num,
                 "status": "Escalated - Manual Review",
                 "predicted_team": assigned_queue,
-                "customer_notified": "Yes - Escalation Notice Sent",
+                "customer_notified": False,
                 "notes": notes or escalation_action,
                 "resolution_action": escalation_action,
             },
@@ -1925,11 +1950,13 @@ def execute_manual_resolution(
     sys_file = context.get("database_file") or context.get("system_label", "System Directory")
     system_label = context.get("system_label", sys_file)
 
-    logger.info(f"Manual intervention: Ticket {ref_id} for category [{cat_name}] routed to [{assigned_queue}] in {sys_file}.")
+    escalation_action = f"Suggested queue: {assigned_queue}. No live ticket was routed or customer notice sent."
 
     return {
         "ok": True,
         "action": "manual_resolve",
+        "status": "simulated",
+        "database_updated": False,
         "category": cat_name,
         "reference_id": ref_id,
         "assigned_queue": assigned_queue,
@@ -1939,10 +1966,10 @@ def execute_manual_resolution(
             "customer_name": cust_name,
             "customer_email": cust_email,
             "subscription_plan": plan,
-            "status": "Escalated",
-            "account_status": account_status,
+            "status": "Demo only",
+            "account_status": "Demo fixture",
             "reference_id": ref_id,
-            "customer_notified": f"Yes - Escalation Notice Sent ({ref_id})",
+            "customer_notified": False,
         },
         "ticket": {
             "ticket_id": ref_id,
@@ -1950,9 +1977,9 @@ def execute_manual_resolution(
             "order_id": ref_id,
             "customer_name": cust_name,
             "customer_email": cust_email,
-            "status": "Escalated - Manual Review",
+            "status": "Demo only",
             "predicted_team": assigned_queue,
-            "customer_notified": f"Yes - Escalation Notice Sent ({ref_id})",
+            "customer_notified": False,
             "notes": notes or escalation_action,
             "resolution_action": escalation_action,
         },

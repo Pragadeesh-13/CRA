@@ -157,3 +157,7 @@
 - **Suggested split:** 80% train / 10% validation / 10% test (stratified by `category`)
 - **Live demo tickets:** filter `status == 'Open'` (~12,849 rows) for simulated agent actions
 - **Scale-up path:** revert to the 1.5M-row parquet for production model training if needed
+
+### Local precedent index
+
+Run `python -m app.precedents INPUT.csv OUTPUT.sqlite3` to build the optional SQLite FTS5 index. The importer uses `ticket_id`, `issue_description`, `category`, `status`, and `resolution_notes`. Extra CSV columns are ignored. Only resolved or closed tickets with notes are indexed. Set `TROY_PRECEDENT_INDEX` to the index path to enable lookup in triage and the operator console.

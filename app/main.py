@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import time
 from contextlib import asynccontextmanager
@@ -13,11 +14,16 @@ from app.config import settings
 from app.providers import create_driver, provider_base_url, PROVIDER_REGISTRY
 from app.simulation import SimulationState, RoundBarrier, Troy, CouncilOrchestrator, SessionRegistry
 from app.http.sse_manager import SseManager
+from app.providers.jev import configured_jev_model
+from app.http.execution_flags import execution_flag
+from app.http.request_json import read_json_object
+from app.simulation.round_barrier import normalize_round_number
 from app.auth import KeyVault, SessionGuard, requires_key
+from app.auth.firebase import IdentityError, identity_request, verified_user
+from app.auth.session import SESSION_COOKIE, SESSION_SECONDS, is_authenticated_webhook_relay
 from app.database import (
     read_all_transactions,
     read_all_customers,
-    read_all_tickets,
     verify_customer_billing,
     analyze_customer_transactions,
     execute_agent_resolution,
@@ -26,6 +32,10 @@ from app.database import (
 )
 
 START_TIME = time.time()
+
+def _invalid_request(message: str = "Request body must be a JSON object") -> JSONResponse:
+    return JSONResponse(status_code=400, content={"ok": False, "error": message})
+
 
 # ── Request value resolution helpers ────────────────────────────────────────
 # The browser UI legitimately sends empty strings for values it does not
@@ -87,7 +97,7 @@ orchestrator = Troy(
 
 session_registry = SessionRegistry(config=settings, driver=driver)
 key_vault = KeyVault(encryption_secret=settings.key_encryption_secret)
-guard = SessionGuard(mode=settings.auth_mode)
+guard = SessionGuard()
 
 
 @asynccontextmanager
@@ -133,7 +143,9 @@ async def serve_widget():
 @app.middleware("http")
 async def auth_session_middleware(request: Request, call_next):
     path = request.url.path
-    if guard.is_protected_path(path):
+    if is_authenticated_webhook_relay(request):
+        request.state.session_user = None
+    elif guard.is_protected_path(path):
         auth_res = await guard.authenticate(request)
         if not auth_res.get("ok"):
             return JSONResponse(status_code=auth_res.get("status", 401), content={"ok": False, "error": auth_res.get("error", "Unauthorized")})
@@ -149,6 +161,12 @@ def get_active_session(request: Request):
     return session_registry.resolve(user)
 
 
+def _provider_api_key(provider: str, stored: Optional[Dict[str, Any]], explicit: object = None) -> str:
+    stored_key = stored.get("apiKey") if stored and stored.get("provider") == provider else None
+    host_key = settings.llm_api_key if settings.llm_provider == provider else None
+    return _first_non_empty(explicit, stored_key, host_key)
+
+
 async def resolve_session_config(request: Request) -> Dict[str, Any]:
     user = getattr(request.state, "session_user", None)
     stored = await key_vault.get(user)
@@ -156,7 +174,7 @@ async def resolve_session_config(request: Request) -> Dict[str, Any]:
     # older client); fall back to server settings in all of those cases.
     provider = _first_non_empty(stored.get("provider") if stored else None, settings.llm_provider).lower()
     model = _resolve_model(stored.get("model") if stored else None, settings.llm_model)
-    api_key = _first_non_empty(stored.get("apiKey") if stored else None, settings.llm_api_key)
+    api_key = _provider_api_key(provider, stored)
     base_url = provider_base_url(provider) or ""
 
     session_driver = create_driver(
@@ -188,7 +206,7 @@ async def health_check():
         "ok": True,
         "status": "healthy",
         "uptimeSeconds": round(time.time() - START_TIME),
-        "authConfigured": True,
+        "authConfigured": bool(settings.firebase_project_id and settings.firebase_web_api_key),
         "version": "3.0.0",
     }
 
@@ -205,17 +223,18 @@ async def stream_events(request: Request):
     # Initial connection status frame
     p_prov = sess_cfg["provider"]
     p_mod = sess_cfg["model"]
-    init_status = (
-        f"event: status\ndata: "
-        f'{{"message": "Waiting for resolution signal.", "provider": "{p_prov}", "model": "{p_mod}", "connection": "connected"}}\n\n'
-    )
-    await q.put(init_status)
+    initial = {"message": "Waiting for resolution signal.", "provider": p_prov,
+               "model": p_mod, "connection": "connected"}
+    q.put_nowait(f"event: status\ndata: {json.dumps(initial)}\n\n")
 
-    latest = session.orchestrator.get_latest_story()
+    snapshot = session.state.resolution_snapshot()
+    latest = snapshot["story"]
     if latest:
-        await q.put(f"event: topic\ndata: {{\"title\": \"{latest.get('title', '')}\"}}\n\n")
-        import json
-        await q.put(f"event: feed\ndata: {json.dumps(latest)}\n\n")
+        topic = {"title": latest.get("title", "")}
+        q.put_nowait(f"event: topic\ndata: {json.dumps(topic)}\n\n")
+        q.put_nowait(f"event: feed\ndata: {json.dumps(latest)}\n\n")
+    snapshot["running"] = session.is_busy()
+    q.put_nowait(f"event: session_snapshot\ndata: {json.dumps(snapshot)}\n\n")
 
     async def event_generator():
         try:
@@ -226,6 +245,8 @@ async def stream_events(request: Request):
                     # Wait up to 15 seconds for a frame, else yield ping keepalive
                     frame = await asyncio.wait_for(q.get(), timeout=15.0)
                     yield frame
+                    if frame.startswith("event: server_shutdown\n"):
+                        break
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"
         finally:
@@ -235,7 +256,7 @@ async def stream_events(request: Request):
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-store",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
@@ -255,14 +276,14 @@ async def get_ticket(request: Request):
 
 @app.get("/api/customer/verify")
 async def verify_customer(query: Optional[str] = None, customer_id: Optional[str] = None, category: Optional[str] = None):
-    """Analyzes customer transaction and account records across all 11 categories."""
+    """Return local ledger findings or a labeled example for the requested category."""
     from app.database import get_category_complaint_context, analyze_customer_transactions
-    from app.triage import predict_category
+    from app.triage import async_predict_category
 
     cat = (category or "").strip()
     if not cat and query:
         try:
-            pred = predict_category(query)
+            pred = await async_predict_category(query)
             cat = pred.get("predicted_category", str(pred)) if hasattr(pred, "get") else str(pred)
         except Exception:
             pass
@@ -270,14 +291,16 @@ async def verify_customer(query: Optional[str] = None, customer_id: Optional[str
     # Troy's decision: does this ticket require a database mutation /
     # human routing, or is it a direct response? The UI renders
     # action/routing buttons only when action_required is True.
-    intent_info = Troy.evaluate_complaint_intent(query or "", category=cat or None)
+    intent_category = None if query and configured_jev_model() else cat or None
+    intent_info = Troy.evaluate_complaint_intent(query or "", category=intent_category)
     action_required = bool(intent_info.get("requires_db_mutation"))
 
     ctx = get_category_complaint_context(category=cat, query=query or "")
     if not ctx.get("is_refund", False):
         return {
             "ok": True,
-            "verified": True,
+            "verified": False,
+            "execution_mode": "simulation",
             "action_required": action_required,
             "requires_action": action_required,
             "intent": intent_info,
@@ -300,7 +323,7 @@ async def verify_customer(query: Optional[str] = None, customer_id: Optional[str
                 "subscription_plan": ctx.get("subscription_plan"),
                 "account_status": ctx.get("status_pill"),
                 "refund_status": "N/A",
-                "refund_id": ctx.get("reference_id"),
+                "refund_id": None,
                 "account_balance": "$0.00 (Current)",
             },
             "is_already_refunded": False,
@@ -327,30 +350,46 @@ async def get_database_customers():
 
 
 @app.get("/api/database/tickets")
-async def get_database_tickets():
-    tickets = read_all_tickets()
-    return {"ok": True, "tickets": tickets, "count": len(tickets), "database_file": "data/transactions.csv"}
+async def get_database_tickets(request: Request):
+    tickets = get_active_session(request).state.ticket_history()
+    return {"ok": True, "tickets": tickets, "count": len(tickets), "source": "session"}
 
 
 @app.post("/api/resolve/action")
 async def post_resolve_action(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await read_json_object(request)
+    if body is None:
+        return _invalid_request()
 
     action = body.get("action", "agent_resolve")
-    customer_id = body.get("customer_id") or body.get("ticket_id")
-    query = body.get("query")
-    category = body.get("category")
-    custom_action = body.get("action_details") or "Refund Initiated ($49.00 via Stripe API)"
+    if action not in ("agent_resolve", "manual_resolve"):
+        message = "Unknown resolution action"
+        return JSONResponse(status_code=400, content={"ok": False, "error": message, "detail": message})
+
+    fields = ("customer_id", "ticket_id", "query", "category", "action_details", "notes")
+    for field in fields:
+        value = body.get(field)
+        if field == "ticket_id" and type(value) is int and value > 0:
+            body[field] = str(value)
+        elif value is not None and not isinstance(value, str):
+            return _invalid_request(f"{field} must be text.")
+
+    customer_id = _first_non_empty(body.get("customer_id"), body.get("ticket_id")) or None
+    query = (body.get("query") or "").strip() or None
+    category = (body.get("category") or "").strip() or None
+    if not (customer_id or query or category):
+        return _invalid_request("A customer ID, ticket ID, query or category is required.")
+    custom_action = body.get("action_details") or ""
     notes = body.get("notes")
 
     if not category and query:
-        from app.triage import predict_category
+        from app.triage import async_predict_category
         try:
-            pred = predict_category(query)
-            category = pred.get("predicted_category", str(pred)) if hasattr(pred, "get") else str(pred)
+            pred = await async_predict_category(query)
+            category = str(pred)
+            if (category == "Refunds" and configured_jev_model()
+                    and not Troy.evaluate_complaint_intent(query)["is_billing_dispute"]):
+                return _invalid_request("The complaint does not identify a billing dispute for a refund action.")
         except Exception:
             pass
 
@@ -361,7 +400,8 @@ async def post_resolve_action(request: Request):
 
     # Broadcast event so UI or stream clients know database was updated
     session = get_active_session(request)
-    session.sse_manager.broadcast("database_updated", res)
+    if res.get("ok"):
+        session.sse_manager.broadcast("database_updated", res)
 
     return res
 
@@ -369,10 +409,10 @@ async def post_resolve_action(request: Request):
 @app.get("/api/trigger")
 async def manual_trigger(request: Request, title: str = "Manual resolution trigger"):
     session = get_active_session(request)
-    if session.orchestrator.is_running():
+    sess_cfg = await resolve_session_config(request)
+    if session.is_busy():
         return JSONResponse(status_code=409, content={"ok": False, "running": True, "error": "A resolution is already in progress."})
 
-    sess_cfg = await resolve_session_config(request)
     story = {
         "title": title,
         "source": "Manual",
@@ -384,45 +424,53 @@ async def manual_trigger(request: Request, title: str = "Manual resolution trigg
     session.sse_manager.broadcast("topic", {"title": story["title"]})
     session.sse_manager.broadcast("feed", story)
 
-    asyncio.create_task(session.orchestrator.run(story, driver=sess_cfg["driver"]))
+    session.task = asyncio.create_task(session.orchestrator.run(story, driver=sess_cfg["driver"]))
     return {"ok": True, "story": story}
 
 
 @app.post("/api/round/begin")
 async def begin_round(request: Request):
-    body = await request.json()
-    round_num = body.get("round")
+    body = await read_json_object(request, exact_numbers=True)
+    if body is None:
+        return _invalid_request()
+    round_num = normalize_round_number(body.get("round"))
+    if round_num is None:
+        return _invalid_request("Invalid round number")
     session = get_active_session(request)
     result = session.orchestrator.mark_round_begun(round_num)
     if not result.get("ok"):
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid round number"})
+        return _invalid_request("Invalid round number")
     return {"ok": True, "round": result.get("round")}
 
 
 @app.post("/api/next")
 @app.post("/api/ticket/next")
 async def next_ticket(request: Request, query: str = ""):
-    session = get_active_session(request)
-    sess_cfg = await resolve_session_config(request)
-
     body = {}
-    try:
-        body = await request.json()
-    except Exception:
-        pass
+    if await request.body():
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "Request body must be a JSON object"})
+        if not isinstance(body, dict):
+            return JSONResponse(status_code=400, content={"ok": False, "error": "Request body must be a JSON object"})
 
-    ticket_query = (body.get("query") if isinstance(body, dict) and body.get("query") is not None else query) or ""
-    ticket_query = str(ticket_query).strip()
+    ticket_query = body.get("query")
+    if ticket_query is None:
+        ticket_query = query
+    if not isinstance(ticket_query, str):
+        return _invalid_request("Complaint ticket details must be text.")
+    ticket_query = ticket_query.strip()
 
     if not ticket_query:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Complaint ticket details have not been entered."})
 
-    # Empty/whitespace values from the browser (e.g. apiKey: "" for
-    # lmstudio) must fall back to the session config, which itself falls
-    # back to settings.llm_api_key / settings.llm_model from the server
-    # environment — never let "" clobber the configured key or model.
+    session = get_active_session(request)
+    sess_cfg = await resolve_session_config(request)
+
+    # Blank browser values preserve the selected provider's key and configured model.
     provider = _first_non_empty(body.get("provider"), sess_cfg.get("provider"), settings.llm_provider).lower()
-    api_key = _first_non_empty(body.get("apiKey"), sess_cfg.get("apiKey"), settings.llm_api_key)
+    api_key = _provider_api_key(provider, sess_cfg.get("vaultRecord"), body.get("apiKey"))
     model = _resolve_model(body.get("model"), _first_non_empty(sess_cfg.get("model"), settings.llm_model))
     if provider == "lmstudio" and not model:
         model = "qwen/qwen3.5-9b"
@@ -453,10 +501,8 @@ async def next_ticket(request: Request, query: str = ""):
         stream_idle_timeout_ms=settings.llm_stream_idle_timeout_ms,
     )
 
-    if session.orchestrator.is_running():
-        # Allow starting a new resolution by releasing any lingering state
-        session.orchestrator.state.release()
-        await asyncio.sleep(0.02)
+    if session.is_busy():
+        return JSONResponse(status_code=409, content={"ok": False, "running": True, "error": "A resolution is already in progress."})
 
     async def _run_flow():
         session.sse_manager.broadcast("ticket_summarizing", {"query": ticket_query})
@@ -465,7 +511,8 @@ async def next_ticket(request: Request, query: str = ""):
         if story:
             await session.orchestrator.run(story, driver=run_driver)
 
-    asyncio.create_task(_run_flow())
+    session.state.set_story(None)
+    session.task = asyncio.create_task(_run_flow())
     return {"ok": True, "started": True}
 
 
@@ -486,23 +533,25 @@ async def get_config(request: Request):
         "maskedKey": vault_rec.get("maskedKey", ""),
         "persisted": bool(vault_rec.get("persisted", False)),
         "requiresKey": requires_key({"provider": sess_cfg["provider"]}),
-        "running": session.orchestrator.is_running(),
-        "showReasoning": getattr(settings, "show_reasoning", False),
+        "running": session.is_busy(),
+        "showReasoning": session.orchestrator.show_reasoning,
     }
 
 
 @app.post("/api/config")
 async def post_config(request: Request):
     session = get_active_session(request)
-    if session.orchestrator.is_running():
+    if session.is_busy():
         return JSONResponse(status_code=409, content={"ok": False, "running": True, "error": "A resolution is already in progress."})
 
-    body = await request.json()
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Request body must be a JSON object"})
     if not isinstance(body, dict):
         return JSONResponse(status_code=400, content={"ok": False, "error": "Request body must be a JSON object"})
 
-    if "showReasoning" in body:
-        settings.show_reasoning = bool(body["showReasoning"])
+    show_reasoning = execution_flag(body, "showReasoning", "show_reasoning", None)
 
     sess_cfg = await resolve_session_config(request)
     provider = _first_non_empty(body.get("provider"), sess_cfg["provider"], settings.llm_provider).lower()
@@ -510,10 +559,12 @@ async def post_config(request: Request):
         return JSONResponse(status_code=400, content={"ok": False, "error": f"Unsupported provider '{provider}'."})
 
     model = _resolve_model(body.get("model"), _first_non_empty(sess_cfg["model"], settings.llm_model))
-    api_key = _first_non_empty(body.get("apiKey"), sess_cfg["apiKey"], settings.llm_api_key)
+    api_key = _provider_api_key(provider, sess_cfg.get("vaultRecord"), body.get("apiKey"))
 
     user = getattr(request.state, "session_user", None)
     saved = await key_vault.put(user, {"provider": provider, "model": model, "apiKey": api_key})
+    if show_reasoning is not None:
+        session.orchestrator.show_reasoning_override = show_reasoning
 
     session.sse_manager.broadcast("status", {"model": model, "provider": provider})
 
@@ -524,7 +575,7 @@ async def post_config(request: Request):
         "baseUrl": provider_base_url(provider) or "",
         "hasApiKey": bool(api_key),
         "persisted": saved.get("persisted", False),
-        "showReasoning": getattr(settings, "show_reasoning", False),
+        "showReasoning": session.orchestrator.show_reasoning,
     }
 
 
@@ -536,7 +587,7 @@ async def get_models(request: Request, provider: Optional[str] = None):
     if target_provider not in PROVIDER_REGISTRY:
         return JSONResponse(status_code=400, content={"ok": False, "error": f"Unsupported provider '{target_provider}'."})
 
-    api_key = _first_non_empty(request.headers.get("x-api-key"), sess_cfg["apiKey"], settings.llm_api_key)
+    api_key = _provider_api_key(target_provider, sess_cfg.get("vaultRecord"), request.headers.get("x-api-key"))
     temp_driver = create_driver(
         target_provider,
         api_key=api_key,
@@ -553,87 +604,111 @@ async def get_firebase_config():
     proj_id = settings.firebase_project_id
     return {
         "apiKey": settings.firebase_web_api_key,
-        "authDomain": f"{proj_id}.firebaseapp.com",
+        "authMode": "account" if guard.required else "demo",
+        "authDomain": f"{proj_id}.firebaseapp.com" if proj_id else "",
         "projectId": proj_id,
         "storageBucket": f"{proj_id}.appspot.com",
         "messagingSenderId": "109599031175",
     }
 
 
+def _identity_error(exc: IdentityError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status, content={"ok": False, "error": str(exc)})
+
+
+def _signed_in(user: dict) -> JSONResponse:
+    response = JSONResponse({"ok": True, "user": user, "mode": "account"})
+    response.set_cookie(
+        SESSION_COOKIE, guard.create_session(user), max_age=SESSION_SECONDS, path="/",
+        httponly=True, secure=guard.required or settings.public_url.startswith("https://"), samesite="lax",
+    )
+    return response
+
+
 @app.post("/api/auth/signup")
 async def signup(request: Request):
-    body = await request.json()
-    full_name = str(body.get("fullName", "")).strip()
-    email = str(body.get("email", "")).strip()
-    username = str(body.get("username", "")).strip()
-    password = str(body.get("password", ""))
-    confirm_password = str(body.get("confirmPassword", ""))
-
-    if not all([full_name, email, username, password, confirm_password]):
-        return JSONResponse(status_code=400, content={"ok": False, "error": "All fields are required"})
-    if len(password) < 6:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Password must be at least 6 characters"})
-    if password != confirm_password:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Passwords do not match"})
-
-    return JSONResponse(status_code=201, content={"ok": True, "message": "Account created successfully"})
+    body = await read_json_object(request)
+    if body is None:
+        return _invalid_request()
+    full_name, email, password, confirmation = (
+        body.get(field) for field in ("fullName", "email", "password", "confirmPassword")
+    )
+    if (
+        not all(isinstance(value, str) for value in (full_name, email, password, confirmation))
+        or not full_name.strip() or not email.strip() or len(password) < 6 or password != confirmation
+    ):
+        return _invalid_request("Provide a name, email and matching passwords of at least six characters.")
+    full_name, email = full_name.strip(), email.strip()
+    if not guard.required:
+        return JSONResponse(status_code=403, content={
+            "ok": False, "error": "Demo mode does not create accounts. Continue as a guest.",
+        })
+    try:
+        account = await identity_request("signUp", {
+            "email": email, "password": password, "returnSecureToken": True,
+        })
+        token = account.get("idToken")
+        if not token:
+            raise IdentityError(503, "The identity provider did not return a signup token.")
+        await identity_request("update", {"idToken": token, "displayName": full_name})
+        await identity_request("sendOobCode", {"idToken": token, "requestType": "VERIFY_EMAIL"})
+    except IdentityError as exc:
+        return _identity_error(exc)
+    return JSONResponse(status_code=201, content={
+        "ok": True, "message": "Account created. Verify your email before signing in.",
+    })
 
 
 @app.post("/api/auth/login")
 async def login(request: Request):
-    body = await request.json()
-    username = str(body.get("username", "")).strip()
-    password = str(body.get("password", ""))
-
-    if not username or not password:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Username and password are required"})
-
-    # In guest/offline/optional mode, create a local session token
-    user = {
-        "id": f"user_{username}",
-        "username": username,
-        "fullName": username.capitalize(),
-        "email": f"{username}@cra.local",
-    }
-    session_token = f"token_{username}"
-    guard.register_session(session_token, user)
-    response = JSONResponse(status_code=200, content={"ok": True, "user": user})
-    response.set_cookie(key="__session", value=session_token, path="/", max_age=43200, samesite="lax")
-    return response
+    body = await read_json_object(request, allow_empty=not guard.required)
+    if body is None:
+        return _invalid_request()
+    if not guard.required:
+        from app.auth.session import extract_id_token
+        token = extract_id_token(request)
+        if token:
+            guard.revoke_session(token)
+        response = JSONResponse({"ok": True, "mode": "guest", "message": "Continuing as a guest."})
+        response.delete_cookie(SESSION_COOKIE, path="/")
+        return response
+    email, username = body.get("email"), body.get("username")
+    password = body.get("password")
+    if any(value is not None and not isinstance(value, str) for value in (email, username)):
+        return _invalid_request("Email and password are required.")
+    email = (email or username or "").strip()
+    if "@" not in email or not isinstance(password, str) or not password:
+        return _invalid_request("Email and password are required.")
+    try:
+        identity = await identity_request("signInWithPassword", {
+            "email": email, "password": password, "returnSecureToken": True,
+        })
+        token = identity.get("idToken")
+        if not token:
+            raise IdentityError(401, "The identity provider did not verify the credentials.")
+        return _signed_in(await verified_user(token))
+    except IdentityError as exc:
+        return _identity_error(exc)
 
 
 @app.post("/api/auth/google")
 async def google_auth(request: Request):
-    body = await request.json()
-    id_token = body.get("idToken")
-    if not id_token:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "idToken is required"})
-
-    email = str(body.get("email") or "user@gmail.com").strip()
-    full_name = str(body.get("displayName") or "Google User").strip()
-    uid = str(body.get("uid") or f"google_{int(time.time())}").strip()
-    username = email.split("@")[0] if "@" in email else uid
-
-    photo_url = str(body.get("photoURL") or body.get("photoUrl") or "").strip()
-
-    user = {
-        "id": uid,
-        "username": username,
-        "fullName": full_name,
-        "email": email,
-        "photoURL": photo_url,
-    }
-    guard.register_session(id_token, user)
-    response = JSONResponse(status_code=200, content={"ok": True, "user": user, "idToken": id_token})
-    response.set_cookie(key="__session", value=id_token, path="/", max_age=43200, samesite="lax")
-    return response
+    body = await read_json_object(request)
+    if body is None:
+        return _invalid_request()
+    token = body.get("idToken")
+    if not isinstance(token, str) or not token.strip():
+        return _invalid_request("idToken is required.")
+    try:
+        return _signed_in(await verified_user(token, google=True))
+    except IdentityError as exc:
+        return _identity_error(exc)
 
 
 @app.get("/api/auth/me")
 async def get_me(request: Request):
     user = getattr(request.state, "session_user", None)
     if not user:
-        from app.auth.session import extract_id_token
         auth_res = await guard.authenticate(request)
         if auth_res.get("ok") and auth_res.get("user"):
             user = auth_res.get("user")
@@ -651,23 +726,32 @@ async def delete_keys(request: Request):
 
 # ── CRA Model Inference Endpoints ─────────────────────────────────────────────
 
+def _complaint_text(body: dict) -> Optional[str]:
+    for field in ("complaint", "query", "text"):
+        value = body.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            return None
+        if value.strip():
+            return value.strip()
+    return None
+
+
 @app.post("/api/cra/resolve")
 @app.post("/api/cra/triage")
 async def api_cra_resolve(request: Request):
     """
     Executes the full CRA machine learning intelligence pipeline for an incoming complaint.
-    Returns predicted category, top-3 breakdown, extracted entities, top-3 similar precedents,
-    recommended team routing, and estimated SLA hours.
+    Return category scores, extracted entities, static category examples,
+    a recommended team and an SLA estimate.
     """
-    body = {}
-    try:
-        body = await request.json()
-    except Exception:
-        pass
-
-    complaint = str(body.get("complaint") or body.get("query") or body.get("text") or "").strip()
-    if not complaint:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Complaint text is required."})
+    body = await read_json_object(request)
+    if body is None:
+        return _invalid_request()
+    complaint = _complaint_text(body)
+    if complaint is None:
+        return _invalid_request("Complaint text is required.")
 
     from app.triage import async_triage_complaint
     report = await async_triage_complaint(complaint)
@@ -678,17 +762,14 @@ async def api_cra_resolve(request: Request):
 @app.post("/api/cra/predict")
 async def api_cra_classify(request: Request):
     """
-    Fast category classification using the non-ML triage classifier.
+    Return a category and scores from the configured classifier.
     """
-    body = {}
-    try:
-        body = await request.json()
-    except Exception:
-        pass
-
-    complaint = str(body.get("complaint") or body.get("query") or body.get("text") or "").strip()
-    if not complaint:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Complaint text is required."})
+    body = await read_json_object(request)
+    if body is None:
+        return _invalid_request()
+    complaint = _complaint_text(body)
+    if complaint is None:
+        return _invalid_request("Complaint text is required.")
 
     from app.triage import async_predict_category
     result = await async_predict_category(complaint)
@@ -705,7 +786,7 @@ if os.path.isdir(PUBLIC_DIR):
     @app.get("/")
     @app.get("/index.html")
     async def serve_index(request: Request):
-        if settings.auth_mode == "required":
+        if guard.required:
             auth_res = await guard.authenticate(request)
             if not auth_res.get("ok") or not auth_res.get("user"):
                 return RedirectResponse(url="/login.html", status_code=302)
@@ -713,7 +794,7 @@ if os.path.isdir(PUBLIC_DIR):
 
     @app.get("/login.html")
     async def serve_login(request: Request):
-        if settings.auth_mode == "required":
+        if guard.required:
             auth_res = await guard.authenticate(request)
             if auth_res.get("ok") and auth_res.get("user"):
                 return RedirectResponse(url="/", status_code=302)
@@ -721,7 +802,7 @@ if os.path.isdir(PUBLIC_DIR):
 
     @app.get("/signup.html")
     async def serve_signup(request: Request):
-        if settings.auth_mode == "required":
+        if guard.required:
             auth_res = await guard.authenticate(request)
             if auth_res.get("ok") and auth_res.get("user"):
                 return RedirectResponse(url="/", status_code=302)
@@ -734,7 +815,7 @@ if os.path.isdir(PUBLIC_DIR):
         if token:
             guard.revoke_session(token)
         response = RedirectResponse(url="/login.html", status_code=302)
-        response.delete_cookie(key="__session", path="/")
+        response.delete_cookie(key=SESSION_COOKIE, path="/")
         return response
 
     app.mount("/", StaticFiles(directory=PUBLIC_DIR, html=True), name="public")

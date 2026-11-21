@@ -1,5 +1,7 @@
 from typing import Dict, Any, Optional
-from app.auth.crypto import mask_secret
+import secrets
+
+from app.auth.crypto import encrypt_string, decrypt_string, mask_secret
 
 HOSTED_PROVIDERS = {"openrouter", "openai", "anthropic", "groq"}
 
@@ -11,7 +13,7 @@ def requires_key(cfg: Dict[str, Any]) -> bool:
 
 class KeyVault:
     def __init__(self, encryption_secret: Optional[str] = None):
-        self.encryption_secret = encryption_secret
+        self.encryption_secret = encryption_secret or secrets.token_bytes(32)
         # Maps user_id -> record
         self._memory_vault: Dict[str, Dict[str, Any]] = {}
         # Guest fallback slot
@@ -31,7 +33,7 @@ class KeyVault:
         if not rec:
             return None
 
-        api_key = rec.get("apiKey", "")
+        api_key = decrypt_string(rec["sealedKey"], self.encryption_secret) if rec.get("sealedKey") else ""
         return {
             "provider": rec.get("provider", "openrouter"),
             "model": rec.get("model", ""),
@@ -49,7 +51,7 @@ class KeyVault:
         data = {
             "provider": provider,
             "model": model,
-            "apiKey": api_key,
+            "sealedKey": encrypt_string(api_key, self.encryption_secret) if api_key else None,
             "persisted": slot_key != "__guest__",
         }
 

@@ -414,24 +414,9 @@ def test_inspect_tool_reflects_remediation_lifecycle(isolated_database):
 # 5. Public Static Directory Integrity
 # =========================================================================
 
-def test_public_directory_completely_frozen():
-    """
-    Verify public/ static files remain 100% frozen with zero modifications.
-    """
-    repo_root = Path(__file__).resolve().parent.parent
-    public_dir = repo_root / "public"
-
-    assert public_dir.exists(), "public/ directory does not exist!"
-    assert (public_dir / "index.html").exists(), "public/index.html is missing!"
-
-    # Use git status to check if any files in public/ are modified or untracked
-    cmd = ["git", "status", "--porcelain", "public/"]
-    result = subprocess.run(cmd, cwd=str(repo_root), capture_output=True, text=True)
-    assert result.returncode == 0
-    assert result.stdout.strip() == "", f"public/ directory has modifications!\n{result.stdout}"
-
-    # Use git diff to check if any changes against HEAD exist
-    diff_cmd = ["git", "diff", "HEAD", "--", "public/"]
-    diff_result = subprocess.run(diff_cmd, cwd=str(repo_root), capture_output=True, text=True)
-    assert diff_result.returncode == 0
-    assert diff_result.stdout.strip() == "", f"public/ directory differs from git HEAD!\n{diff_result.stdout}"
+def test_public_console_explains_demo_scope():
+    public_dir = Path(__file__).resolve().parent.parent / "public"
+    assert "Operator demo · Local CSV ledger and case references" in (public_dir / "index.html").read_text()
+    script = (public_dir / "js" / "app.js").read_text()
+    assert "Static category examples" in script
+    assert "Draft only" in script

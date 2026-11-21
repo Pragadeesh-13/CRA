@@ -24,24 +24,12 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
 
+from app.http.execution_flags import execution_flag
+from app.http.request_json import (
+    COMPLAINT_FIELDS, EnvelopeError, envelope_error, read_field, read_json_object, resolution_fields,
+)
 from app.sdk.client import TroyClient
-
-
-def _first(body: Dict[str, Any], *keys: str) -> Optional[Any]:
-    for key in keys:
-        if body.get(key) is not None and body.get(key) != "":
-            return body.get(key)
-    return None
-
-
-async def _json_body(request: Request) -> Dict[str, Any]:
-    try:
-        body = await request.json()
-    except Exception:
-        return {}
-    return body if isinstance(body, dict) else {"value": body}
 
 
 def create_troy_router(
@@ -72,37 +60,43 @@ def create_troy_router(
 
     @router.post("/resolve")
     async def resolve(request: Request):
-        body = await _json_body(request)
-        complaint = _first(body, "complaint", "query", "text", "message", "ticket", "description", "body")
-        if not complaint or not str(complaint).strip():
-            return JSONResponse(status_code=400, content={"ok": False, "status": "Failed", "error": "Complaint text is required."})
-        context = body.get("context") if isinstance(body.get("context"), dict) else None
-        result = await troy_client.resolve_ticket(
-            str(complaint),
-            customer_id=_first(body, "customer_id", "customerId"),
-            order_id=_first(body, "order_id", "orderId"),
-            context=context,
-            auto_execute=bool(body.get("auto_execute", body.get("autoExecute", True))),
-            dry_run=bool(body.get("dry_run", body.get("dryRun", False))),
+        body = await read_json_object(request)
+        if body is None:
+            return envelope_error()
+        try:
+            complaint = read_field(body, *COMPLAINT_FIELDS, kind="text", types=(str,))
+            options = resolution_fields(body, request.headers.get("Idempotency-Key"))
+        except EnvelopeError as exc:
+            return envelope_error(str(exc))
+        if not complaint or not complaint.strip():
+            return envelope_error("Complaint text is required.")
+        return await troy_client.resolve_ticket(
+            complaint,
+            **options,
+            auto_execute=execution_flag(body, "auto_execute", "autoExecute", True),
+            dry_run=execution_flag(body, "dry_run", "dryRun", False),
         )
-        return result
 
     @router.post("/tools/execute")
     async def execute_tool(request: Request):
-        body = await _json_body(request)
-        tool_name = _first(body, "tool", "name", "tool_name", "toolName", "action", "action_name")
-        if not tool_name:
-            return JSONResponse(status_code=400, content={"ok": False, "status": "Failed", "error": "Tool name is required."})
-        params = body.get("params")
-        if not isinstance(params, dict):
-            params = body.get("arguments") if isinstance(body.get("arguments"), dict) else body.get("args") if isinstance(body.get("args"), dict) else {}
-        result = troy_client.tool_registry.execute(
-            str(tool_name),
-            params,
-            idempotency_key=_first(body, "idempotency_key", "idempotent_key", "idempotencyKey"),
-            dry_run=body.get("dry_run", body.get("dryRun")),
+        body = await read_json_object(request)
+        if body is None:
+            return envelope_error()
+        try:
+            tool_name = read_field(body, "tool", "name", "tool_name", "toolName", "action", "action_name",
+                                   kind="text", types=(str,))
+            params = read_field(body, "params", "arguments", "args", kind="an object", types=(dict,))
+            key = read_field(body, "idempotency_key", "idempotent_key", "idempotencyKey", kind="text", types=(str,))
+        except EnvelopeError as exc:
+            return envelope_error(str(exc))
+        if not tool_name or not tool_name.strip():
+            return envelope_error("Tool name is required.")
+        return troy_client.tool_registry.execute(
+            tool_name,
+            params or {},
+            idempotency_key=key,
+            dry_run=execution_flag(body, "dry_run", "dryRun", None),
         )
-        return result
 
     return router
 

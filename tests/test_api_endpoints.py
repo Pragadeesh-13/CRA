@@ -38,49 +38,129 @@ def test_firebase_config_endpoint():
     assert "projectId" in data
 
 
-def test_auth_signup_validation():
-    # Incomplete body should return 400
-    res = client.post("/api/auth/signup", json={"fullName": "Test"})
-    assert res.status_code == 400
+def test_demo_auth_does_not_create_an_account_or_accept_forged_identity(monkeypatch):
+    from app.config import settings
 
-    # Successful signup
-    res_ok = client.post(
-        "/api/auth/signup",
-        json={
-            "fullName": "Alice Smith",
-            "email": "alice@example.com",
-            "username": "alice",
-            "password": "secretpassword",
-            "confirmPassword": "secretpassword",
-        },
-    )
-    assert res_ok.status_code == 201
+    monkeypatch.setattr(settings, "auth_mode", "optional")
+    guest = TestClient(app)
+    assert guest.post("/api/auth/signup", json={"fullName": "Test"}).status_code == 400
+    signup = guest.post("/api/auth/signup", json={
+        "fullName": "Alice Smith", "email": "alice@example.com",
+        "password": "secretpassword", "confirmPassword": "secretpassword",
+    })
+    assert signup.status_code == 403
+    login = guest.post("/api/auth/login")
+    assert login.json()["mode"] == "guest"
+    assert "user" not in login.json()
+    assert guest.get("/api/auth/me", headers={"Authorization": "Bearer token_alice"}).status_code == 401
 
 
-def test_auth_login():
-    res = client.post("/api/auth/login", json={"username": "alice", "password": "secretpassword"})
-    assert res.status_code == 200
-    data = res.json()
-    assert data["ok"] is True
-    assert data["user"]["username"] == "alice"
+def _firebase_token(subject, project="test-project", sign_in_provider="password"):
+    import base64
+    import json
+    import time
+
+    claims = base64.urlsafe_b64encode(json.dumps({
+        "aud": project, "iss": f"https://securetoken.google.com/{project}",
+        "sub": subject, "exp": int(time.time()) + 300,
+        "firebase": {"sign_in_provider": sign_in_provider},
+    }).encode()).decode().rstrip("=")
+    # Offline tests mock Identity Toolkit's signature and account verification.
+    return f"mock.{claims}.signature"
 
 
-def test_auth_google_with_photo():
-    res = client.post(
-        "/api/auth/google",
-        json={
-            "idToken": "google_test_token_123",
-            "email": "alice@gmail.com",
-            "displayName": "Alice Google",
-            "uid": "google_uid_123",
-            "photoURL": "https://lh3.googleusercontent.com/a/test-avatar",
-        },
-    )
-    assert res.status_code == 200
-    data = res.json()
-    assert data["ok"] is True
-    assert data["user"]["photoURL"] == "https://lh3.googleusercontent.com/a/test-avatar"
-    assert data["user"]["email"] == "alice@gmail.com"
+def test_required_signup_and_password_authentication(monkeypatch):
+    from app.auth import firebase
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "auth_mode", "required")
+    monkeypatch.setattr(settings, "firebase_project_id", "test-project")
+    monkeypatch.setattr(settings, "firebase_web_api_key", "mock-key")
+    token = _firebase_token("alice-id")
+    client = TestClient(app, base_url="https://testserver")
+    calls = []
+    account = {"localId": "alice-id", "email": "alice@example.com", "emailVerified": False}
+
+    async def provider(operation, body):
+        calls.append(operation)
+        if operation in {"signUp", "signInWithPassword"}:
+            if body["password"] != "secretpassword":
+                raise firebase.IdentityError(401, "The identity provider rejected the credentials.")
+            return {"idToken": token}
+        if operation == "lookup":
+            assert body == {"idToken": token}
+            return {"users": [account]}
+        return {}
+
+    monkeypatch.setattr("app.main.identity_request", provider)
+    monkeypatch.setattr(firebase, "identity_request", provider)
+    credentials = {"email": "alice@example.com", "password": "secretpassword"}
+    created = client.post("/api/auth/signup", json={
+        **credentials, "fullName": "Alice", "confirmPassword": "secretpassword",
+    })
+    assert created.status_code == 201
+    assert calls == ["signUp", "update", "sendOobCode"]
+    assert "set-cookie" not in created.headers
+    assert client.post("/api/auth/login", json={**credentials, "password": "wrong"}).status_code == 401
+    assert client.post("/api/auth/login", json=credentials).status_code == 401
+    account["emailVerified"] = True
+    accepted = client.post("/api/auth/login", json=credentials)
+    assert accepted.status_code == 200
+    cookie = accepted.headers["set-cookie"]
+    assert "HttpOnly" in cookie and "Secure" in cookie and "SameSite=lax" in cookie
+    assert token not in cookie
+    assert client.get("/api/auth/me").json()["user"]["id"] == "firebase:test-project:alice-id"
+    client.get("/logout", follow_redirects=False)
+    assert client.get("/api/auth/me").status_code == 401
+
+
+def test_required_google_uses_verified_profile_and_isolates_keys(monkeypatch):
+    from app.auth import firebase
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "auth_mode", "production")
+    monkeypatch.setattr(settings, "firebase_project_id", "test-project")
+    monkeypatch.setattr(settings, "firebase_web_api_key", "mock-key")
+    alice_token = _firebase_token("alice", sign_in_provider="google.com")
+    bob_token = _firebase_token("bob", sign_in_provider="google.com")
+
+    async def provider(operation, body):
+        assert operation == "lookup"
+        subject = {alice_token: "alice", bob_token: "bob"}.get(body["idToken"])
+        if subject is None:
+            raise firebase.IdentityError(401, "The identity provider rejected the credentials.")
+        return {"users": [{
+            "localId": subject, "email": f"{subject}@example.com", "emailVerified": True,
+            "photoUrl": f"https://example.com/{subject}.png",
+        }]}
+
+    monkeypatch.setattr(firebase, "identity_request", provider)
+    alice = TestClient(app, base_url="https://testserver")
+    bob = TestClient(app, base_url="https://testserver")
+    anonymous = TestClient(app, base_url="https://testserver")
+    forged = anonymous.post("/api/auth/google", json={
+        "idToken": _firebase_token("mallory", sign_in_provider="google.com"), "uid": "alice",
+    })
+    assert forged.status_code == 401 and "set-cookie" not in forged.headers
+    wrong_project = anonymous.post("/api/auth/google", json={
+        "idToken": _firebase_token("alice", project="other-project", sign_in_provider="google.com"),
+    })
+    assert wrong_project.status_code == 401
+    approved = alice.post("/api/auth/google", json={
+        "idToken": alice_token, "uid": "bob", "email": "bob@example.com", "photoURL": "fake",
+    })
+    assert approved.json()["user"] == {
+        "id": "firebase:test-project:alice", "fullName": "alice@example.com",
+        "email": "alice@example.com", "photoURL": "https://example.com/alice.png",
+    }
+    assert alice.post("/api/config", json={
+        "provider": "openrouter", "model": "alice-private-model", "apiKey": "test-key",
+    }).status_code == 200
+    assert bob.post("/api/auth/google", json={"idToken": bob_token}).status_code == 200
+    assert alice.get("/api/config").json()["model"] == "alice-private-model"
+    assert bob.get("/api/config").json()["model"] != "alice-private-model"
+    assert anonymous.get("/api/config", headers={"Authorization": "Bearer alice"}).status_code == 401
+    assert anonymous.delete("/api/auth/keys").status_code == 401
 
 
 def test_static_index_serving():
@@ -90,27 +170,18 @@ def test_static_index_serving():
     assert "feed-list" in res.text
 
 
-def test_auth_required_redirect():
+def test_auth_required_redirect(monkeypatch):
     from app.config import settings
-    orig_mode = settings.auth_mode
-    try:
-        settings.auth_mode = "required"
-        fresh_client = TestClient(app)
-        # Unauthenticated request to / should redirect to /login.html
-        res = fresh_client.get("/", follow_redirects=False)
-        assert res.status_code == 302
-        assert res.headers["location"] == "/login.html"
 
-        # Login page itself should be accessible without redirect loop
-        res_login = fresh_client.get("/login.html", follow_redirects=False)
-        assert res_login.status_code == 200
-
-        # Authenticated request with cookie should serve index.html
-        res_auth = fresh_client.get("/", cookies={"__session": "token_alice"}, follow_redirects=False)
-        assert res_auth.status_code == 200
-        assert "Agentic complaint resolution system" in res_auth.text
-    finally:
-        settings.auth_mode = orig_mode
+    monkeypatch.setattr(settings, "auth_mode", "required")
+    fresh_client = TestClient(app)
+    response = fresh_client.get("/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/login.html"
+    assert fresh_client.get("/login.html", follow_redirects=False).status_code == 200
+    assert fresh_client.get("/?token=token_alice", follow_redirects=False).status_code == 302
+    fresh_client.cookies.set("__session", "token_alice")
+    assert fresh_client.get("/", follow_redirects=False).status_code == 302
 
 
 def test_lmstudio_config_and_driver(monkeypatch):
@@ -267,10 +338,92 @@ def test_resolve_action_agent_and_manual():
         data_manual = res_manual.json()
         assert data_manual["ok"] is True
         assert data_manual["action"] == "manual_resolve"
-        assert "Escalated" in data_manual["customer"]["account_status"]
+        assert data_manual["status"] == "simulated"
+        assert data_manual["database_updated"] is False
+        assert data_manual["customer"]["customer_notified"] is False
     finally:
         if original_content is not None:
             DATABASE_FILE.write_text(original_content, encoding="utf-8")
 
 
 
+
+
+def test_config_rejects_malformed_json_without_changing_preferences():
+    client = TestClient(app, raise_server_exceptions=False)
+    before = client.get("/api/config").json()
+    response = client.post("/api/config", content='{"showReasoning":', headers={"Content-Type": "application/json"})
+    assert response.status_code == 400
+    assert response.json()["error"] == "Request body must be a JSON object"
+    assert client.get("/api/config").json() == before
+
+
+def test_ticket_intake_rejects_invalid_body_even_with_query_parameter(monkeypatch):
+    from app import main
+    from app.simulation.session_registry import SessionRegistry
+
+    registry = SessionRegistry(main.settings, main.session_registry.driver)
+    monkeypatch.setattr(main, "session_registry", registry)
+    started = []
+
+    async def summarise(query, driver):
+        started.append(query)
+
+    monkeypatch.setattr(registry.default_session.orchestrator, "summarise_ticket", summarise)
+    client = TestClient(app, raise_server_exceptions=False)
+    for invalid in ('{"query":', '[]'):
+        result = client.post("/api/next", params={"query": "Synthetic query"}, content=invalid,
+                             headers={"Content-Type": "application/json"})
+        assert result.status_code == 400
+        assert result.json()["error"] == "Request body must be a JSON object"
+    assert registry.default_session.task is None
+    assert not started
+
+    result = client.post("/api/next", params={"query": "Synthetic query"})
+    assert result.status_code == 200
+    assert result.json()["started"] is True
+
+
+def test_config_reports_pending_ticket_task_as_busy(monkeypatch):
+    from types import SimpleNamespace
+
+    from app import main
+    from app.simulation.session_registry import SessionRegistry
+
+    registry = SessionRegistry(main.settings, main.session_registry.driver)
+    monkeypatch.setattr(main, "session_registry", registry)
+    monkeypatch.setattr(registry.default_session, "task", SimpleNamespace(done=lambda: False))
+    client = TestClient(app)
+    assert client.get("/api/config").json()["running"] is True
+    response = client.post("/api/config", json={"provider": "lmstudio", "showReasoning": True})
+    assert response.status_code == 409
+    assert registry.default_session.orchestrator.show_reasoning_override is None
+
+
+def test_ticket_intake_rejects_non_text_queries_before_starting(monkeypatch):
+    from app import main
+    from app.simulation.session_registry import SessionRegistry
+
+    registry = SessionRegistry(main.settings, main.session_registry.driver)
+    monkeypatch.setattr(main, "session_registry", registry)
+    started = []
+
+    async def summarise(query, driver):
+        started.append(query)
+
+    monkeypatch.setattr(registry.default_session.orchestrator, "summarise_ticket", summarise)
+    client = TestClient(app)
+    for path in ("/api/next", "/api/ticket/next"):
+        for value in (["Duplicate charge"], {"complaint": "Duplicate charge"}, 42, True, False):
+            response = client.post(path, params={"query": "Legacy query"}, json={"query": value})
+            assert response.status_code == 400
+            assert response.json()["error"] == "Complaint ticket details must be text."
+            assert registry.default_session.task is None
+    assert started == []
+
+    with client:
+        response = client.post("/api/ticket/next", params={"query": "Legacy query"},
+                               json={"query": "  Duplicate charge  "})
+        assert response.status_code == 200
+        assert response.json()["started"] is True
+    assert started == ["Duplicate charge"]

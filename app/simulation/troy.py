@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import time
+from uuid import uuid4
 from typing import List, Dict, Any, Optional, Tuple
 
 from app.utils.sanitizer import sanitize_model_output
@@ -20,6 +21,7 @@ from app.simulation.state import SimulationState
 from app.simulation.round_barrier import RoundBarrier
 from app.http.sse_manager import SseManager
 from app.providers.base_driver import BaseLlmDriver
+from app.providers.jev import configured_jev_model
 from app.prompts.ticket_prompts import (
     build_ticket_title_prompt,
     build_ticket_summary_prompt,
@@ -69,7 +71,6 @@ def _template_refunds(ref_id, team, sla_hours, conf_pct, report, cat_ctx=None):
             f"- **Database Analysis**: Analyzed `data/transactions.csv` and confirmed customer account is already reconciled. The duplicate charge ({dup_id}: ${dup_amt}) was **ALREADY REFUNDED** on {ref_date} under Refund ID **{active_ref}**. The single active renewal ({ret_id}: ${ret_amt}) remains valid, and customer balance is **$0.00 (Settled)**.\n\n"
             f"### Root Cause Analysis & Precedent Alignment\n"
             f"- **Root Cause**: Payment gateway retry created duplicate authorization which was caught and refunded during automated settlement.\n"
-            f"- **Precedent Match**: 99.1% match with historical re-inquiry cases where customer needed reconfirmation of an already-processed refund receipt.\n\n"
             f"### Customer Communication Strategy\n"
             f"\"Hello {c_first}, thank you for checking in. We verified our transaction records in the ledger and confirm that the duplicate charge of ${dup_amt} ({dup_id}) was already refunded to your original payment method under Refund ID {active_ref}. Depending on your bank's posting cycle, this typically reflects within 3-5 business days. Your subscription remains active with zero overdue balance.\"\n\n"
             f"### Internal Routing & Next Action Steps\n"
@@ -84,7 +85,6 @@ def _template_refunds(ref_id, team, sla_hours, conf_pct, report, cat_ctx=None):
         f"- **Database Analysis**: Analyzed `data/transactions.csv` and confirmed 2 settled transaction records in {c_cycle} for {c_name} ({ret_id}: ${ret_amt} & {dup_id}: ${dup_amt}). An accidental second debit of ${dup_amt} is confirmed.\n\n"
         f"### Root Cause Analysis & Precedent Alignment\n"
         f"- **Root Cause**: Payment gateway retry triggered an accidental double debit for Order #{order_num} during subscription renewal.\n"
-        f"- **Precedent Match**: 98.4% match with historical case where immediate autonomous refund settled the account balance.\n\n"
         f"### Customer Communication Strategy\n"
         f"\"Hello {c_first}, thank you for reaching out. We analyzed our billing transaction records and confirmed an accidental duplicate charge of ${dup_amt} occurred during renewal. We have reversed transaction {dup_id} immediately under refund reference {active_ref}.\"\n\n"
         f"### Internal Routing & Next Action Steps\n"
@@ -102,7 +102,6 @@ def _template_authentication(ref_id, team, sla_hours, conf_pct, report):
         f"- **IAM Directory Audit**: Inspected Identity & Access logs for Sarah Jenkins (`USR-08914`). Carrier SMS gateway timeout triggered automated lockout after 3 unacknowledged OTP requests.\n\n"
         f"### Root Cause Analysis & Precedent Alignment\n"
         f"- **Root Cause**: Upstream cellular carrier SMS delivery degradation prevented one-time-passcode receipt, triggering automated rate-limiting lockout.\n"
-        f"- **Precedent Match**: 96.8% match with known identity provider gateway timeouts resolved via emergency authentication bypass.\n\n"
         f"### Customer Communication Strategy\n"
         f"\"Hello Sarah, thank you for contacting support. We detected an SMS delivery timeout from our telecom gateway that caused your account to temporarily lock. We have reset your failed login counter and dispatched a secure 2FA emergency bypass link (Reference: {ref_id}) to your verified corporate email so you can log in immediately.\"\n\n"
         f"### Internal Routing & Next Action Steps\n"
@@ -120,7 +119,6 @@ def _template_billing(ref_id, team, sla_hours, conf_pct, report):
         f"- **Invoicing Audit**: Analyzed customer billing profile for Elena Rostova (`USR-14309`). Verified pending requirement for validated German VAT/Tax ID documentation on Team Tier renewal.\n\n"
         f"### Root Cause Analysis & Precedent Alignment\n"
         f"- **Root Cause**: Corporate reorganization required updated VAT identifier and official stamped tax receipt for regional accounting compliance.\n"
-        f"- **Precedent Match**: 94.2% match with enterprise tax documentation adjustments resolved via automated invoice regeneration.\n\n"
         f"### Customer Communication Strategy\n"
         f"\"Hello Elena, thank you for reaching out. We have validated your German VAT/Tax identifier through the European VIES system and updated your organization profile. An updated, stamped tax invoice (Reference: {ref_id}) has been generated and dispatched to your email for accounting records.\"\n\n"
         f"### Internal Routing & Next Action Steps\n"
@@ -138,7 +136,6 @@ def _template_bugs(ref_id, team, sla_hours, conf_pct, report):
         f"- **Crash Telemetry Audit**: Sentry error logs correlated unhandled HTTP 500 exception with stream buffer timeout in application release v2.4.1.\n\n"
         f"### Root Cause Analysis & Precedent Alignment\n"
         f"- **Root Cause**: Memory allocation threshold reached during large payload stream serialization, causing worker process to drop connection.\n"
-        f"- **Precedent Match**: 95.7% match with known release v2.4.1 buffer exceptions; resolved via direct batch export fallback.\n\n"
         f"### Customer Communication Strategy\n"
         f"\"Hello, thank you for reporting this issue. Our telemetry captured the 500 error and we have filed high-priority engineering ticket {ref_id}. As an immediate workaround, please use the direct web portal export option, which bypasses the impacted stream buffer. We will notify you as soon as patch v2.4.2 is deployed.\"\n\n"
         f"### Internal Routing & Next Action Steps\n"
@@ -156,7 +153,6 @@ def _template_data_sync(ref_id, team, sla_hours, conf_pct, report):
         f"- **Replication Audit**: Analyzed real-time sync queue. Detected timestamp divergence between mobile offline cache and cloud replica cluster.\n\n"
         f"### Root Cause Analysis & Precedent Alignment\n"
         f"- **Root Cause**: Temporary client network interruption delayed local queue push, leading to automated conflict hold during three-way state reconciliation.\n"
-        f"- **Precedent Match**: 97.3% match with offline synchronization delays resolved via server-side differential merge.\n\n"
         f"### Customer Communication Strategy\n"
         f"\"Hello, thank you for reporting this sync issue. We examined your sync queue and identified an offline timestamp conflict. We have initiated a cloud state reconciliation merge ({ref_id}) to guarantee zero data loss. Your devices are now re-synchronized with all recent entries intact.\"\n\n"
         f"### Internal Routing & Next Action Steps\n"
@@ -174,7 +170,6 @@ def _template_integrations(ref_id, team, sla_hours, conf_pct, report):
         f"- **API Gateway Audit**: Gateway telemetry confirmed HTTP 429 burst rate-limiting and 12 dead-lettered webhook payloads on customer endpoint.\n\n"
         f"### Root Cause Analysis & Precedent Alignment\n"
         f"- **Root Cause**: Webhook receiver experienced temporary latency, causing retry backoff to exhaust rate-limit token bucket.\n"
-        f"- **Precedent Match**: 98.1% match with API gateway rate-limit spikes resolved via token bucket reset and automated dead-letter replay.\n\n"
         f"### Customer Communication Strategy\n"
         f"\"Hello David, thank you for contacting developer support. We audited your webhook endpoint and noticed it exceeded burst quotas during a batch update. We have reset your rate-limit token bucket and queued an automatic replay for all 12 delayed webhooks under reference {ref_id}. Full API documentation and retry guidelines have been dispatched to your email.\"\n\n"
         f"### Internal Routing & Next Action Steps\n"
@@ -192,7 +187,6 @@ def _template_onboarding(ref_id, team, sla_hours, conf_pct, report):
         f"- **Workspace Audit**: Examined workspace setup for Michael Scott (`USR-09148`). Customer requested administrative guidance on role delegation and team member provisioning.\n\n"
         f"### Root Cause Analysis & Precedent Alignment\n"
         f"- **Root Cause**: New workspace administrator navigating role-based permission configuration and initial team onboarding.\n"
-        f"- **Precedent Match**: 99.4% match with standard administrator setup requests resolved via interactive self-service walkthroughs.\n\n"
         f"### Customer Communication Strategy\n"
         f"\"Hello Michael, welcome aboard! To invite team members and set permissions: navigate to Workspace Settings > Team > Invite Members, enter their emails, and select Admin or Member roles. We have sent an interactive visual setup guide and member invitation template (Reference: {ref_id}) to your email to help you complete setup in under 5 minutes.\"\n\n"
         f"### Internal Routing & Next Action Steps\n"
@@ -210,7 +204,6 @@ def _template_performance(ref_id, team, sla_hours, conf_pct, report):
         f"- **APM Metrics Audit**: Datadog APM verified search query response times degraded to 42.8s against normal SLA baseline of 1.5s.\n\n"
         f"### Root Cause Analysis & Precedent Alignment\n"
         f"- **Root Cause**: Index cache fragmentation and worker thread pool saturation following concurrent unindexed queries.\n"
-        f"- **Precedent Match**: 96.1% match with search cluster latency spikes resolved via cache invalidation and index re-partitioning.\n\n"
         f"### Customer Communication Strategy\n"
         f"\"Hello, thank you for alerting us to this latency. Our performance monitoring confirmed search query delays across your team's workspace. We have invalidated the stale index cache and optimized query routing (Job ID: {ref_id}). Query response times have normalized to 380ms across all dashboards.\"\n\n"
         f"### Internal Routing & Next Action Steps\n"
@@ -228,7 +221,6 @@ def _template_security(ref_id, team, sla_hours, conf_pct, report):
         f"- **SOC Telemetry Audit**: Cloudflare WAF detected unverified IP authentication anomaly and unauthorized privilege elevation request.\n\n"
         f"### Root Cause Analysis & Precedent Alignment\n"
         f"- **Root Cause**: Out-of-region geolocation mismatch triggered automated high-risk anomaly alert on active session token.\n"
-        f"- **Precedent Match**: 98.9% match with suspicious authentication anomalies handled via immediate token invalidation.\n\n"
         f"### Customer Communication Strategy\n"
         f"\"Hello Sarah, security is our top priority. We detected an unauthorized sign-in attempt from an unverified IP address. As an automated protective measure, we have revoked all active sessions across your account (Incident Reference: {ref_id}). Please use the secure one-time verification link sent to your registered email to confirm your identity and reset your password.\"\n\n"
         f"### Internal Routing & Next Action Steps\n"
@@ -246,7 +238,6 @@ def _template_subscription(ref_id, team, sla_hours, conf_pct, report):
         f"- **Entitlements Audit**: Inspected subscription schedule for Michael Scott (`USR-09148`). Customer requested plan downgrade to Starter Tier ($29/mo) prior to renewal.\n\n"
         f"### Root Cause Analysis & Precedent Alignment\n"
         f"- **Root Cause**: Automated renewal billed at legacy tier ($79.00) due to pending processing of downgrade request submitted before renewal cutoff.\n"
-        f"- **Precedent Match**: 97.8% match with renewal plan adjustments resolved via retroactive credit and tier realignment.\n\n"
         f"### Customer Communication Strategy\n"
         f"\"Hello Michael, thank you for reaching out. We confirmed that you requested a plan downgrade prior to renewal. We have updated your account to the Starter Tier ($29.00/mo) and credited the $50.00 prorated difference back to your account ledger under Reference {ref_id}. Future renewals will be billed at the correct $29 rate.\"\n\n"
         f"### Internal Routing & Next Action Steps\n"
@@ -264,7 +255,6 @@ def _template_account_management(ref_id, team, sla_hours, conf_pct, report):
         f"- **Account Directory Audit**: Audited customer master directory records for Elena Rostova (`USR-14309`). Verified administrative request for account consolidation and primary contact update.\n\n"
         f"### Root Cause Analysis & Precedent Alignment\n"
         f"- **Root Cause**: Organizational restructuring requiring consolidation of subsidiary accounts under primary corporate domain.\n"
-        f"- **Precedent Match**: 98.2% match with account consolidation workflows verified via corporate domain authentication.\n\n"
         f"### Customer Communication Strategy\n"
         f"\"Hello Elena, thank you for contacting account support. We verified your corporate signing authority and successfully consolidated your organization accounts under reference {ref_id}. Your primary contact details and billing ownership have been updated in our master directory.\"\n\n"
         f"### Internal Routing & Next Action Steps\n"
@@ -315,6 +305,13 @@ class ComplaintResolutionOrchestrator:
         self.speech_delay = speech_delay
         self.verdict_delay = verdict_delay
         self._run_driver: Optional[BaseLlmDriver] = None
+        self.show_reasoning_override: Optional[bool] = None
+
+    @property
+    def show_reasoning(self) -> bool:
+        if self.show_reasoning_override is not None:
+            return self.show_reasoning_override
+        return getattr(self.config, "show_reasoning", False) is True
 
     def is_running(self) -> bool:
         return self.state.is_running()
@@ -629,9 +626,10 @@ class ComplaintResolutionOrchestrator:
             return True
         except Exception as e:
             logger.error(f"Resolution encountered an error: {e}", exc_info=True)
-            self.sse.broadcast(
-                "error", {"message": "Resolution encountered an error. Check settings and retry."}
-            )
+            message = "Resolution encountered an error. Check settings and retry."
+            failure = {"run_id": uuid4().hex, "error": message}
+            self.state.complete_resolution(story, failure)
+            self.sse.broadcast("error", {**failure, "message": message})
             return False
         finally:
             self._run_driver = None
@@ -677,7 +675,7 @@ class ComplaintResolutionOrchestrator:
 
         from app.triage import triage_complaint
 
-        # Run triage asynchronously without blocking event loop
+        # Run triage asynchronously without blocking the event loop.
         try:
             report = await asyncio.to_thread(triage_complaint, complaint_text)
         except Exception as e:
@@ -703,7 +701,13 @@ class ComplaintResolutionOrchestrator:
         # mutation / human routing, or is it a direct response Troy can
         # resolve on its own? The UI renders action/routing buttons only
         # when Troy signals action_required is True.
-        intent_info = await self.evaluate_complaint_intent_with_llm(complaint_text, category=pred_cat)
+        jev_enabled = bool(configured_jev_model())
+        intent_info = await self.evaluate_complaint_intent_with_llm(
+            complaint_text, category=None if jev_enabled else pred_cat,
+        )
+        if jev_enabled and not self.evaluate_complaint_intent(complaint_text)["is_billing_dispute"]:
+            intent_info.update(intent="direct_response", requires_db_mutation=False,
+                               is_billing_dispute=False, action_required=False, requires_action=False)
         action_required = bool(intent_info.get("requires_db_mutation"))
         report["intent"] = intent_info
         report["action_required"] = action_required
@@ -714,7 +718,7 @@ class ComplaintResolutionOrchestrator:
         self.sse.broadcast(
             "system",
             {
-                "message": f"Intake Triage: Classified as '{pred_cat}' ({conf_pct:.1f}% confidence) | Routed to: {team} | Estimated SLA: {sla_hours}h",
+                "message": f"Intake Triage: Classified as '{pred_cat}' ({conf_pct:.1f}% confidence) | Recommended team: {team} | Estimated SLA: {sla_hours}h",
             },
         )
 
@@ -734,164 +738,62 @@ class ComplaintResolutionOrchestrator:
         ]
 
         similar_cases = report.get("similar_cases", [])
-        if similar_cases:
-            prompt_lines.append("HISTORICAL PRECEDENTS & RESOLUTION NOTES (from Knowledge Base):")
+        if similar_cases and report.get("case_source") == "static_category_examples":
+            prompt_lines.append("ILLUSTRATIVE CATEGORY EXAMPLES (static fixtures, not retrieved cases):")
             for idx, c in enumerate(similar_cases, 1):
                 prompt_lines.append(
-                    f"{idx}. Precedent [{c.get('similarity', 0.0)*100:.1f}% Match]: \"{c.get('description', '')}\"\n"
+                    f"{idx}. Example: \"{c.get('description', '')}\"\n"
                     f"   Outcome / Action: {c.get('resolution', '')}"
                 )
             prompt_lines.append("")
 
         from app.database import (
+            execute_agent_resolution,
             get_category_complaint_context,
-            analyze_customer_transactions,
-            inspect_account_and_transactions,
-            remediate_duplicate_charge,
         )
 
-        # Step 2: Autonomous Intent Evaluation (Feature 10)
-        # Troy's intent is the single source of truth for whether this
-        # ticket needs database work / routing — the UI renders
-        # action/routing buttons only when it does (action_required).
-        intent_info = await self.evaluate_complaint_intent_with_llm(complaint_text, category=pred_cat)
         is_refund_domain = intent_info.get("intent") == "database_remediation"
         cat_ctx = get_category_complaint_context(category=pred_cat, query=complaint_text)
-
         if is_refund_domain:
-            self.sse.broadcast(
-                "system",
-                {"message": "Autonomous Intent Decision: Billing dispute / duplicate charge detected. Initiating database audit..."},
+            local_action = execute_agent_resolution(
+                customer_id=intent_info.get("customer_id"), query=complaint_text, category="Refunds",
             )
-            # Generic DB Inspection (Feature 6 & 12)
-            txn_analysis = inspect_account_and_transactions(
-                customer_id=intent_info.get("customer_id"),
-                query=complaint_text,
+            if local_action.get("ok") and not local_action.get("already_refunded"):
+                self.sse.broadcast("database_updated", local_action)
+            refund_status = (
+                "already_refunded" if local_action.get("ok") and local_action.get("already_refunded")
+                else "refunded" if local_action.get("ok") else "needs_review"
             )
-            if not txn_analysis.get("ok"):
-                txn_analysis = analyze_customer_transactions(query=complaint_text, customer_id=intent_info.get("customer_id"))
-
-            is_already_refunded = txn_analysis.get("is_already_refunded", False)
-            dup_txn = txn_analysis.get("duplicate_transaction") or {}
-            # Rely solely on dynamic extraction — no hardcoded order /
-            # transaction fallbacks. intent_info and txn_analysis both
-            # carry the ids extracted from the complaint / ledger.
-            dup_id = (
-                dup_txn.get("transaction_id")
-                or intent_info.get("transaction_id")
-                or txn_analysis.get("transaction_id")
-            )
-
-            dup_amt = dup_txn.get("amount", "49.00") if isinstance(dup_txn, dict) else "49.00"
-            effective_order_id = (
-                intent_info.get("order_id")
-                or txn_analysis.get("order_id")
-                or (dup_txn.get("order_id") if isinstance(dup_txn, dict) else None)
-                or ""
-            )
-
-            # Execute Generic Remediation Tool autonomously (Feature 12)
-            if not is_already_refunded and dup_id:
-                rem_res = remediate_duplicate_charge(
-                    order_id=effective_order_id,
-                    duplicate_txn_id=dup_id,
-                    refund_amount=dup_amt,
-                    processed_by="Troy (Autonomous Resolution Agent)",
-                    notes=f"Autonomous refund executed by Troy for order {effective_order_id}.",
-                )
-                self.sse.broadcast(
-                    "system",
-                    {"message": f"Autonomous DB Tool Executed: remediate_duplicate_charge({effective_order_id}, {dup_id}) -> Status: Refunded"},
-                )
-                self.sse.broadcast("database_updated", rem_res)
-                is_already_refunded = True
-                ref_id = rem_res.get("refund_id") or (f"REF-{effective_order_id.replace('ORD-', '')}-AUTO" if effective_order_id else f"REF-{str(dup_id).replace('TXN-', '')}-AUTO")
-                ref_date = rem_res.get("refunded_at") or time.strftime("%b %d, %Y")
-                # Re-query audit state so prompt reflects is_already_refunded = True
-                re_audit = inspect_account_and_transactions(customer_id=intent_info.get("customer_id"), query=complaint_text)
-                if re_audit.get("ok"):
-                    txn_analysis = re_audit
-                    is_already_refunded = True
-            else:
-                ref_id = txn_analysis.get("refund_id") or (f"REF-{effective_order_id.replace('ORD-', '')}-AUTO" if effective_order_id else (f"REF-{str(dup_id).replace('TXN-', '')}-AUTO" if dup_id else ""))
-                ref_date = txn_analysis.get("refunded_at") or "Oct 21, 2026"
-                self.sse.broadcast(
-                    "system",
-                    {"message": f"Autonomous DB Audit: Duplicate transaction {dup_id} was already refunded under {ref_id}. Reconfirming ledger status."},
-                )
-
-            cat_ctx["txn_analysis"] = txn_analysis
-            cat_ctx["is_refund"] = True
-            cat_ctx["reference_id"] = ref_id
-
-            c_name = txn_analysis.get("customer_name", "Alex Morgan")
-            c_id = txn_analysis.get("customer_id", "USR-10492")
-            c_email = txn_analysis.get("customer_email", "alex.morgan@gmail.com")
-            plan = txn_analysis.get("subscription_plan", "Pro Tier ($49.00/mo)")
-            cycle = txn_analysis.get("billing_cycle", "October 2026")
-            txns = txn_analysis.get("transactions", [])
-
-            prompt_lines.append("DATABASE TRANSACTION RECORDS AUDIT (from data/transactions.csv):")
-            prompt_lines.append(f"- Customer: {c_name} (ID: {c_id} | Email: {c_email})")
-            prompt_lines.append(f"- Subscription Plan: {plan} | Billing Cycle: {cycle}")
-            prompt_lines.append(f"- Transaction Records in {cycle} ({len(txns)} found):")
-            for t in txns:
-                prompt_lines.append(f"  * {t.get('transaction_id')}: ${t.get('amount')} {t.get('currency', 'USD')} on {t.get('transaction_date')} [Status: {t.get('status')}] - {t.get('payment_method')}")
-            
-            if is_already_refunded:
-                prompt_lines.append(f"- Autonomous Audit Finding: Accidental duplicate debit {dup_id} (${dup_amt}) was ALREADY REFUNDED on {ref_date} under Refund ID {ref_id}.")
-                prompt_lines.append(f"- Ledger Status: Customer has 1 settled active renewal record and 1 refunded duplicate record. Current ledger balance is $0.00 in good standing.")
-                prompt_lines.append(f"- Decision: Duplicate refund prevented. Reconfirm existing refund status (ID: {ref_id}) and advise customer of payment processing timeline.\n")
-                prompt_lines.append(
-                    "Please deliver your formal Complaint Resolution Assessment as Troy, Lead Complaint Resolution Agent. "
-                    f"Explicitly cite your analysis of data/transactions.csv: confirm that duplicate transaction {dup_id} was ALREADY REFUNDED under Refund ID {ref_id}, that the account balance is settled at $0.00, and that no duplicate charge or payout is needed. "
-                )
-            else:
-                prompt_lines.append(f"- Autonomous Audit Finding: Customer has {len(txns)} transaction records in a single billing cycle for a monthly subscription.")
-                prompt_lines.append(f"- Decision: Authorize immediate refund specifically for duplicate transaction {dup_id} (${dup_amt}), updating its status to 'Refunded' in data/transactions.csv.\n")
-                prompt_lines.append(
-                    "Please deliver your formal Complaint Resolution Assessment as Troy, Lead Complaint Resolution Agent. "
-                    f"Explicitly cite your analysis of the transaction records in data/transactions.csv and your decision to refund the redundant transaction ({dup_id}). "
-                )
+            report["execution_mode"] = "local_demo_ledger"
+            report["execution_status"] = refund_status
+            self.sse.broadcast("system", {
+                "message": f"Local demo ledger refund outcome: {refund_status.replace('_', ' ')}. Payment and notification services are disconnected.",
+            })
+            cat_ctx.update(is_refund=True, local_action=local_action, reference_id=local_action.get("refund_id"))
+            prompt_lines.extend([
+                f"LOCAL DEMO LEDGER OUTCOME: {refund_status}.",
+                f"Ledger refund reference: {local_action.get('refund_id') or 'none'}.",
+                "Only a local CSV result is available. Do not claim a payment reversal, email delivery, or a ticket-system update.",
+            ])
         else:
-            self.sse.broadcast(
-                "system",
-                {"message": f"Autonomous Intent Decision: Direct inquiry for '{pred_cat}'. Resolving without database mutation."},
-            )
+            report["execution_mode"] = "simulation"
+            report["execution_status"] = "demo_only"
+            self.sse.broadcast("system", {
+                "message": f"Demo scenario for '{pred_cat}'. Shows example diagnostics and proposed actions.",
+            })
             cat_ctx["is_refund"] = False
-
-            # Domain-specific prompt for the other 10 categories
-            prompt_lines.append(f"INTERNAL SYSTEM & TELEMETRY AUDIT ({cat_ctx.get('system_label', 'Master Records')}):")
-            prompt_lines.append(f"- Account ID: {cat_ctx.get('customer_id')} | Customer: {cat_ctx.get('customer_name')} ({cat_ctx.get('customer_email')})")
-            prompt_lines.append(f"- Subscription Tier: {cat_ctx.get('subscription_plan')}")
-            prompt_lines.append(f"- Current Diagnostic Status: {cat_ctx.get('status_pill')}")
-            prompt_lines.append(f"- Domain Findings: {cat_ctx.get('system_details')}")
-            prompt_lines.append(f"- Recommended Autonomous Action: {cat_ctx.get('action_btn_text')} (Reference: {cat_ctx.get('reference_id')})\n")
-
             prompt_lines.append(
-                f"DOMAIN RESOLUTION INSTRUCTIONS:\n"
-                f"You are Troy, Lead Complaint Resolution Agent. This is a '{pred_cat}' complaint ticket routed to {team}.\n"
-                f"CRITICAL CONSTRAINT: This ticket is strictly about '{pred_cat}'. Do NOT mention database transactions, bank charges, refunds, payment ledgers, CSV files, or transactions.csv.\n"
-                f"Address the technical and operational root cause of the {pred_cat} issue directly. "
-                f"Explain the concrete actions taking place under reference ID {cat_ctx.get('reference_id')}, and reassure the customer with clear next steps."
+                "DEMO SCENARIO: No live systems or customer notices are connected. "
+                "Present diagnostics and actions as examples or proposals. Do not claim any action occurred."
             )
 
         base_context_str = "\n".join(prompt_lines)
 
-        if is_refund_domain:
-            system_instruction = (
-                "You are Troy, Lead Autonomous Complaint Resolution Agent (CRA) specializing in billing disputes and refund resolutions. "
-                "You analyze customer transaction records in data/transactions.csv to reconcile accounts, prevent duplicate debits, and execute or reconfirm refunds. "
-                "Provide a structured, authoritative, empathetic, and definitive resolution. Never mention 'policy simulation' or 'council'."
-            )
-        else:
-            system_instruction = (
-                f"You are Troy, Lead Autonomous Complaint Resolution Agent (CRA) specializing in {pred_cat}. "
-                f"You diagnose technical issues using ML model findings, system telemetry, and historical precedents. "
-                f"CRITICAL CONSTRAINT: Do NOT mention transactions, refunds, charges, payments, CSV files, or transactions.csv for this ticket. "
-                f"Provide a structured, authoritative, empathetic, and definitive resolution tailored strictly to this {pred_cat} complaint. "
-                "Never mention 'policy simulation' or 'council'."
-            )
+        system_instruction = (
+            f"You are Troy, preparing a demo assessment for a {pred_cat} complaint. "
+            "Use only the supplied evidence and outcome. Refer to static category examples as illustrations. "
+            "Use conditional language for suggested actions. Do not invent external actions, notifications, historical matches or similarity scores."
+        )
 
         troy_agent = {"name": "Troy", "state": f"Assigned: {team}"}
 
@@ -907,7 +809,7 @@ class ComplaintResolutionOrchestrator:
                 "prompt": (
                     "TASK: Deliver ONLY Section 1: Executive Assessment & Category Confirmation.\n"
                     "FORMAT REQUIREMENT: Start directly with the bold heading '### **Executive Assessment & Category Confirmation**'.\n"
-                    "CONTENT REQUIREMENT: Formally confirm the complaint category, assigned department, SLA timeline, and audit findings from database records or system telemetry. State definitively whether the customer's assertion is valid or already reconciled.\n"
+                    "CONTENT REQUIREMENT: Formally confirm the complaint category, assigned department, SLA timeline, and audit findings from database records or system telemetry. Distinguish confirmed local records from example material.\n"
                     "CRITICAL CONSTRAINT: Do NOT include Root Cause, Customer Communication, or Internal Routing. Stop after completing this section."
                 ),
             },
@@ -921,7 +823,7 @@ class ComplaintResolutionOrchestrator:
                 "prompt": (
                     "TASK: Deliver ONLY Section 2: Root Cause Analysis & Precedent Alignment.\n"
                     "FORMAT REQUIREMENT: Start directly with the bold heading '### **Root Cause Analysis & Precedent Alignment**'.\n"
-                    "CONTENT REQUIREMENT: Explain the root cause of the customer issue and explicitly cite alignment with the historical precedents retrieved from the knowledge base.\n"
+                    "CONTENT REQUIREMENT: Explain supported findings and label category examples as illustrations. Leave the root cause open when evidence is incomplete.\n"
                     "CRITICAL CONSTRAINT: Do NOT repeat Section 1. Do NOT include Customer Communication or Internal Routing. Stop after completing this section."
                 ),
             },
@@ -935,7 +837,7 @@ class ComplaintResolutionOrchestrator:
                 "prompt": (
                     "TASK: Deliver ONLY Section 3: Customer Communication Strategy.\n"
                     "FORMAT REQUIREMENT: Start directly with the bold heading '### **Customer Communication Strategy**'.\n"
-                    "CONTENT REQUIREMENT: Write the exact empathetic message to be sent to the customer. Include '**Subject:** [Subject line]', personalized greeting with customer name, clear reassuring explanation of actions taken or already resolved, and professional sign-off from Troy.\n"
+                    "CONTENT REQUIREMENT: Write an empathetic draft for operator review. Include '**Subject:** [Subject line]', personalized greeting with customer name, clear reassuring explanation of actions taken or already resolved, and professional sign-off from Troy.\n"
                     "CRITICAL CONSTRAINT: Do NOT repeat previous sections. Do NOT output internal routing. Stop after completing this section."
                 ),
             },
@@ -949,7 +851,7 @@ class ComplaintResolutionOrchestrator:
                 "prompt": (
                     "TASK: Deliver ONLY Section 4: Internal Routing & Next Action Steps.\n"
                     "FORMAT REQUIREMENT: Start directly with the bold heading '### **Internal Routing & Next Action Steps**'.\n"
-                    "CONTENT REQUIREMENT: State the internal department routing, database ledger updates or system actions executed, internal ticket status update, and concrete next operational steps.\n"
+                    "CONTENT REQUIREMENT: State the recommended department and next steps. Describe local ledger changes only when confirmed.\n"
                     "CRITICAL CONSTRAINT: Do NOT repeat previous sections. Stop after completing this section."
                 ),
             },
@@ -966,6 +868,24 @@ class ComplaintResolutionOrchestrator:
             cat_ctx=cat_ctx,
         )
         fallback_sections = self._split_fallback_into_sections(fallback_full)
+        if is_refund_domain:
+            outcome_text = {
+                "already_refunded": "The local demo ledger already marks the charge as refunded.",
+                "refunded": "The duplicate was marked refunded in the local demo ledger.",
+                "needs_review": "The local ledger could not confirm the refund. Review the transaction evidence.",
+            }[refund_status]
+            fallback_sections = {
+                "executive": f"Category: {pred_cat}. Recommended team: {team}. {outcome_text}",
+                "root_cause": outcome_text,
+                "customer_comms": "Draft for review. " + outcome_text,
+                "internal_routing": "Review the local ledger outcome before contacting the customer. No payment or notification was sent.",
+            }
+            fallback_full = outcome_text
+        else:
+            fallback_sections = {
+                key: "Demo example only. No live diagnosis, action, or notification was performed.\n\n" + value
+                for key, value in fallback_sections.items()
+            }
 
         conversation_history: List[Dict[str, str]] = [
             {"role": "system", "content": system_instruction},
@@ -1047,29 +967,32 @@ class ComplaintResolutionOrchestrator:
             conversation_history.append({"role": "assistant", "content": sec_output})
 
         full_resolution_text = "\n\n".join(section_results.values())
-        resolution_summary = f"Complaint ticket categorized as '{pred_cat}' ({conf_pct:.1f}% confidence) and routed to {team}."
-        self.sse.broadcast(
-            "resolution_end",
-            {
-                "summary": resolution_summary,
-                "category": pred_cat,
-                "confidence": conf_pct,
-                "team": team,
-                "sla_hours": sla_hours,
-                # Troy's decision: the UI renders action/routing buttons
-                # only when action_required is True.
-                "action_required": action_required,
-                "requires_action": action_required,
-                "intent": intent_info,
-                "cra_report": report,
-                "full_resolution": full_resolution_text,
-                "sections": section_results,
-            },
-        )
+        resolution_summary = f"Complaint ticket categorized as '{pred_cat}' ({conf_pct:.1f}% confidence) with {team} recommended."
+        resolution = {
+            "run_id": uuid4().hex,
+            "summary": resolution_summary,
+            "category": pred_cat,
+            "confidence": conf_pct,
+            "team": team,
+            "sla_hours": sla_hours,
+            # Troy's decision: the UI renders action/routing buttons
+            # only when action_required is True.
+            "action_required": action_required,
+            "requires_action": action_required,
+            "intent": intent_info,
+            "cra_report": report,
+            "execution_mode": report["execution_mode"],
+            "execution_status": report["execution_status"],
+            "full_resolution": full_resolution_text,
+            "sections": section_results,
+        }
+        self.state.complete_resolution(story, resolution)
+        self.sse.broadcast("resolution_end", resolution)
         self.sse.broadcast(
             "council_end",
             {
                 "round": 0,
+                "run_id": resolution["run_id"],
                 "summary": resolution_summary,
                 "impacts": {
                     "positive": [
@@ -1083,6 +1006,8 @@ class ComplaintResolutionOrchestrator:
                 "requires_action": action_required,
                 "intent": intent_info,
                 "cra_report": report,
+                "execution_mode": report["execution_mode"],
+                "execution_status": report["execution_status"],
                 "full_resolution": full_resolution_text,
                 "sections": section_results,
             },
@@ -1102,7 +1027,7 @@ class ComplaintResolutionOrchestrator:
         """
         use_stream = getattr(self.config, "llm_stream", True) is not False
         # For LM Studio / local models: reasoning is shown only if explicitly enabled
-        show_reasoning = getattr(self.config, "show_reasoning", False) is True
+        show_reasoning = self.show_reasoning
 
         result = await execute_agent_with_reasoning(
             driver=self._active_driver(),

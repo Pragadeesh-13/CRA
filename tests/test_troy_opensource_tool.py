@@ -173,6 +173,67 @@ class TestDirectUsage:
         assert result["dry_run"] is True
         assert all(t["status"] != "Refunded" for t in adapter.get_transactions("USR-10492"))
 
+    @pytest.mark.parametrize(
+        "auto_execute, outcome, status, ok, summary, message",
+        [
+            (False, None, "not_executed", True,
+             "automatic execution is disabled", "The refund has not been issued."),
+            (True, {"ok": False, "status": "Failed"}, "action_failed", False,
+             "automatic refund failed", "Your case needs manual review."),
+            (True, {"ok": True, "status": "Queued"}, "action_unconfirmed", False,
+             "automatic refund could not be confirmed", "Your case needs manual review."),
+        ],
+    )
+    def test_unconfirmed_refund_stays_open(
+        self, monkeypatch, auto_execute, outcome, status, ok, summary, message
+    ):
+        adapter = _seeded_adapter()
+        calls = []
+
+        def execute_action(action, params):
+            calls.append(action)
+            return dict(outcome)
+
+        monkeypatch.setattr(adapter, "execute_action", execute_action)
+        agent = troy.Troy(adapter=adapter, driver=object())
+        result = agent.resolve(DUPLICATE, auto_execute=auto_execute)
+
+        assert calls == (["remediate_duplicate_charge"] if auto_execute else [])
+        assert result["status"] == status
+        assert result["ok"] is ok
+        assert result["action_status"] == (outcome["status"] if auto_execute else "not_executed")
+        assert summary in result["summary"]
+        assert result["report"]["summary"] == result["summary"]
+        assert message in result["customer_communication"]
+        assert not any("closed" in step or "confirmation" in step for step in result["report"]["next_steps"])
+        assert result["report"]["actions_taken"] == ([result["action_result"]] if auto_execute else [])
+        assert result["action_taken"] == (result["action_result"] if auto_execute else None)
+        assert all(t["status"] == "Settled" for t in adapter.get_transactions("USR-10492"))
+        audit = adapter.audit_trail[-1]
+        assert (audit["status"], audit["ok"]) == (status, ok)
+
+    def test_custom_refund_tool_can_use_default_completion_status(self):
+        agent = troy.Troy(adapter=_seeded_adapter(), driver=object())
+
+        def refund(**params):
+            return {"ok": True, "refund_id": "REF-CUSTOM"}
+
+        agent.register_tool(refund, name="issue_refund", replace=True)
+        result = agent.resolve(DUPLICATE)
+        assert result["ok"] is True
+        assert result["status"] == "resolved"
+        assert result["action_status"] == "Completed"
+        assert result["refund_id"] == "REF-CUSTOM"
+
+    def test_refund_requiring_approval_stays_pending(self):
+        adapter = _seeded_adapter()
+        agent = troy.Troy(adapter=adapter, driver=object(), policies={"auto_refund_limit": 10})
+        result = agent.resolve(DUPLICATE)
+        assert result["ok"] is True
+        assert result["status"] == "pending_approval"
+        assert "refund pending approval" in result["summary"]
+        assert all(t["status"] == "Settled" for t in adapter.get_transactions("USR-10492"))
+
     def test_agent_tool_decorator(self):
         agent = troy.Troy()
         tool_name = f"reset_quota_{uuid.uuid4().hex[:6]}"
@@ -328,3 +389,35 @@ class TestCliInProcess:
         assert args.dry_run is False
         assert args.json_output is False
         assert args.serve is False
+
+
+@pytest.mark.parametrize("contents", ["false", "0", "[]", "''"])
+def test_public_yaml_config_rejects_non_mapping_root(tmp_path, contents):
+    config = tmp_path / "troy.yaml"
+    config.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="YAML SaaS config must be a mapping at the top level"):
+        troy.load_config(config)
+
+
+def test_public_yaml_config_allows_empty_document(tmp_path):
+    config = tmp_path / "troy.yaml"
+    config.write_text("# Use Troy defaults\n", encoding="utf-8")
+
+    assert troy.load_config(config) == troy.load_config()
+
+
+@pytest.mark.parametrize("from_file", [False, True])
+def test_cli_reports_malformed_json_config_without_traceback(tmp_path, from_file):
+    contents = '{"product_name": "synthetic-value",}'
+    config = tmp_path / "troy.json"
+    if from_file:
+        config.write_text(contents, encoding="utf-8")
+
+    result = _run_cli("How do I export my data?", "--json", "--config", str(config) if from_file else contents)
+
+    assert result.returncode == 2
+    assert "invalid JSON in --config at line 1, column" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "synthetic-value" not in result.stderr
+    assert result.stdout == ""

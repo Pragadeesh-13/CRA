@@ -622,6 +622,8 @@ class TestSaaSApi:
         assert res.status_code == 200
         data = res.json()
         assert data["ok"] is True
+        assert data["status"] == "needs_review"
+        assert data["action_result"] is None
         assert data["provider"] == "zendesk"
         assert "charged twice" in data["complaint"].lower()
         assert data["normalized"]["customer_id"] == "USR-10492"
@@ -810,6 +812,8 @@ class TestShopifySlackWebhooks:
         assert res.status_code == 200
         data = res.json()
         assert data["ok"] is True
+        assert data["status"] == "needs_review"
+        assert data["action_result"] is None
         assert data["provider"] == "shopify"
         assert "charged twice" in data["complaint"].lower()
         assert data["normalized"]["customer_id"] == "USR-10492"
@@ -847,3 +851,157 @@ class TestShopifySlackWebhooks:
         assert "slack" in data["capabilities"]["webhooks"]
         assert "shopify" in data["supported_providers"]
         assert "slack" in data["supported_providers"]
+
+
+@pytest.mark.parametrize("body", ["Upstream maintenance", None, [{"customer_id": "USR-10492"}]])
+def test_rest_customer_lookup_rejects_non_object_success_body(body):
+    class Client:
+        def get(self, url, **kwargs):
+            return _FakeResponse(body)
+
+    adapter = RestApiDataAdapter("https://saas.example.com", http_client=Client())
+
+    assert adapter.get_customer("USR-10492") is None
+    assert adapter.audit_trail[-1]["found"] is False
+
+
+def test_rest_transactions_accepts_bare_list_of_records():
+    transaction = {"transaction_id": "TXN-9011", "customer_id": "USR-10492"}
+
+    class Client:
+        def get(self, url, **kwargs):
+            return _FakeResponse([transaction, None])
+
+    adapter = RestApiDataAdapter("https://saas.example.com", http_client=Client())
+
+    assert adapter.get_transactions("USR-10492") == [transaction]
+
+
+def test_rest_failure_envelopes_do_not_supply_lookup_records():
+    customer = {"customer_id": "USR-10492"}
+    transaction = {"transaction_id": "TXN-9011", **customer}
+
+    class Client:
+        ok = False
+
+        def get(self, url, **kwargs):
+            payload = {"customer": customer} if "/customers/" in url else {"transactions": [transaction]}
+            return _FakeResponse({"ok": self.ok, **payload})
+
+    client = Client()
+    adapter = RestApiDataAdapter("https://saas.example.com", http_client=client)
+    assert (adapter.get_customer("USR-10492"), adapter.get_transactions("USR-10492")) == (None, [])
+    assert adapter.audit_trail[-1]["found"] is False
+
+    client.ok = True
+    assert adapter.get_customer("USR-10492") == customer
+    assert adapter.get_transactions("USR-10492") == [transaction]
+
+
+@pytest.mark.parametrize("primary, fallback", [("transactions", "data"), ("transactions", "items"), ("data", "items")])
+def test_rest_transactions_preserves_explicit_empty_list(primary, fallback):
+    stale_record = {"transaction_id": "TXN-9011", "customer_id": "USR-10492"}
+
+    class Client:
+        payload = {primary: [], fallback: [stale_record]}
+
+        def get(self, url, **kwargs):
+            return _FakeResponse(self.payload)
+
+    client = Client()
+    adapter = RestApiDataAdapter("https://saas.example.com", http_client=client)
+    assert adapter.get_transactions("USR-10492") == []
+
+    client.payload = {fallback: [stale_record]}
+    assert adapter.get_transactions("USR-10492") == [stale_record]
+
+
+def test_default_csv_adapter_applies_custom_transaction_filter(isolated_database):
+    path = isolated_database["transactions_file"]
+    path.write_text(
+        "transaction_id,customer_id,order_id,status,currency\n"
+        "TXN-1001,USR-1001,ORD-1001,Settled,USD\n"
+        "TXN-1002,USR-1001,ORD-1001,Settled,EUR\n"
+        "TXN-1003,USR-1002,ORD-1002,Settled,USD\n",
+        encoding="utf-8",
+    )
+    adapter = CsvDataAdapter()
+
+    matches = adapter.get_transactions("USR-1001", status="settled", currency="USD")
+    assert [row["transaction_id"] for row in matches] == ["TXN-1001"]
+    assert adapter.get_transactions("", currency="GBP") == []
+
+
+def test_in_memory_transaction_mapping_supplies_missing_transaction_id():
+    keyed = {"customer_id": "USR-1001", "amount": "15.00"}
+    explicit = {"transaction_id": "TXN-1002", "customer_id": "USR-1001"}
+    adapter = InMemoryDataAdapter(transactions={"TXN-1001": keyed, "seed-label": explicit})
+
+    assert adapter.get_transactions("", transaction_id="TXN-1001") == [
+        {**keyed, "transaction_id": "TXN-1001"},
+    ]
+    assert adapter.get_transactions("", transaction_id="TXN-1002") == [explicit]
+    assert adapter.get_transactions("", transaction_id="seed-label") == []
+    assert "transaction_id" not in keyed
+
+
+def test_explicit_csv_transaction_filters_match_default_csv_semantics(isolated_database):
+    path = isolated_database["transactions_file"]
+    path.write_text(
+        "transaction_id,customer_id,order_id,status,currency\n"
+        "txn-1001,USR-1001,ORD-1001,Settled,USD\n"
+        "txn-1002,USR-1002,ORD-1002,Settled,USD\n",
+        encoding="utf-8",
+    )
+    filters = {"transaction_id": "TXN-1001", "status": "settled", "currency": "USD"}
+
+    for adapter in (CsvDataAdapter(), CsvDataAdapter(transactions_file=path)):
+        rows = adapter.get_transactions("", **filters)
+        assert [row["transaction_id"] for row in rows] == ["txn-1001"]
+        assert adapter.get_transactions("USR-1002", **filters) == []
+        assert adapter.get_transactions("", **{**filters, "currency": "EUR"}) == []
+
+
+@pytest.mark.parametrize("params", [{}, {"transaction_id": "   "}])
+def test_in_memory_refund_requires_transaction_id(params):
+    row = {"customer_id": "USR-1001", "amount": "15.00", "status": "Settled"}
+    adapter = InMemoryDataAdapter(transactions=[row])
+
+    result = adapter.execute_action("issue_refund", params)
+
+    assert result["ok"] is False
+    assert result["status"] == "Failed"
+    assert adapter.get_transactions("USR-1001") == [row]
+
+
+def test_in_memory_refund_replay_preserves_existing_refund_metadata():
+    row = {
+        "transaction_id": "TXN-1001", "customer_id": "USR-1001", "amount": "15.00",
+        "status": " refunded ", "refund_id": "REF-ORIGINAL", "refund_amount": "15.00",
+        "refunded_at": "2026-10-20T08:14:22Z",
+    }
+    adapter = InMemoryDataAdapter(transactions=[row])
+
+    result = adapter.execute_action("issue_refund", {
+        "transaction_id": "TXN-1001", "refund_id": "REF-NEW", "refund_amount": "10.00",
+    })
+
+    assert result["is_already_refunded"] is True
+    assert result["refund_id"] == "REF-ORIGINAL"
+    assert result["refund_amount"] == "15.00"
+    assert adapter.get_transactions("USR-1001") == [row]
+
+
+def test_in_memory_refund_rejects_ambiguous_transaction_id():
+    rows = [
+        {"transaction_id": "TXN-1001", "customer_id": "USR-1001", "amount": "15.00", "status": "Settled"},
+        {"transaction_id": " txn-1001 ", "customer_id": "USR-1002", "amount": "25.00", "status": "Settled"},
+    ]
+    adapter = InMemoryDataAdapter(transactions=rows)
+
+    result = adapter.execute_action("issue_refund", {"transaction_id": "TXN-1001"})
+
+    assert result["ok"] is False
+    assert result["status"] == "Failed"
+    assert "ambiguous" in result["error"].lower()
+    assert adapter.get_transactions("") == rows

@@ -17,11 +17,11 @@ if (loginForm) {
     event.preventDefault();
     setFeedback("");
 
-    const username = document.getElementById("username")?.value?.trim() || "";
+    const email = document.getElementById("email")?.value?.trim() || "";
     const password = document.getElementById("password")?.value || "";
 
-    if (!username || !password) {
-      setFeedback("Please enter your username and password.");
+    if (!email || !password) {
+      setFeedback("Please enter your email and password.");
       return;
     }
 
@@ -44,7 +44,7 @@ if (loginForm) {
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ email, password }),
       });
       const payload = await response.json();
 
@@ -57,9 +57,6 @@ if (loginForm) {
         localStorage.setItem("agenticCouncilUser", JSON.stringify(payload.user));
       }
 
-      if (payload?.idToken) {
-        localStorage.setItem("agenticCouncilIdToken", payload.idToken);
-      }
 
       setFeedback("Login successful. Redirecting...", "success");
       setTimeout(() => {
@@ -223,3 +220,21 @@ if (brandLogoVideo) {
   brandLogoVideo.muted = true;
   brandLogoVideo.play().catch(() => {});
 }
+
+fetch("/api/auth/firebase-config").then((response) => response.json()).then((config) => {
+  if (config.authMode !== "demo") return;
+  for (const element of loginForm.querySelectorAll(".field-group, .login-btn, .auth-divider")) {
+    element.style.display = "none";
+  }
+  document.getElementById("account-signup").hidden = true;
+  document.getElementById("demo-access").hidden = false;
+}).catch(() => {});
+
+document.getElementById("continue-as-guest")?.addEventListener("click", async () => {
+  const response = await fetch("/api/auth/login", { method: "POST" });
+  if (response.ok) {
+    localStorage.removeItem("agenticCouncilUser");
+    localStorage.removeItem("agenticCouncilIdToken");
+    window.location.href = "/";
+  }
+});

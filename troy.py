@@ -446,7 +446,11 @@ def main(argv: Optional[list] = None) -> int:
     if not args.complaint or not str(args.complaint).strip():
         parser.error("a complaint is required (or use --serve / --version / --help)")
 
-    agent = Troy(config=args.config) if args.config else Troy()
+    try:
+        config = load_config(args.config) if args.config else None
+    except json.JSONDecodeError as exc:
+        parser.error(f"invalid JSON in --config at line {exc.lineno}, column {exc.colno}: {exc.msg}")
+    agent = Troy(config=config)
     result = agent.resolve(
         str(args.complaint),
         auto_execute=bool(args.auto_execute),
@@ -471,6 +475,8 @@ def main(argv: Optional[list] = None) -> int:
         summary = result.get("summary")
         if summary:
             print(f"\nSummary: {summary}")
+        for step in result.get("report", {}).get("next_steps", []):
+            print(f"Next step: {step}")
     return 0 if result.get("ok") else 1
 
 

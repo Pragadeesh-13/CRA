@@ -62,10 +62,12 @@
     return node;
   }
 
+  var mounted;
+
   function init(userConfig) {
     var config = Object.assign({}, readConfig(), userConfig || {});
-    if (document.getElementById('troy-embed-root')) {
-      return { open: openDrawer, close: closeDrawer, config: config };
+    if (mounted) {
+      return mounted;
     }
 
     var root = el('div');
@@ -162,6 +164,9 @@
       ['status', 'category', 'refund_id'].forEach(function (key) {
         if (data && data[key]) meta.appendChild(el('span', '', key + ': ' + data[key]));
       });
+      if (data && data.review_case_id) {
+        meta.appendChild(el('span', '', 'Review case: ' + data.review_case_id));
+      }
       if (meta.children.length) report.appendChild(meta);
       var text = (data && (data.customer_communication || data.message || data.response || data.summary)) || 'Resolution received.';
       var comm = el('p', '', text);
@@ -169,9 +174,25 @@
       if (data && data.resolution_report && data.resolution_report.summary) {
         report.appendChild(el('p', '', data.resolution_report.summary));
       }
-      if (data && data.action_result) {
-        report.appendChild(el('p', '', 'Action: ' + (data.action_result.status || data.action_status || 'completed')));
+      var actionStatus = data && data.action_result && (data.action_result.status || data.action_status);
+      if (actionStatus) {
+        report.appendChild(el('p', '', 'Action: ' + actionStatus));
       }
+    }
+
+    function showReportStatus(data) {
+      switch (data.review_queue_status) {
+        case 'open': setState('Saved for review.'); return;
+        case 'reviewed': setState('Review case marked reviewed.'); return;
+        case 'closed': setState('Review case closed.'); return;
+        case 'unavailable': setState('Could not save the request for review.', 'error'); return;
+      }
+      switch (data.status) {
+        case 'pending_approval': setState('Awaiting approval.'); return;
+        case 'needs_review': setState('Manual review needed.'); return;
+        case 'not_executed': setState('Action not executed.'); return;
+      }
+      setState(data.ok ? 'Report ready.' : 'Action needs review.', data.ok ? 'ok' : 'error');
     }
 
     function openDrawer() {
@@ -221,23 +242,24 @@
         return response.text().then(function (text) {
           var data = {};
           try { data = JSON.parse(text); } catch (e) { data = { message: text }; }
-          if (!response.ok || (data && data.ok === false)) {
+          if (!response.ok || !data || !data.status || typeof data.ok !== 'boolean') {
             throw new Error((data && data.error) || ('Request failed (' + response.status + ')'));
           }
           return data;
         });
       }).then(function (data) {
-        setState('Resolution ready.', 'ok');
+        showReportStatus(data);
         renderReport(data);
       }).catch(function (err) {
-        setState('Could not reach Troy: ' + (err && err.message ? err.message : err), 'error');
+        setState('Could not load the report: ' + (err && err.message ? err.message : err), 'error');
       }).then(function () {
         submit.disabled = false;
       });
     });
 
     if (global.TroyEmbed) { global.TroyEmbed.open = openDrawer; global.TroyEmbed.close = closeDrawer; }
-    return { open: openDrawer, close: closeDrawer, config: config };
+    mounted = { open: openDrawer, close: closeDrawer, config: config };
+    return mounted;
   }
 
   var api = { init: init, open: null, close: null, config: readConfig(), _installed: true };

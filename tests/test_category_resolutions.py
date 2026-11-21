@@ -42,7 +42,7 @@ def test_category_complaint_context_all_11(category):
 
 @pytest.mark.parametrize("category", ALL_11_CATEGORIES)
 def test_category_agent_resolution_execution(category):
-    res = execute_agent_resolution(query="Testing domain resolution", category=category)
+    res = execute_agent_resolution(query="Testing domain resolution", customer_id="USR-10492", category=category)
     assert res["ok"] is True
     assert res["action"] == "agent_resolve"
     assert "customer" in res
@@ -148,7 +148,7 @@ def test_non_refund_categories_have_no_csv_references():
 
 @pytest.mark.parametrize("category", ALL_11_CATEGORIES)
 def test_manual_resolution_all_11_categories(category):
-    res = execute_manual_resolution(query=f"Issue requiring human intervention for {category}", category=category)
+    res = execute_manual_resolution(query=f"Issue requiring human intervention for {category}", customer_id="USR-10492", category=category)
     assert res["ok"] is True
     assert res["action"] == "manual_resolve"
     assert res["category"] == category

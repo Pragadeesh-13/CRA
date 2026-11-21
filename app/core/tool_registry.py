@@ -189,6 +189,7 @@ class TroyToolRegistry:
         self.dry_run: bool = bool(dry_run or kwargs.get("default_dry_run", False))
         # idempotency_key -> {"tool": name, "fingerprint": ..., "result": ...}
         self._idempotency: Dict[str, Dict[str, Any]] = {}
+        self._running_keys: set[str] = set()
         self._audit: List[Dict[str, Any]] = []
         # Public mirrors (commonly inspected by callers/tests).
         self.audit_trail: List[Dict[str, Any]] = self._audit
@@ -208,8 +209,10 @@ class TroyToolRegistry:
         replace: bool = False,
     ) -> Callable[..., Any]:
         """Register ``func`` programmatically. Returns ``func`` unchanged."""
-        if func is None:
+        if not callable(func):
             raise ValueError("register() requires a callable")
+        if inspect.iscoroutinefunction(func) or inspect.iscoroutinefunction(getattr(func, "__call__", None)):
+            raise ValueError("Tool handlers must be synchronous")
         tool_name = (name or getattr(func, "__name__", "") or "").strip()
         if not tool_name:
             raise ValueError("Tool name is required")
@@ -369,24 +372,34 @@ class TroyToolRegistry:
 
         effective_dry_run = bool(dry_run) if dry_run is not None else bool(self.dry_run or tool.dry_run_default)
 
-        # Idempotency replay (only for real, non-dry-run executions).
-        if key and tool.idempotent and not effective_dry_run:
-            with self._lock:
-                prior = self._idempotency.get(str(key))
-            if prior is not None and prior.get("tool") == tool_name:
-                replay = copy.deepcopy(prior["result"])
-                replay["idempotent_replay"] = True
-                replay["from_cache"] = True
-                replay["is_idempotent_replay"] = True
-                self._append_audit(
-                    {"event": "tool_execute", "tool": tool_name, "params": params_dict,
-                     "idempotency_key": key, "dry_run": False, "ok": bool(replay.get("ok", True)),
-                     "idempotent_replay": True}
-                )
-                return replay
-            if prior is not None and prior.get("tool") != tool_name:
-                return _fail(f"Idempotency key '{key}' was already used for tool '{prior.get('tool')}'")
+        cache_key = str(key) if key and tool.idempotent and not effective_dry_run else None
+        if cache_key is None:
+            return self._invoke(tool, params_dict, key, effective_dry_run, _fail)
 
+        fingerprint = _fingerprint(params_dict)
+        with self._lock:
+            prior = self._idempotency.get(cache_key)
+            if prior is not None:
+                if prior["tool"] != tool_name or prior["fingerprint"] != fingerprint:
+                    return _fail("Idempotency key already used for a different request")
+                replay = copy.deepcopy(prior["result"])
+                replay.update(idempotent_replay=True, from_cache=True, is_idempotent_replay=True)
+                self._append_audit({"event": "tool_execute", "tool": tool_name, "params": params_dict,
+                                    "idempotency_key": key, "dry_run": False, "ok": replay["ok"],
+                                    "idempotent_replay": True})
+                return replay
+            if cache_key in self._running_keys:
+                return _fail("A request with this idempotency key is in progress", in_progress=True)
+            self._running_keys.add(cache_key)
+        try:
+            return self._invoke(tool, params_dict, key, effective_dry_run, _fail)
+        finally:
+            with self._lock:
+                self._running_keys.discard(cache_key)
+
+    def _invoke(self, tool: TroyTool, params_dict: Dict[str, Any], key: Optional[str],
+                effective_dry_run: bool, _fail: Callable[..., Dict[str, Any]]) -> Dict[str, Any]:
+        tool_name = tool.name
         # Parameter validation (runs in dry-run too).
         errors = validate_params(params_dict, tool.schema)
         if errors:
@@ -408,26 +421,27 @@ class TroyToolRegistry:
             )
             return result
 
-        # Invoke the handler: prefer **params kwargs, fall back to a single dict.
+        # Bind the arguments before invoking the handler, including keyword-only fields.
         try:
             sig = inspect.signature(tool.func)
-            positional = [p for p in sig.parameters.values()
-                          if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
-            accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-            if accepts_kwargs and (not positional or set(params_dict) - {p.name for p in positional}):
-                raw = tool.func(**params_dict)
-            elif positional:
-                bound: List[Any] = []
-                for p in positional:
-                    if p.name in params_dict:
-                        bound.append(params_dict[p.name])
-                    elif p.default is not inspect.Parameter.empty:
-                        bound.append(p.default)
+            positional = []
+            keywords = dict(params_dict)
+            for parameter in sig.parameters.values():
+                if parameter.kind == inspect.Parameter.POSITIONAL_ONLY:
+                    if parameter.name in keywords:
+                        positional.append(keywords.pop(parameter.name))
+                    elif parameter.default is not inspect.Parameter.empty:
+                        positional.append(parameter.default)
                     else:
-                        bound.append(None)
-                raw = tool.func(*bound)
-            else:
-                raw = tool.func(**params_dict)
+                        raise TypeError(f"Missing required parameter: {parameter.name}")
+            if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                keywords = {name: value for name, value in keywords.items() if name in sig.parameters}
+            arguments = sig.bind(*positional, **keywords)
+            raw = tool.func(*arguments.args, **arguments.kwargs)
+            if inspect.isawaitable(raw):
+                if inspect.iscoroutine(raw):
+                    raw.close()
+                raise TypeError("Tool handlers must return a synchronous result")
         except Exception as exc:
             logger.warning("Tool '%s' failed: %s", tool_name, exc)
             return _fail(str(exc))

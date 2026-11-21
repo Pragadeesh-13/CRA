@@ -1,7 +1,10 @@
+import secrets
+import time
 from typing import Dict, Any, Optional
 from fastapi import Request
 
 SESSION_COOKIE = "__session"
+SESSION_SECONDS = 12 * 60 * 60
 
 PUBLIC_API_PATHS = {
     "/api/auth/firebase-config",
@@ -44,21 +47,40 @@ def extract_id_token(req: Request) -> Optional[str]:
     cookie_token = req.cookies.get(SESSION_COOKIE)
     if cookie_token:
         return cookie_token
-    return req.query_params.get("token")
+    return None
+
+
+def is_authenticated_webhook_relay(req: Request) -> bool:
+
+    prefix = "/api/v1/saas/webhooks/"
+    path = req.url.path
+    if req.method != "POST" or not path.startswith(prefix) or "/" in path[len(prefix):]:
+        return False
+    return has_webhook_relay_token(req)
+
+
+def has_webhook_relay_token(req: Request) -> bool:
+    from app.config import settings
+
+    supplied = req.headers.get("X-Troy-Webhook-Token", "")
+    expected = settings.webhook_token
+    return bool(expected and supplied and secrets.compare_digest(supplied.encode(), expected.encode()))
 
 
 class SessionGuard:
     def __init__(self, mode: Optional[str] = None):
         self._mode = mode.lower() if mode else None
-        self._sessions: Dict[str, Dict[str, Any]] = {}
+        self._sessions: Dict[str, tuple[float, Dict[str, Any]]] = {}
 
-    def register_session(self, token: str, user: Dict[str, Any]):
-        if token and user:
-            self._sessions[token] = user
+    def create_session(self, user: Dict[str, Any]) -> str:
+        now = time.monotonic()
+        self._sessions = {key: item for key, item in self._sessions.items() if item[0] > now}
+        token = secrets.token_urlsafe(32)
+        self._sessions[token] = (now + SESSION_SECONDS, user.copy())
+        return token
 
     def revoke_session(self, token: str):
-        if token in self._sessions:
-            del self._sessions[token]
+        self._sessions.pop(token, None)
 
     @property
     def mode(self) -> str:
@@ -67,33 +89,27 @@ class SessionGuard:
         from app.config import settings
         return getattr(settings, "auth_mode", "optional").lower()
 
+    @property
+    def required(self) -> bool:
+        return self.mode not in {"open", "optional", "demo", "guest"}
+
     def is_protected_path(self, path: str) -> bool:
-        if path in PUBLIC_API_PATHS:
-            return False
-        # External SaaS webhooks are signed by their providers, not sessions.
-        if path.startswith("/api/v1/saas/webhooks/"):
+        if self.required:
+            return path.startswith("/api/") and path not in {
+                "/api/auth/firebase-config", "/api/auth/signup",
+                "/api/auth/login", "/api/auth/google", "/api/health",
+            }
+        if path in PUBLIC_API_PATHS or path.startswith("/api/v1/saas/webhooks/"):
             return False
         return path.startswith("/api/")
 
     async def authenticate(self, req: Request) -> Dict[str, Any]:
         token = extract_id_token(req)
-
-        if not token:
-            if self.mode in ("open", "optional"):
-                return {"ok": True, "user": None, "status": 200}
+        session = self._sessions.get(token) if token else None
+        if session and session[0] > time.monotonic():
+            return {"ok": True, "status": 200, "user": session[1].copy()}
+        if token:
+            self.revoke_session(token)
+        if self.required:
             return {"ok": False, "user": None, "status": 401, "error": "Authentication required"}
-
-        if token in self._sessions:
-            return {"ok": True, "status": 200, "user": self._sessions[token]}
-
-        # Basic token projection for guest/offline sessions
-        return {
-            "ok": True,
-            "status": 200,
-            "user": {
-                "id": "user_" + token[-8:] if len(token) >= 8 else token,
-                "email": "admin@example.com",
-                "fullName": "Admin",
-                "username": "admin",
-            },
-        }
+        return {"ok": True, "user": None, "status": 200}

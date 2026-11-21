@@ -27,7 +27,6 @@
   "use strict";
 
   const USER_STORAGE_KEY = "agenticCouncilUser";
-  const ID_TOKEN_STORAGE_KEY = "agenticCouncilIdToken";
   const CONFIG_ENDPOINT = "/api/auth/firebase-config";
 
   /** sessionStorage key marking that a sign-in redirect is in flight. */
@@ -209,11 +208,6 @@
       return null;
     }
 
-    // If Firebase already restored currentUser on reload, finalize immediately
-    if (auth.currentUser) {
-      return await finalizeSignIn({ user: auth.currentUser });
-    }
-
     const markerPresent = Boolean(readRedirectMarker());
     let hadPendingRedirect = false;
     try {
@@ -227,7 +221,7 @@
       return null;
     }
 
-    const credential = await pollForCredential(auth);
+    const credential = auth.currentUser ? { user: auth.currentUser } : await pollForCredential(auth);
 
     if (!credential) {
       clearRedirectMarker();
@@ -306,24 +300,12 @@
     if (credential?.user && typeof credential.user.getIdToken === "function") {
       idToken = await credential.user.getIdToken();
     }
-    if (!idToken) {
-      idToken = credential?.credential?.accessToken || credential?.credential?.idToken || "";
-    }
-    if (!idToken) throw new Error("Google sign-in did not return an ID token.");
-
-    const photoURL = credential?.user?.photoURL || "";
-    const postBody = {
-      idToken,
-      email: credential?.user?.email || "",
-      displayName: credential?.user?.displayName || "",
-      uid: credential?.user?.uid || "",
-      photoURL,
-    };
+    if (!idToken) throw new Error("Google sign-in did not return a Firebase ID token.");
 
     const response = await fetch("/api/auth/google", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(postBody),
+      body: JSON.stringify({ idToken }),
     });
     const payload = await response.json().catch(() => ({}));
 
@@ -331,14 +313,7 @@
       throw new Error(String(payload?.error || "Google sign-in failed."));
     }
 
-    if (photoURL && !payload.user.photoURL) {
-      payload.user.photoURL = photoURL;
-    }
-
     localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(payload.user));
-    if (payload.idToken) {
-      localStorage.setItem(ID_TOKEN_STORAGE_KEY, payload.idToken);
-    }
 
     clearRedirectMarker();
     return payload.user;

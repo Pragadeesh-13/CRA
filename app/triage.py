@@ -11,30 +11,23 @@ import concurrent.futures
 import json
 import logging
 import os
+import time
 import re
+import sqlite3
+from pathlib import Path
 from collections.abc import Mapping
 from typing import Dict, Any, List, Optional, Union
 
+from app.precedents import CORPUS_SOURCE, search_corpus
 from app.providers.base_driver import BaseLlmDriver
+from app.providers.jev import CATEGORY_DESCRIPTIONS, classify_with_jev, configured_jev_model
 from app.providers.openai_driver import OpenAiDriver
 from app.utils.json_extractor import parse_json
 
 logger = logging.getLogger("cra.triage")
 
 # Canonical 11 CRA categories
-ALL_11_CATEGORIES: List[str] = [
-    "Account Management",
-    "Authentication & Access",
-    "Billing",
-    "Bugs & Errors",
-    "Data Sync",
-    "Integrations & API",
-    "Onboarding & How-To",
-    "Performance",
-    "Refunds",
-    "Security",
-    "Subscription",
-]
+ALL_11_CATEGORIES: List[str] = list(CATEGORY_DESCRIPTIONS)
 
 # Numeric index map matching CRA_Models/label_map.json
 LABEL_MAP: Dict[str, str] = {str(i): cat for i, cat in enumerate(ALL_11_CATEGORIES)}
@@ -79,7 +72,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Identified duplicate transaction TXN-7712, processed $49.00 refund via Stripe API, restored account balance.",
             "assigned_team": "Billing",
             "resolution_time_hours": 3.5,
-            "similarity": 0.94,
         },
         {
             "ticket_id": 88219,
@@ -88,7 +80,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Refunded secondary charge TXN-9012, verified primary payment TXN-9011 settled cleanly.",
             "assigned_team": "Billing",
             "resolution_time_hours": 3.0,
-            "similarity": 0.91,
         },
     ],
     "Authentication & Access": [
@@ -99,7 +90,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Verified enterprise SSO credentials, issued temporary emergency bypass token AUTH-9921, reset lockout counter.",
             "assigned_team": "Security",
             "resolution_time_hours": 3.5,
-            "similarity": 0.93,
         },
         {
             "ticket_id": 78420,
@@ -108,7 +98,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Validated employee identity via corporate security challenge, re-enrolled TOTP MFA secret.",
             "assigned_team": "Security",
             "resolution_time_hours": 2.5,
-            "similarity": 0.88,
         },
     ],
     "Billing": [
@@ -119,7 +108,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Validated European VIES registration, issued official stamped tax receipt and invoice INV-85420-VAT.",
             "assigned_team": "Billing",
             "resolution_time_hours": 4.5,
-            "similarity": 0.92,
         },
         {
             "ticket_id": 85114,
@@ -128,7 +116,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Adjusted cross-border tax exemption flag; credited $18.40 VAT variance.",
             "assigned_team": "Billing",
             "resolution_time_hours": 5.0,
-            "similarity": 0.86,
         },
     ],
     "Bugs & Errors": [
@@ -139,7 +126,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Correlated Sentry crash log with memory buffer exception in client v2.4.1; logged BUG-ENG-4401 in sprint queue.",
             "assigned_team": "Engineering",
             "resolution_time_hours": 18.0,
-            "similarity": 0.89,
         },
         {
             "ticket_id": 84003,
@@ -148,7 +134,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Deployed hotfix for missing telemetry series check in visualization renderer.",
             "assigned_team": "Engineering",
             "resolution_time_hours": 12.0,
-            "similarity": 0.85,
         },
     ],
     "Data Sync": [
@@ -159,7 +144,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Executed three-way merge resolution algorithm SYNC-RECON-2201, invalidated stale client cache.",
             "assigned_team": "Engineering",
             "resolution_time_hours": 12.0,
-            "similarity": 0.90,
         },
         {
             "ticket_id": 82050,
@@ -168,7 +152,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Triggered manual resync job from primary shard; verified 1,420 contact records reconciled.",
             "assigned_team": "Engineering",
             "resolution_time_hours": 8.0,
-            "similarity": 0.87,
         },
     ],
     "Integrations & API": [
@@ -179,7 +162,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Reset burst token bucket for API key, initiated automated replay of 12 dead-lettered events (API-HOOK-7703).",
             "assigned_team": "Engineering",
             "resolution_time_hours": 8.0,
-            "similarity": 0.91,
         },
         {
             "ticket_id": 92900,
@@ -188,7 +170,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Re-propagated KMS client keys to edge nodes; invalidated stale authorization cache.",
             "assigned_team": "Engineering",
             "resolution_time_hours": 4.0,
-            "similarity": 0.88,
         },
     ],
     "Onboarding & How-To": [
@@ -199,7 +180,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Dispatched interactive role delegation guide GUIDE-ONB-1102 and automated invitation template.",
             "assigned_team": "Tier 1 Support",
             "resolution_time_hours": 2.5,
-            "similarity": 0.92,
         },
         {
             "ticket_id": 81045,
@@ -208,7 +188,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Provided guided walkthrough with step-by-step SAML configuration instructions.",
             "assigned_team": "Tier 1 Support",
             "resolution_time_hours": 2.0,
-            "similarity": 0.89,
         },
     ],
     "Performance": [
@@ -219,7 +198,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Invalidated stale search index cache, executed query defragmentation PERF-OPT-3301 (<450ms baseline).",
             "assigned_team": "Engineering",
             "resolution_time_hours": 14.0,
-            "similarity": 0.90,
         },
         {
             "ticket_id": 83120,
@@ -228,7 +206,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Added Redis query result caching for 5-minute rolling aggregate metrics.",
             "assigned_team": "Engineering",
             "resolution_time_hours": 10.0,
-            "similarity": 0.86,
         },
     ],
     "Security": [
@@ -239,7 +216,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Revoked active JWT bearer tokens SEC-REVOKE-8812, enforced mandatory MFA challenge.",
             "assigned_team": "Security",
             "resolution_time_hours": 2.0,
-            "similarity": 0.94,
         },
         {
             "ticket_id": 88540,
@@ -248,7 +224,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Initiated automated GDPR purge pipeline SEC-ERASE-4420 across all database tables.",
             "assigned_team": "Security",
             "resolution_time_hours": 3.0,
-            "similarity": 0.91,
         },
     ],
     "Subscription": [
@@ -259,7 +234,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Approved $50.00 prorated credit under SUB-ADJ-6601, adjusted recurring renewal tier to Starter ($29/mo).",
             "assigned_team": "Billing",
             "resolution_time_hours": 3.0,
-            "similarity": 0.92,
         },
         {
             "ticket_id": 86015,
@@ -268,7 +242,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Cancelled future recurring billing schedule; sent final statement showing zero balance.",
             "assigned_team": "Billing",
             "resolution_time_hours": 2.5,
-            "similarity": 0.89,
         },
     ],
     "Account Management": [
@@ -279,7 +252,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Consolidated duplicate enterprise account records, transferred admin rights to verified primary contact.",
             "assigned_team": "Tier 1 Support",
             "resolution_time_hours": 6.0,
-            "similarity": 0.89,
         },
         {
             "ticket_id": 87620,
@@ -288,7 +260,6 @@ CATEGORY_PRECEDENTS: Dict[str, List[Dict[str, Any]]] = {
             "resolution": "Generated formal enterprise tier seat proposal and routed to dedicated account manager.",
             "assigned_team": "Tier 1 Support",
             "resolution_time_hours": 5.0,
-            "similarity": 0.85,
         },
     ],
 }
@@ -335,28 +306,18 @@ Output format MUST be a valid JSON object with the following schema:
     "transaction_id": "<TXN-XXXX or null>",
     "customer_id": "<USR-XXXXX or null>"
   },
-  "summary": "<concise 1-2 sentence executive summary of the issue and resolution needed>",
-  "similar_cases": [
-    {
-      "ticket_id": <int>,
-      "description": "<brief description of matching historical precedent>",
-      "resolution": "<resolution description>",
-      "assigned_team": "<team name>",
-      "resolution_time_hours": <float>,
-      "similarity": <float between 0.70 and 0.99>
-    }
-  ]
+  "summary": "<concise 1-2 sentence executive summary of the issue and recommended next steps>"
 }
 
-Respond ONLY with raw JSON. No explanation, no markdown backticks, no conversational text."""
+Return the classification and details grounded in the complaint. Respond ONLY with raw JSON. No explanation, no markdown backticks, no conversational text."""
 
 _GLOBAL_TRIAGE_DRIVER: Optional[OpenAiDriver] = None
-_TRIAGE_LLM_UNAVAILABLE = False
+_TRIAGE_RETRY_AT = 0.0
 
 
 def get_triage_driver(driver: Optional[BaseLlmDriver] = None) -> BaseLlmDriver:
     """Retrieve or initialize the singleton OpenAiDriver for local triage."""
-    global _GLOBAL_TRIAGE_DRIVER, _TRIAGE_LLM_UNAVAILABLE
+    global _GLOBAL_TRIAGE_DRIVER, _TRIAGE_RETRY_AT
     if driver is not None:
         return driver
     target_url = (os.getenv("LMSTUDIO_BASE_URL") or "http://localhost:1234/v1").strip()
@@ -366,7 +327,7 @@ def get_triage_driver(driver: Optional[BaseLlmDriver] = None) -> BaseLlmDriver:
             base_url=target_url,
             timeout_ms=int(os.getenv("LLM_TIMEOUT_MS", "5000")),
         )
-        _TRIAGE_LLM_UNAVAILABLE = False
+        _TRIAGE_RETRY_AT = 0.0
         # Fast offline check for localhost so triage does not stall on a
         # doomed network call when LM Studio is not running.
         if "localhost" in target_url or "127.0.0.1" in target_url:
@@ -378,7 +339,7 @@ def get_triage_driver(driver: Optional[BaseLlmDriver] = None) -> BaseLlmDriver:
                 with socket.create_connection((parsed.hostname or "127.0.0.1", parsed.port or 1234), timeout=0.03):
                     pass
             except Exception:
-                _TRIAGE_LLM_UNAVAILABLE = True
+                _TRIAGE_RETRY_AT = time.monotonic() + 30
     return _GLOBAL_TRIAGE_DRIVER
 
 
@@ -490,6 +451,7 @@ def _build_canonical_report(
         "top_3_categories": top_3,
         "extracted_entities": entities,
         "similar_cases": similar,
+        "case_source": "static_category_examples",
         "recommended_team": team,
         "team_confidence": "High",
         "team_method": team_method,
@@ -534,9 +496,7 @@ def _normalize_llm_report(data: Dict[str, Any], complaint: str = "") -> Dict[str
         if k not in entities:
             entities[k] = None
 
-    similar = data.get("similar_cases")
-    if not isinstance(similar, list) or not similar:
-        similar = CATEGORY_PRECEDENTS.get(matched_cat, [])
+    similar = CATEGORY_PRECEDENTS.get(matched_cat, [])
 
     top_3 = data.get("top_3_categories")
     if not isinstance(top_3, list) or len(top_3) < 3:
@@ -557,6 +517,7 @@ def _normalize_llm_report(data: Dict[str, Any], complaint: str = "") -> Dict[str
         "top_3_categories": top_3,
         "extracted_entities": entities,
         "similar_cases": similar,
+        "case_source": "static_category_examples",
         "recommended_team": team,
         "team_confidence": "High",
         "team_method": "Local LLM",
@@ -640,7 +601,7 @@ def _deterministic_fallback_report(complaint: str) -> Dict[str, Any]:
     )
 
 
-async def async_triage_complaint(complaint_text: str, driver: Optional[BaseLlmDriver] = None) -> Dict[str, Any]:
+async def _classify_complaint(complaint_text: str, driver: Optional[BaseLlmDriver] = None) -> Dict[str, Any]:
     """
     Asynchronous LLM complaint intake and triage pipeline.
     Dispatches prompt to local LLM; on failure, computes a deterministic
@@ -654,8 +615,19 @@ async def async_triage_complaint(complaint_text: str, driver: Optional[BaseLlmDr
         if raw.lower() == cat.lower():
             return _build_canonical_report(cat, confidence=0.99, complaint=raw, team_method="Exact Match")
 
+    jev_model = configured_jev_model()
+    if jev_model:
+        top_3 = await classify_with_jev(raw, jev_model)
+        if top_3:
+            return _build_canonical_report(
+                top_3[0]["category"], confidence=top_3[0]["score"], complaint=raw,
+                top_3=top_3, team_method="Jev (LM Studio)",
+            )
+        return _deterministic_fallback_report(raw)
+
     d = get_triage_driver(driver)
-    if driver is None and _TRIAGE_LLM_UNAVAILABLE:
+    global _TRIAGE_RETRY_AT
+    if driver is None and time.monotonic() < _TRIAGE_RETRY_AT:
         return _deterministic_fallback_report(raw)
     messages = [
         {"role": "system", "content": SYSTEM_TRIAGE_PROMPT},
@@ -670,9 +642,26 @@ async def async_triage_complaint(complaint_text: str, driver: Optional[BaseLlmDr
     except Exception as e:
         logger.warning(f"Local LLM triage encountered error: {e}; using deterministic fallback.")
         if driver is None:
-            globals()["_TRIAGE_LLM_UNAVAILABLE"] = True
+            _TRIAGE_RETRY_AT = time.monotonic() + 30
 
     return _deterministic_fallback_report(raw)
+
+
+async def async_triage_complaint(complaint_text: str, driver: Optional[BaseLlmDriver] = None) -> Dict[str, Any]:
+    report = await _classify_complaint(complaint_text, driver)
+    index_path = os.environ.get("TROY_PRECEDENT_INDEX", "").strip()
+    if not index_path:
+        return report
+
+    report["case_source"] = CORPUS_SOURCE
+    try:
+        cases = await asyncio.to_thread(search_corpus, Path(index_path), str(complaint_text or ""))
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        logger.warning("Local precedent index unavailable (%s)", type(exc).__name__)
+        report.update(similar_cases=[], case_search_status="unavailable")
+    else:
+        report.update(similar_cases=cases, case_search_status="matched" if cases else "no_matches")
+    return report
 
 
 def triage_complaint(complaint_text: str, driver: Optional[BaseLlmDriver] = None) -> Dict[str, Any]:
@@ -680,14 +669,6 @@ def triage_complaint(complaint_text: str, driver: Optional[BaseLlmDriver] = None
     Synchronous entrypoint for triage_complaint.
     Executes safely across sync threads, worker threads, and active event loops.
     """
-    raw = str(complaint_text or "").strip()
-    if not raw:
-        return _build_canonical_report("Account Management", confidence=0.0, complaint="", team_method="Default Empty")
-
-    for cat in ALL_11_CATEGORIES:
-        if raw.lower() == cat.lower():
-            return _build_canonical_report(cat, confidence=0.99, complaint=raw, team_method="Exact Match")
-
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -695,10 +676,10 @@ def triage_complaint(complaint_text: str, driver: Optional[BaseLlmDriver] = None
 
     if loop and loop.is_running():
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(lambda: asyncio.run(async_triage_complaint(raw, driver=driver)))
+            future = pool.submit(lambda: asyncio.run(async_triage_complaint(complaint_text, driver=driver)))
             return future.result()
     else:
-        return asyncio.run(async_triage_complaint(raw, driver=driver))
+        return asyncio.run(async_triage_complaint(complaint_text, driver=driver))
 
 
 def predict_category(text: str, driver: Optional[BaseLlmDriver] = None) -> CategoryResult:
@@ -733,7 +714,7 @@ async def async_predict_category(text: str, driver: Optional[BaseLlmDriver] = No
         if raw.lower() == cat.lower():
             return CategoryResult(cat, confidence=0.99)
 
-    report = await async_triage_complaint(raw, driver=driver)
+    report = await _classify_complaint(raw, driver=driver)
     cat = report.get("predicted_category", "Account Management")
     conf = report.get("category_confidence", 0.90)
     top_3 = report.get("top_3_categories")

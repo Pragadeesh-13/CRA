@@ -255,11 +255,9 @@ async def test_zero_mutation_during_general_inquiry_processing(inquiry_ticket, i
         f"VIOLATION: 'database_updated' SSE event was broadcast during general inquiry '{inquiry_ticket['title']}'!"
     )
 
-    # Check for direct inquiry confirmation in system messages
-    sys_msgs = [e["data"].get("message", "") for e in sse_capturer.captured_events if e["event"] == "system"]
-    assert any("Resolving without database mutation" in m for m in sys_msgs), (
-        f"Missing 'Resolving without database mutation' system event in: {sys_msgs}"
-    )
+    result = next(e["data"] for e in sse_capturer.captured_events if e["event"] == "resolution_end")
+    assert result["execution_mode"] == "simulation"
+    assert result["execution_status"] == "demo_only"
 
 
 # ==============================================================================
@@ -337,9 +335,11 @@ async def test_billing_inquiry_executes_mutation_and_is_idempotent(isolated_data
     assert tx_hash_1 == tx_hash_2, "Idempotency violation: transactions.csv mutated again on already-refunded charge"
     assert acc_hash_1 == acc_hash_2, "Idempotency violation: customer_accounts.csv mutated again on already-refunded charge"
 
-    # Verify already-refunded message in SSE system events
-    sys_msgs_2 = [e["data"].get("message", "") for e in sse_2.captured_events if e["event"] == "system"]
-    assert any("already refunded" in m for m in sys_msgs_2), f"Expected 'already refunded' in system messages: {sys_msgs_2}"
+    first = next(e["data"] for e in sse_1.captured_events if e["event"] == "resolution_end")
+    second = next(e["data"] for e in sse_2.captured_events if e["event"] == "resolution_end")
+    assert first["execution_mode"] == second["execution_mode"] == "local_demo_ledger"
+    assert first["execution_status"] == "refunded"
+    assert second["execution_status"] == "already_refunded"
 
 
 # ==============================================================================

@@ -3,13 +3,6 @@
  * Frontend Client Application
  */
 
-// ── Auth & Headers ──────────────────────────────────────────────────────────
-
-const authHeaders = () => {
-  const token = localStorage.getItem("agenticCouncilIdToken");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-};
-
 // ── Theme Management ────────────────────────────────────────────────────────
 
 const getCurrentTheme = () => {
@@ -178,18 +171,14 @@ const initProviderConfig = () => {
 
   const modelCache = {};
   let activeLoadSeq = 0;
+  let modelRefreshTimer = null;
 
   const getActiveModel = (providerKey) => {
     const key = providerKey || providerSelect?.value || "";
     if (key === "lmstudio") {
       return modelInput?.value?.trim() || PROVIDERS.lmstudio.defaultModel;
     }
-    const val = modelSelect?.value?.trim() || "";
-    const list = modelCache[key] || PROVIDERS[key]?.exampleModels || [];
-    if (val && list.length > 0 && !list.includes(val)) {
-      return PROVIDERS[key]?.defaultModel || val;
-    }
-    return val || PROVIDERS[key]?.defaultModel || "";
+    return modelSelect?.value?.trim() || PROVIDERS[key]?.defaultModel || "";
   };
 
   const setActiveModel = (val) => {
@@ -238,10 +227,7 @@ const initProviderConfig = () => {
     const defaultForProv = PROVIDERS[providerKey]?.defaultModel || "";
     const list = models && models.length > 0 ? models : PROVIDERS[providerKey]?.exampleModels || [];
 
-    let targetModel = preferredModel || "";
-    if (!targetModel || (list.length > 0 && !list.includes(targetModel))) {
-      targetModel = defaultForProv;
-    }
+    const targetModel = preferredModel || defaultForProv;
 
     modelSelect.innerHTML = "";
     const placeholderOpt = document.createElement("option");
@@ -289,7 +275,7 @@ const initProviderConfig = () => {
       try {
         await fetch("/api/config", {
           method: "POST",
-          headers: { "Content-Type": "application/json", ...authHeaders() },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ provider, model, apiKey }),
         });
       } catch (err) {
@@ -307,7 +293,7 @@ const initProviderConfig = () => {
 
     try {
       const q = new URLSearchParams({ provider: providerKey });
-      const headers = authHeaders();
+      const headers = {};
       if (apiKey) headers["X-API-Key"] = apiKey;
 
       const res = await fetch(`/api/models?${q.toString()}`, { headers });
@@ -328,6 +314,7 @@ const initProviderConfig = () => {
   };
 
   const applyProvider = (providerKey, explicitModel = null) => {
+    clearTimeout(modelRefreshTimer);
     if (!providerKey || !PROVIDERS[providerKey]) {
       if (providerBadge) providerBadge.textContent = "None";
       if (apiKeyHint) apiKeyHint.textContent = "";
@@ -383,6 +370,7 @@ const initProviderConfig = () => {
   });
 
   providerSelect.addEventListener("change", () => {
+    if (apiKeyInput) apiKeyInput.value = "";
     clearInputError(providerSelect);
     dismissTopWarning();
     applyProvider(providerSelect.value);
@@ -412,12 +400,18 @@ const initProviderConfig = () => {
       clearInputError(apiKeyInput);
       dismissTopWarning();
     }
+    const provider = providerSelect.value;
+    if (provider && provider !== "lmstudio") {
+      activeLoadSeq++;
+      clearTimeout(modelRefreshTimer);
+      modelRefreshTimer = setTimeout(() => loadModelsDynamically(provider), 400);
+    }
     saveConfigLocally();
     syncConfigToServer();
   });
 
   // Load existing config from server
-  fetch("/api/config", { headers: authHeaders() })
+  fetch("/api/config")
     .then((r) => (r.ok ? r.json() : null))
     .then((cfg) => {
       if (cfg && cfg.provider && PROVIDERS[cfg.provider]) {
@@ -479,15 +473,15 @@ const initUserProfileMenu = () => {
 
   const applyUserData = (user) => {
     if (!user) return;
-    const email = user.email || "admin@cra.local";
-    let fullName = user.fullName || user.username || "Admin";
+    const email = user.email || "";
+    const fullName = user.fullName || "Account user";
     if (nameEl) nameEl.textContent = fullName;
     if (emailEl) emailEl.textContent = email;
     const firstLetter = fullName.trim().charAt(0).toUpperCase() || "A";
     if (avatarInitial) avatarInitial.textContent = firstLetter;
   };
 
-  fetch("/api/auth/me", { headers: authHeaders() })
+  fetch("/api/auth/me")
     .then((r) => (r.ok ? r.json() : null))
     .then((res) => {
       if (res?.user) applyUserData(res.user);
@@ -811,6 +805,7 @@ const buildStreamingActions = (items) => {
 // ── CRA Troy UI State & Console ─────────────────────────────────────────────
 
 let isResolving = false;
+let isSubmittingResolution = false;
 let isTypingTransformed = false;
 let pendingResolutionEnd = false;
 let streamActionQueue = [];
@@ -882,13 +877,13 @@ const setActiveFeedCard = (story) => {
   updateFeedEmptyState();
 };
 
-const markFeedCardResolved = () => {
+const markFeedCardComplete = (label) => {
   const card = document.getElementById("active-feed-card");
   if (card) {
     card.classList.remove("active", "processing");
     const badge = card.querySelector(".badge");
     if (badge) {
-      badge.textContent = "Resolved";
+      badge.textContent = label;
       badge.className = "badge completed";
     }
   }
@@ -1257,20 +1252,20 @@ const renderNoActionStatus = (deliberationList, category) => {
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
             <polyline points="22 4 12 14.01 9 11.01"></polyline>
           </svg>
-          <strong>Resolved directly by Troy</strong>
+          <strong>Draft response prepared</strong>
           ${cat ? `<span class="db-source-tag">${cat}</span>` : ""}
         </div>
         <span class="verify-status-pill settled">No action required</span>
       </div>
       <div class="verify-strip-details">
-        <div class="verify-detail-item"><span class="v-label">Decision:</span> Troy reviewed this ticket and determined no database change or specialist routing is required. The response above stands as the complete resolution.</div>
+        <div class="verify-detail-item"><span class="v-label">Decision:</span> No local ledger action was selected. Review the draft before responding.</div>
       </div>
     </div>
   `;
   deliberationList.appendChild(statusEl);
   hasRenderedActionBar = true;
   isRenderingActionBar = false;
-  updateLiveStatus("Resolved directly by Troy — no action or routing required.", false);
+  updateLiveStatus("Draft response ready for review.", false);
 };
 
 const renderResolutionActionButtons = async () => {
@@ -1292,7 +1287,8 @@ const renderResolutionActionButtons = async () => {
   }
 
   const cat = cachedCraReport?.predicted_category || "Refunds";
-  const q = topicInput?.value || "88219";
+  const q = activeTicketQuery || topicInput?.value || "";
+  const revision = consoleRevision;
 
   // Pre-fetch verification from data/customer_accounts.csv. Pass the
   // Troy-classified category when known so the backend re-evaluates the
@@ -1302,12 +1298,14 @@ const renderResolutionActionButtons = async () => {
   try {
     const vRes = await fetch(
       "/api/customer/verify?query=" + encodeURIComponent(q) + "&category=" + encodeURIComponent(verifyCategory),
-      { headers: { ...authHeaders() } }
+      {}
     );
     verifyData = await vRes.json();
   } catch (_) {
     verifyData = null;
   }
+
+  if (revision !== consoleRevision) return;
 
   // Re-confirm Troy's decision with the verify payload. Buttons render
   // only when Troy signalled action_required === true; otherwise the
@@ -1341,20 +1339,12 @@ const renderResolutionActionButtons = async () => {
   const effectiveCat = verifyData?.category || cat;
   const specQueue = CATEGORY_SPECIALIST_MAP[effectiveCat] || (cachedCraReport?.recommended_team ? `${cachedCraReport.recommended_team} Specialist` : `${effectiveCat} Specialist`);
 
-  const cust = verifyData?.customer || {
-    customer_id: "USR-10492",
-    customer_name: "Alex Morgan",
-    customer_email: "alex.morgan@gmail.com",
-    reference_order_id: "ORD-88219",
-    subscription_plan: "Pro Tier ($49.00/mo)",
-    monthly_rate: "49.00",
-    total_billed_this_month: "98.00",
-    charges_this_month: "2",
-    transaction_1: "TXN-9011 ($49.00 on 2026-10-20) [Settled Renewal]",
-    transaction_2: "TXN-9012 ($49.00 on 2026-10-21) [Accidental Duplicate Debit]",
-    duplicate_verified: "Yes - Accidental Double Charge Detected",
-    account_balance: "$-49.00 (Overcharged)",
-  };
+  if (!verifyData?.ok || !verifyData?.verified || !verifyData.customer) {
+    actionBar.textContent = "Customer verification is unavailable. The ticket needs review.";
+    deliberationList.appendChild(actionBar);
+    return;
+  }
+  const cust = verifyData.customer;
 
   const isRefundCategory = effectiveCat === "Refunds" || Boolean(verifyData?.is_refund);
   const chargesCount = cust.charges_this_month || "2";
@@ -1378,8 +1368,8 @@ const renderResolutionActionButtons = async () => {
 
   if (!isRefundCategory) {
     // Non-refund category: Authentication & Access, Bugs & Errors, Data Sync, Integrations & API, etc.
-    const agentActionLabel = verifyData?.action_btn_text || `Let agent resolve ${effectiveCat}`;
-    const manualActionLabel = `Route to ${specQueue}`;
+    const agentActionLabel = `Preview demo action for ${effectiveCat}`;
+    const manualActionLabel = `Preview routing to ${specQueue}`;
 
     actionBar.innerHTML = `
       <div class="customer-verify-strip">
@@ -1398,8 +1388,8 @@ const renderResolutionActionButtons = async () => {
         <div class="verify-strip-details">
           <div class="verify-detail-item"><span class="v-label">Account ID:</span> <strong>${cust.customer_id}</strong> (${cust.customer_email})</div>
           <div class="verify-detail-item"><span class="v-label">Subscription Tier:</span> <strong>${cust.subscription_plan}</strong></div>
-          <div class="verify-detail-item"><span class="v-label">Domain Findings:</span> <span class="v-settled">${verifyData?.system_details || "Matched to the account and system records on file."}</span></div>
-          <div class="verify-detail-item"><span class="v-label">Autonomous Action:</span> <strong>${agentActionLabel}</strong> (Ref: <code>${verifyData?.reference_id || activeRefId}</code>)</div>
+          <div class="verify-detail-item"><span class="v-label">Demo findings:</span> <span class="v-settled">${verifyData?.system_details || "Matched to the account and system records on file."}</span></div>
+          <div class="verify-detail-item"><span class="v-label">Demo action:</span> <strong>${agentActionLabel}</strong> (Ref: <code>${verifyData?.reference_id || activeRefId}</code>)</div>
         </div>
       </div>
       <div class="resolution-buttons-row">
@@ -1497,25 +1487,11 @@ const renderResolutionActionButtons = async () => {
 
     const targetQueue = specQueue;
     const targetRefId = verifyData?.reference_id || activeRefId;
-    const targetSystem = verifyData?.system_label || verifyData?.database_file || "Internal System Telemetry";
-
     let manualSteps = [];
     if (!isRefundCategory) {
-      manualSteps = [
-        { text: `Accessing ${targetSystem}...`, delay: 650 },
-        { text: `Routing ticket #${targetRefId} to ${targetQueue} queue...`, delay: 700 },
-        { text: `Attaching the intake summary and category context (${effectiveCat}) to the operator dispatch...`, delay: 750 },
-        { text: `Logging escalation audit record in ${verifyData?.database_file || targetSystem}...`, delay: 700 },
-        { text: `Dispatching manual escalation advisory notice to ${cust.customer_email || "customer"}...`, delay: 600 },
-      ];
+      manualSteps = [{ text: "Preparing the proposed specialist routing...", delay: 400 }];
     } else {
-      manualSteps = [
-        { text: "Accessing internal customer transaction ledger (data/transactions.csv)...", delay: 650 },
-        { text: `Routing ticket #${targetRefId} and transaction ${dupTxnId} to Human Billing Specialist queue...`, delay: 700 },
-        { text: `Flagging duplicate charge ${dupTxnId} for manual ledger review...`, delay: 750 },
-        { text: "Logging escalation audit record in data/transactions.csv...", delay: 650 },
-        { text: `Dispatching escalation notice to ${cust.customer_email || "customer"}...`, delay: 600 },
-      ];
+      manualSteps = [{ text: "Checking the local ledger for a matching record...", delay: 400 }];
     }
 
     const engineTitle = !isRefundCategory
@@ -1542,10 +1518,10 @@ const renderResolutionActionButtons = async () => {
     let data = null;
     const apiPromise = fetch("/api/resolve/action", {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: "manual_resolve",
-        customer_id: cust.customer_id || "USR-10492",
+        customer_id: cust.customer_id,
         category: effectiveCat,
         query: q,
         notes: `Manual escalation to ${targetQueue} requested by operator via CRA console.`,
@@ -1556,6 +1532,18 @@ const renderResolutionActionButtons = async () => {
         data = res;
       })
       .catch((_) => {});
+
+    await apiPromise;
+    if (data?.status === "simulated") {
+      actionBar.textContent = data.resolution_action;
+      updateLiveStatus(actionBar.textContent, false);
+      return;
+    }
+    if (data?.ok !== true) {
+      actionBar.textContent = data?.error || "Troy could not confirm the requested action. Review the ticket before retrying.";
+      updateLiveStatus(actionBar.textContent, true);
+      return;
+    }
 
     for (let i = 0; i < manualSteps.length; i++) {
       if (counterEl) counterEl.textContent = `Step ${i + 1} of ${manualSteps.length}`;
@@ -1583,37 +1571,11 @@ const renderResolutionActionButtons = async () => {
       }
     }
 
-    await apiPromise;
     await new Promise((r) => setTimeout(r, 400));
 
     const c = data?.customer || cust;
     const queueName = data?.assigned_queue || data?.ticket?.predicted_team || targetQueue;
-    const displaySysFile = data?.database_file || (isRefundCategory ? "data/transactions.csv" : (verifyData?.database_file || verifyData?.system_label || targetSystem));
-
-    if (!isRefundCategory) {
-      actionBar.innerHTML = `
-        <div class="resolution-result-card manual">
-          <div class="result-card-header">
-            <svg class="badge-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-              <circle cx="12" cy="7" r="4"></circle>
-            </svg>
-            <strong>Customer #${c.customer_id} Escalated to ${queueName}</strong>
-            <span class="db-sync-tag manual">${displaySysFile}</span>
-          </div>
-          <div class="result-card-body">
-            <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || cust.customer_name}</strong> (${c.customer_id} &middot; ${c.customer_email || cust.customer_email})</div>
-            <div><span class="res-meta-lbl">Subscription Plan:</span> ${c.subscription_plan || cust.subscription_plan}</div>
-            <div><span class="res-meta-lbl">Account Status:</span> <span class="status-badge manual">${c.account_status || `Escalated - ${queueName} Review`}</span></div>
-            <div><span class="res-meta-lbl">Assigned Queue:</span> <strong>${queueName}</strong> (Target SLA: ${cachedCraReport?.predicted_sla_hours ? cachedCraReport.predicted_sla_hours + " hrs" : "Priority Routing"})</div>
-            <div><span class="res-meta-lbl">Ticket Reference:</span> <code>${data?.reference_id || targetRefId}</code> &middot; Escalation Action: <em>${data?.resolution_action || "Manual inspection pending"}</em></div>
-            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">${c.customer_notified || "Yes - Escalation Notice Sent"}</span> to ${c.customer_email || cust.customer_email}</div>
-            <div><span class="res-meta-lbl">System Audit:</span> Logged in <code>${displaySysFile}</code> at ${data?.timestamp || "Just now"}</div>
-          </div>
-        </div>
-      `;
-      updateLiveStatus(`Customer ticket #${data?.reference_id || targetRefId} routed to ${queueName}.`, false);
-    } else {
+    {
       actionBar.innerHTML = `
         <div class="resolution-result-card manual">
           <div class="result-card-header">
@@ -1629,7 +1591,7 @@ const renderResolutionActionButtons = async () => {
             <div><span class="res-meta-lbl">Account Status:</span> <span class="status-badge manual">${c.account_status || "Escalated - Billing Specialist Audit"}</span></div>
             <div><span class="res-meta-lbl">Assigned Queue:</span> <strong>${queueName}</strong> (Target SLA: 18.13 hrs)</div>
             <div><span class="res-meta-lbl">Transaction Reference:</span> <code>${dupTxnId} ($${planRate})</code> flagged for human review in <code>data/transactions.csv</code></div>
-            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Yes - Escalation Notice Sent</span> to ${c.customer_email || cust.customer_email || "alex.morgan@gmail.com"}</div>
+            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Draft only</span></div>
             <div><span class="res-meta-lbl">Ledger Audit:</span> Flagged in <code>data/transactions.csv</code> at ${data?.timestamp || "Just now"}</div>
           </div>
         </div>
@@ -1643,36 +1605,10 @@ const renderResolutionActionButtons = async () => {
     if (btnManual) btnManual.disabled = true;
 
     // Progressive autonomous resolution steps
-    let autoSteps = [];
-    if (!isRefundCategory) {
-      autoSteps = verifyData?.steps || [
-        { text: `Accessing ${verifyData?.system_label || "system directory"}...`, delay: 650 },
-        { text: `Locating account records for ${cust.customer_name || "customer"} (${cust.customer_id})...`, delay: 700 },
-        { text: `Diagnosing ${cat} issue: ${verifyData?.system_details || "analyzing telemetry"}...`, delay: 750 },
-        { text: `Formulating autonomous resolution: ${verifyData?.action_btn_text}...`, delay: 750 },
-        { text: `Updating database & system state under reference ${verifyData?.reference_id || activeRefId}...`, delay: 700 },
-        { text: `Dispatching confirmation notice to ${cust.customer_email}...`, delay: 600 },
-      ];
-    } else {
-      autoSteps = verifyData?.steps || (isAlreadyRefunded
-        ? [
-            { text: "Accessing internal transaction ledger (data/transactions.csv)...", delay: 650 },
-            { text: `Locating customer account: ${cust.customer_name || "Alex Morgan"} (${cust.customer_id || "USR-10492"})...`, delay: 700 },
-            { text: `Auditing ledger: Accidental duplicate record ${dupTxnId} was ALREADY refunded under ${activeRefId}...`, delay: 750 },
-            { text: `Verifying account balance: Active renewal ${retTxnId} ($${planRate}) valid; account balance is $0.00...`, delay: 750 },
-            { text: "Duplicate payout check: Secondary payout blocked to prevent duplicate billing credit...", delay: 700 },
-            { text: `Re-dispatching refund verification notice (${activeRefId}) to ${cust.customer_email || "alex.morgan@gmail.com"}...`, delay: 600 },
-          ]
-        : [
-            { text: "Accessing internal transaction ledger (data/transactions.csv)...", delay: 700 },
-            { text: `Found user transaction history: ${cust.customer_name || "Alex Morgan"} (${cust.customer_id || "USR-10492"})...`, delay: 750 },
-            { text: `Analyzing billing cycle ${cycle}: Found 2 settled transaction records ($${planRate} each)...`, delay: 800 },
-            { text: `Decision formulated: Refund redundant duplicate record ${dupTxnId} ($${planRate}) & retain valid renewal ${retTxnId}...`, delay: 850 },
-            { text: `Sending refund: Authorizing $${planRate} reversal via Stripe Gateway API (${activeRefId})...`, delay: 850 },
-            { text: `Making changes in database: Updating ${dupTxnId} status to 'Refunded' in data/transactions.csv...`, delay: 800 },
-            { text: `Dispatching refund confirmation receipt to ${cust.customer_email || "alex.morgan@gmail.com"}...`, delay: 650 },
-          ]);
-    }
+    const autoSteps = [{
+      text: isRefundCategory ? "Checking the local demo ledger result..." : "Preparing the demo action...",
+      delay: 400,
+    }];
 
     const engineTitle = !isRefundCategory
       ? `Troy Autonomous ${cat} Engine`
@@ -1698,18 +1634,18 @@ const renderResolutionActionButtons = async () => {
     let data = null;
     const apiPromise = fetch("/api/resolve/action", {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: "agent_resolve",
-        customer_id: cust.customer_id || "USR-10492",
+        customer_id: cust.customer_id,
         query: q,
         category: cat,
         action_details: !isRefundCategory
           ? (verifyData?.action_btn_text || `Resolved ${cat}`)
-          : (isAlreadyRefunded ? `Refund Verified & Confirmed (${activeRefId})` : `Refund Initiated ($${planRate} via Stripe API)`),
+          : (isAlreadyRefunded ? `Refund Verified & Confirmed (${activeRefId})` : `Refund Initiated ($${planRate} in the local demo ledger)`),
         notes: !isRefundCategory
           ? `Autonomous ${cat} resolution executed by Troy under reference ${verifyData?.reference_id || activeRefId}.`
-          : (isAlreadyRefunded ? `Autonomous audit verified that ${dupTxnId} was already refunded under ${activeRefId}. Duplicate payout blocked.` : `Autonomous override executed by Troy. Accidental double renewal debit reversed in Stripe API under ${activeRefId}.`),
+          : (isAlreadyRefunded ? `Autonomous audit verified that ${dupTxnId} was already refunded under ${activeRefId}. Duplicate payout blocked.` : `Autonomous override executed by Troy. Accidental double renewal debit marked refunded in the local demo ledger under ${activeRefId}.`),
       }),
     })
       .then((r) => r.json())
@@ -1721,6 +1657,18 @@ const renderResolutionActionButtons = async () => {
       });
 
     // Animate each progressive message sequentially
+    await apiPromise;
+    if (data?.status === "simulated") {
+      actionBar.textContent = data.resolution_action;
+      updateLiveStatus(actionBar.textContent, false);
+      return;
+    }
+    if (data?.ok !== true) {
+      actionBar.textContent = data?.error || "Troy could not confirm the requested action. Review the ticket before retrying.";
+      updateLiveStatus(actionBar.textContent, true);
+      return;
+    }
+
     for (let i = 0; i < autoSteps.length; i++) {
       if (counterEl) counterEl.textContent = `Step ${i + 1} of ${autoSteps.length}`;
       updateLiveStatus(`Troy: ${autoSteps[i].text}`, true);
@@ -1754,35 +1702,11 @@ const renderResolutionActionButtons = async () => {
     }
 
     // Await API completion
-    await apiPromise;
     await new Promise((r) => setTimeout(r, 450));
 
     // Render the final confirmation card
     const c = data?.customer || cust;
-    if (!isRefundCategory) {
-      actionBar.innerHTML = `
-        <div class="resolution-result-card agent">
-          <div class="result-card-header">
-            <svg class="badge-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-              <polyline points="22 4 12 14.01 9 11.01"></polyline>
-            </svg>
-            <strong>Autonomous Resolution Executed: ${cat}</strong>
-            <span class="db-sync-tag agent">${verifyData?.system_label || "System Synchronized"}</span>
-          </div>
-          <div class="result-card-body">
-            <div><span class="res-meta-lbl">Customer:</span> <strong>${c.customer_name || "Valued Customer"}</strong> (${c.customer_id} &middot; ${c.customer_email})</div>
-            <div><span class="res-meta-lbl">Subscription Plan:</span> ${c.subscription_plan || "Enterprise Tier"}</div>
-            <div><span class="res-meta-lbl">Category Audit:</span> <span class="status-badge verified">${cat} Reconciled</span></div>
-            <div><span class="res-meta-lbl">Autonomous Action:</span> <strong>${data?.resolution_action || data?.ticket?.resolution_action || verifyData?.action_btn_text || "Autonomous Resolution Executed"}</strong></div>
-            <div><span class="res-meta-lbl">Reference ID:</span> <code>${data?.reference_id || verifyData?.reference_id || activeRefId}</code> | <span class="status-badge agent">Active - In Good Standing</span></div>
-            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Yes - Confirmation Dispatched</span> to ${c.customer_email}</div>
-            <div><span class="res-meta-lbl">Audit Log:</span> Recorded in <code>${data?.database_file || verifyData?.database_file || verifyData?.system_label || "System Audit Log"}</code> at ${data?.timestamp || "Just now"} by Troy</div>
-          </div>
-        </div>
-      `;
-      updateLiveStatus(`Resolution autonomously executed by Troy for ${cat}. System updated.`, false);
-    } else if (isAlreadyRefunded) {
+    if (data?.already_refunded) {
       actionBar.innerHTML = `
         <div class="resolution-result-card agent">
           <div class="result-card-header">
@@ -1800,7 +1724,7 @@ const renderResolutionActionButtons = async () => {
             <div><span class="res-meta-lbl">Ledger Status:</span> <strong>${dupTxnId} already Refunded ($${planRate}) under ${c.refund_id || activeRefId}</strong></div>
             <div><span class="res-meta-lbl">Active Renewal:</span> <strong>${retTxnId} ($${planRate}) active &amp; settled</strong></div>
             <div><span class="res-meta-lbl">Duplicate Prevention:</span> <span class="status-badge agent">No Secondary Charge / Payout Required</span></div>
-            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Receipt Re-Dispatched (${c.refund_id || activeRefId})</span> to ${c.customer_email || cust.customer_email || "alex.morgan@gmail.com"}</div>
+            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Draft only</span></div>
             <div><span class="res-meta-lbl">Ledger Audit:</span> Verified in <code>data/transactions.csv</code> &middot; Audited by Troy</div>
           </div>
         </div>
@@ -1814,7 +1738,7 @@ const renderResolutionActionButtons = async () => {
               <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
               <polyline points="22 4 12 14.01 9 11.01"></polyline>
             </svg>
-            <strong>Autonomous Resolution Executed &amp; Ledger Updated</strong>
+            <strong>Local demo ledger updated</strong>
             <span class="db-sync-tag agent">data/transactions.csv Synced</span>
           </div>
           <div class="result-card-body">
@@ -1824,14 +1748,14 @@ const renderResolutionActionButtons = async () => {
             <div><span class="res-meta-lbl">Reconciled Ledger Action:</span> <strong>${dupTxnId} marked as Refunded ($${planRate}) in data/transactions.csv</strong></div>
             <div><span class="res-meta-lbl">Active Renewal Retained:</span> <strong>${retTxnId} ($${planRate}) retained as settled monthly renewal</strong></div>
             <div><span class="res-meta-lbl">Receipt &amp; ID:</span> <code>${c.refund_id || activeRefId}</code> | <span class="status-badge agent">Active - In Good Standing</span></div>
-            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Yes - Confirmation Dispatched</span> to ${c.customer_email || cust.customer_email || "alex.morgan@gmail.com"}</div>
+            <div><span class="res-meta-lbl">Customer Notice:</span> <span class="notified-tag">Draft only</span></div>
             <div><span class="res-meta-lbl">Audit Log:</span> Row ${dupTxnId} updated in <code>data/transactions.csv</code> at ${data?.timestamp || "Just now"} by Troy</div>
           </div>
         </div>
       `;
-      updateLiveStatus("Resolution autonomously executed by Troy. data/transactions.csv updated & duplicate charge refunded.", false);
+      updateLiveStatus("Duplicate marked refunded in the local demo ledger.", false);
     }
-    markFeedCardResolved();
+    markFeedCardComplete(data?.already_refunded ? "Ledger verified" : "Ledger updated");
   });
 };
 
@@ -1873,11 +1797,18 @@ const finishTransformedStream = (fullText = "") => {
   renderResolutionActionButtons();
 
   isTypingTransformed = false;
-  updateLiveStatus("Resolution complete & formulated by Troy.", false);
+  const completionLabels = {
+    refunded: "Ledger updated",
+    already_refunded: "Ledger verified",
+    needs_review: "Needs review",
+    demo_only: "Demo draft",
+  };
+  const completionLabel = completionLabels[cachedResolutionEnd?.execution_status] || "Draft ready";
+  updateLiveStatus(completionLabel, false);
 
   pendingResolutionEnd = false;
   isResolving = false;
-  markFeedCardResolved();
+  markFeedCardComplete(completionLabel);
   if (fetchNextBtn) {
     fetchNextBtn.disabled = false;
     fetchNextBtn.classList.remove("is-loading");
@@ -2063,6 +1994,9 @@ let intakeCycleIndex = 0;
 let intakeCycleTimer = null;
 let cachedCraReport = null;
 let cachedResolutionEnd = null;
+let activeTicketQuery = "";
+let activeStoryKey = null;
+let consoleRevision = 0;
 let cachedResolutionText = null;
 let hasDeliveredIntakeSummary = false;
 let isIntakeCycling = false;
@@ -2169,6 +2103,40 @@ const onIntakeCycleComplete = () => {
   }
 };
 
+const renderCaseReferences = (report) => {
+  const local = report?.case_source === "local_resolved_ticket_corpus";
+  const cases = report?.similar_cases || [];
+  const section = document.createElement("section");
+  section.className = "intake-case-references";
+  const title = document.createElement("strong");
+  title.textContent = local ? "Local resolved-ticket corpus" : "Static category examples";
+  section.append(title);
+
+  if (!cases.length) {
+    const status = document.createElement("p");
+    status.textContent = report?.case_search_status === "unavailable"
+      ? "The local index is unavailable."
+      : (local ? "No matching resolved tickets." : "No examples available.");
+    section.append(status);
+    return section;
+  }
+
+  const list = document.createElement("ul");
+  for (const entry of cases) {
+    const item = document.createElement("li");
+    const heading = document.createElement("strong");
+    heading.textContent = local ? `Ticket #${entry.ticket_id}` : `Example #${entry.ticket_id}`;
+    const description = document.createElement("p");
+    description.textContent = entry.description || "";
+    const notes = document.createElement("p");
+    notes.textContent = `Resolution notes: ${entry.resolution_notes || entry.resolution || ""}`;
+    item.append(heading, description, notes);
+    list.append(item);
+  }
+  section.append(list);
+  return section;
+};
+
 const deliverIntakeSummary = (report) => {
   if (hasDeliveredIntakeSummary) return;
   hasDeliveredIntakeSummary = true;
@@ -2181,7 +2149,6 @@ const deliverIntakeSummary = (report) => {
   const team = report?.recommended_team || "Billing Team";
   const sla = report?.sla?.estimated_hours || 18.0;
   const slaRisk = report?.sla?.sla_risk || "Low";
-  const similarCount = report?.similar_cases?.length || 0;
 
   const refs = report?.extracted_entities?.references || [];
   const dates = report?.extracted_entities?.dates || [];
@@ -2214,7 +2181,7 @@ const deliverIntakeSummary = (report) => {
             <span class="intake-badge">Intake Summary</span>
           </div>
           <div class="intake-desc">
-            Troy read the ticket, pulled out the key references, and routed it using your SLA rules. The full assessment follows below.
+            Troy read the ticket, pulled out the key references, and recommended a team and SLA. The full assessment follows below.
           </div>
           <div class="intake-grid">
             <div class="intake-item">
@@ -2222,16 +2189,12 @@ const deliverIntakeSummary = (report) => {
               <span class="intake-val">${cat}</span>
             </div>
             <div class="intake-item">
-              <span class="intake-label">Routed to</span>
+              <span class="intake-label">Recommended team</span>
               <span class="intake-val">${team}</span>
             </div>
             <div class="intake-item">
               <span class="intake-label">Target SLA</span>
               <span class="intake-val">${sla} Hours <span class="intake-highlight">(Risk: ${slaRisk})</span></span>
-            </div>
-            <div class="intake-item">
-              <span class="intake-label">Reference Cases</span>
-              <span class="intake-val">${similarCount} attached</span>
             </div>
           </div>
           ${entitiesHtml}
@@ -2239,6 +2202,8 @@ const deliverIntakeSummary = (report) => {
       </div>
     </div>
   `;
+
+  intakeCard.querySelector(".intake-summary-card").append(renderCaseReferences(report));
 
   // Insert immediately before Troy's main resolution card
   const troyCard = document.getElementById("troy-card") || document.getElementById("booting-card");
@@ -2256,6 +2221,7 @@ const deliverIntakeSummary = (report) => {
 };
 
 const resetTroyConsole = () => {
+  consoleRevision++;
   stopTransformedStreamTicker();
   stopIntakeCycle();
   isTypingTransformed = false;
@@ -2344,14 +2310,8 @@ const startResolutionFlow = async () => {
     return;
   }
 
-  const pConfig = PROVIDERS[provider];
-  const requiresKey = pConfig ? pConfig.requiresKey !== false : true;
-  const apiKeyInput = document.getElementById("api-key-input");
-  const apiKey = apiKeyInput?.value?.trim() || "";
-  if (requiresKey && !apiKey) {
-    triggerInputError(apiKeyInput, "API key has not been entered.");
-    return;
-  }
+  // The server can supply a saved or host-configured key for this provider.
+  const apiKey = document.getElementById("api-key-input")?.value?.trim() || "";
 
   isResolving = true;
   if (fetchNextBtn) {
@@ -2360,15 +2320,18 @@ const startResolutionFlow = async () => {
     fetchNextBtn.innerHTML = `<span class="btn-spinner" aria-hidden="true"></span> Resolving...`;
   }
 
+  activeStoryKey = null;
+  activeTicketQuery = query;
   showSummarizingFeedCard(query);
   resetTroyConsole();
   startIntakeCycle();
   setStatusTopic(query.slice(0, 40) + "...");
 
+  isSubmittingResolution = true;
   try {
     const res = await fetch("/api/next", {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query, provider, model, apiKey }),
     });
     const data = await res.json();
@@ -2385,6 +2348,8 @@ const startResolutionFlow = async () => {
       fetchNextBtn.textContent = "Begin Resolution";
     }
     updateLiveStatus("Resolution failed to start.", false);
+  } finally {
+    isSubmittingResolution = false;
   }
 };
 
@@ -2399,10 +2364,9 @@ const connectLiveStream = () => {
     } catch (_) {}
   }
 
-  const token = localStorage.getItem("agenticCouncilIdToken");
-  const streamUrl = token ? `/api/stream?token=${encodeURIComponent(token)}` : "/api/stream";
-  const stream = new EventSource(streamUrl);
+  const stream = new EventSource("/api/stream");
   activeEventSource = stream;
+  let interruptedRevision = null;
 
   stream.addEventListener("open", () => {
     console.log("[SSE] Connected to CRA Troy event stream.");
@@ -2418,6 +2382,9 @@ const connectLiveStream = () => {
   const handleSummarizing = (e) => {
     try {
       const data = JSON.parse(e.data);
+      activeStoryKey = null;
+      activeTicketQuery = data.query || "";
+      if (cachedResolutionEnd) resetTroyConsole();
       showSummarizingFeedCard(data.query);
     } catch (_) {}
   };
@@ -2427,6 +2394,10 @@ const connectLiveStream = () => {
   stream.addEventListener("feed", (e) => {
     try {
       const data = JSON.parse(e.data);
+      const storyKey = JSON.stringify([data.publishedAt, data.title, data.description]);
+      if (storyKey === activeStoryKey) return;
+      activeStoryKey = storyKey;
+      activeTicketQuery = data.description || "";
       setActiveFeedCard(data);
     } catch (_) {}
   });
@@ -2550,52 +2521,87 @@ const connectLiveStream = () => {
     } catch (_) {}
   });
 
-  const onComplete = (e) => {
-    try {
-      if (e?.data) {
-        const data = JSON.parse(e.data);
-        // Cache Troy's decision payload so the action-button gate can
-        // consult it before renderResolutionActionButtons runs.
-        cachedResolutionEnd = data;
-        if (data.sections) {
-          if (data.sections.executive) cachedSplitParts.part1 = data.sections.executive;
-          if (data.sections.root_cause) cachedSplitParts.part2 = data.sections.root_cause;
-          if (data.sections.customer_comms) cachedSplitParts.part3 = data.sections.customer_comms;
-          if (data.sections.internal_routing) cachedSplitParts.part4 = data.sections.internal_routing;
-        } else if (data.full_resolution) {
-          const split = splitResolutionSections(data.full_resolution);
-          cachedSplitParts = { ...cachedSplitParts, ...split };
-        }
-      }
-    } catch (_) {}
-
-    finishTransformedStream();
+  const showResolutionError = (message) => {
+    isResolving = false;
+    stopIntakeCycle();
+    stopTransformedStreamTicker();
+    showTopWarning(message);
+    if (fetchNextBtn) {
+      fetchNextBtn.disabled = false;
+      fetchNextBtn.classList.remove("is-loading");
+      fetchNextBtn.textContent = "Begin Resolution";
+    }
+    markFeedCardComplete("Resolution failed");
+    updateLiveStatus(message, false);
   };
 
+  const applyResolution = (data) => {
+    if (data.run_id && data.run_id === cachedResolutionEnd?.run_id) return;
+    cachedResolutionEnd = data;
+    if (data.error) {
+      showResolutionError(data.error);
+      return;
+    }
+    cachedCraReport = data.cra_report || cachedCraReport;
+    if (data.sections) {
+      cachedSplitParts = {
+        part1: data.sections.executive || "",
+        part2: data.sections.root_cause || "",
+        part3: data.sections.customer_comms || "",
+        part4: data.sections.internal_routing || "",
+      };
+    } else if (data.full_resolution) {
+      cachedSplitParts = splitResolutionSections(data.full_resolution);
+    }
+    finishTransformedStream(data.full_resolution);
+  };
+
+  const onComplete = (e) => {
+    try {
+      applyResolution(JSON.parse(e.data));
+    } catch (_) {}
+  };
+
+  stream.addEventListener("session_snapshot", (e) => {
+    try {
+      const { story, resolution, running } = JSON.parse(e.data);
+      const reconnectingActiveRun = interruptedRevision === consoleRevision;
+      interruptedRevision = null;
+      if (resolution && resolution.run_id !== cachedResolutionEnd?.run_id) {
+        resetTroyConsole();
+        activeTicketQuery = story?.description || "";
+        applyResolution(resolution);
+      } else if (!resolution && running && (!isResolving || cachedResolutionEnd)) {
+        resetTroyConsole();
+        if (!story) {
+          activeStoryKey = null;
+          activeTicketQuery = "";
+          showSummarizingFeedCard("");
+        }
+        isResolving = true;
+        if (fetchNextBtn) fetchNextBtn.disabled = true;
+        updateLiveStatus("Resolution in progress", true);
+      } else if (reconnectingActiveRun && !resolution && !running && isResolving && !isSubmittingResolution) {
+        showResolutionError("The resolution was interrupted. Submit the complaint again.");
+      }
+    } catch (_) {}
+  });
   stream.addEventListener("resolution_end", onComplete);
   stream.addEventListener("council_end", onComplete);
 
   stream.addEventListener("error", (e) => {
-    let msg = "Resolution connection interrupted or encountered an error.";
-    if (e?.data) {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.message) msg = data.message;
-      } catch (_) {}
+    if (!e?.data) {
+      interruptedRevision = isResolving && !isSubmittingResolution ? consoleRevision : null;
+      return; // EventSource reconnects after transport failures.
     }
-    console.warn("[SSE]", msg);
-    if (e?.data && isResolving) {
-      isResolving = false;
-      stopIntakeCycle();
-      stopTransformedStreamTicker();
-      showTopWarning(msg);
-      if (fetchNextBtn) {
-        fetchNextBtn.disabled = false;
-        fetchNextBtn.classList.remove("is-loading");
-        fetchNextBtn.textContent = "Begin Resolution";
+    try {
+      const data = JSON.parse(e.data);
+      if (data.run_id) {
+        applyResolution(data);
+      } else if (isResolving) {
+        showResolutionError(data.message || "Resolution connection interrupted or encountered an error.");
       }
-      updateLiveStatus(msg, false);
-    }
+    } catch (_) {}
   });
 };
 

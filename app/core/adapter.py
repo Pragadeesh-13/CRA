@@ -27,8 +27,12 @@ import copy
 import logging
 import threading
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
+from urllib.parse import quote
+
+from httpx import TransportError
 
 from app.utils.time_utils import _utcnow_iso
 
@@ -162,6 +166,15 @@ class CsvDataAdapter(DataStoreAdapter):
 
         return db
 
+    def _ledger_scope(self):
+        if self.transactions_file is None and self.accounts_file is None:
+            return nullcontext()
+        transactions = self.transactions_file or self.accounts_file.with_name("transactions.csv")
+        accounts = self.accounts_file or self.transactions_file.with_name("customer_accounts.csv")
+        if transactions.resolve() == accounts.resolve():
+            raise ValueError("Customer and transaction ledgers must use different files")
+        return self._db.use_ledger_files(transactions, accounts)
+
     def _find_customer(self, identifier: str) -> Optional[Dict[str, Any]]:
         db = self._db
         ident = (identifier or "").strip()
@@ -200,7 +213,8 @@ class CsvDataAdapter(DataStoreAdapter):
     # -- interface -----------------------------------------------------------
 
     def get_customer(self, identifier: str) -> Optional[Dict[str, Any]]:
-        customer = self._find_customer(identifier)
+        with self._ledger_scope():
+            customer = self._find_customer(identifier)
         if customer is not None:
             self._record_audit({"event": "get_customer", "identifier": identifier, "found": True})
         else:
@@ -208,37 +222,40 @@ class CsvDataAdapter(DataStoreAdapter):
         return customer
 
     def get_transactions(self, customer_id: str, **kwargs: Any) -> List[Dict[str, Any]]:
+        with self._ledger_scope():
+            return self._get_transactions(customer_id, **kwargs)
+
+    def _get_transactions(self, customer_id: str, **kwargs: Any) -> List[Dict[str, Any]]:
         db = self._db
         filters = {k: v for k, v in kwargs.items() if v is not None}
-        if self.transactions_file is None:
-            if filters:
-                allowed = {"customer_id", "order_id", "status", "billing_cycle", "transaction_id"}
-                call_kwargs = {k: filters[k] for k in allowed if k in filters}
-                if customer_id:
-                    call_kwargs.setdefault("customer_id", customer_id)
-                results = db.query_transactions(**call_kwargs)
-            elif customer_id:
-                results = db.query_transactions(customer_id=customer_id)
-                if not results:
-                    try:
-                        results = db.find_transactions_for_query(customer_id=customer_id, query=customer_id) or []
-                    except Exception:
-                        results = []
-            else:
-                results = db.read_all_transactions()
-            return [dict(r) for r in results]
-        # Explicit-file mode.
-        all_txns = db.read_all_transactions()
-        target = _norm(customer_id)
-        out = [
-            dict(t)
-            for t in all_txns
-            if (not target or _norm(t.get("customer_id")) == target)
-            and all(str(t.get(k, "")) == str(v) for k, v in filters.items())
-        ]
-        return out
+        if filters:
+            allowed = {"customer_id", "order_id", "status", "billing_cycle", "transaction_id"}
+            call_kwargs = {k: filters[k] for k in allowed if k in filters}
+            if customer_id:
+                call_kwargs.setdefault("customer_id", customer_id)
+            results = db.query_transactions(**call_kwargs)
+            custom_filters = {k: v for k, v in filters.items() if k not in allowed}
+            if custom_filters:
+                results = [
+                    row for row in results
+                    if all(str(row.get(k, "")) == str(v) for k, v in custom_filters.items())
+                ]
+        elif customer_id:
+            results = db.query_transactions(customer_id=customer_id)
+            if not results and self.transactions_file is None:
+                try:
+                    results = db.find_transactions_for_query(customer_id=customer_id, query=customer_id) or []
+                except Exception:
+                    results = []
+        else:
+            results = db.read_all_transactions()
+        return [dict(r) for r in results]
 
     def execute_action(self, action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        with self._ledger_scope():
+            return self._execute_action(action_name, params)
+
+    def _execute_action(self, action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         params = dict(params or {})
         db = self._db
         action = (action_name or "").strip()
@@ -368,8 +385,10 @@ class InMemoryDataAdapter(DataStoreAdapter):
                         self.customers[_norm(cid)] = record
         if transactions:
             if isinstance(transactions, Mapping):
-                for value in transactions.values():
-                    self.transactions.append(_copy(value))
+                for key, value in transactions.items():
+                    record = _copy(value)
+                    record.setdefault("transaction_id", str(key))
+                    self.transactions.append(record)
             else:
                 for value in transactions:
                     self.transactions.append(_copy(value))
@@ -427,10 +446,14 @@ class InMemoryDataAdapter(DataStoreAdapter):
 
     def get_transactions(self, customer_id: str, **kwargs: Any) -> List[Dict[str, Any]]:
         target = _norm(customer_id)
-        filters = {k: v for k, v in kwargs.items() if v is not None}
+        id_fields = {"order_id", "transaction_id"}
+        ids = {k: _norm(v) for k, v in kwargs.items() if k in id_fields and v is not None}
+        filters = {k: v for k, v in kwargs.items() if k not in id_fields and v is not None}
         out: List[Dict[str, Any]] = []
         for txn in self.transactions:
             if target and _norm(txn.get("customer_id")) != target:
+                continue
+            if any(_norm(txn.get(k)) != v for k, v in ids.items()):
                 continue
             if all(str(txn.get(k, "")) == str(v) for k, v in filters.items()):
                 out.append(_copy(txn))
@@ -449,10 +472,18 @@ class InMemoryDataAdapter(DataStoreAdapter):
                 duplicate_txn_id = str(
                     params.get("duplicate_txn_id") or params.get("transaction_id") or params.get("txn_id") or ""
                 )
-                target = next((t for t in self.transactions if _norm(t.get("transaction_id")) == _norm(duplicate_txn_id)), None)
-                if target is None:
+                target_id = _norm(duplicate_txn_id)
+                matches = [
+                    row for row in self.transactions if target_id and _norm(row.get("transaction_id")) == target_id
+                ]
+                target = matches[0] if len(matches) == 1 else None
+                if not target_id:
+                    result = {"ok": False, "status": "Failed", "action": action, "error": "Transaction ID is required"}
+                elif len(matches) > 1:
+                    result = {"ok": False, "status": "Failed", "action": action, "error": "Transaction ID is ambiguous"}
+                elif target is None:
                     result = {"ok": False, "status": "Failed", "action": action, "error": f"Transaction {duplicate_txn_id} not found"}
-                elif target.get("status") == "Refunded":
+                elif _norm(target.get("status")) == "REFUNDED":
                     result = {
                         "ok": True,
                         "status": "Refunded",
@@ -582,7 +613,7 @@ class RestApiDataAdapter(DataStoreAdapter):
     # -- HTTP plumbing ---------------------------------------------------------
 
     def _url(self, path_template: str, **values: Any) -> str:
-        path = path_template.format(**{k: str(v) for k, v in values.items()})
+        path = path_template.format(**{key: quote(str(value), safe="") for key, value in values.items()})
         if path.startswith("http://") or path.startswith("https://"):
             return path
         return f"{self.base_url}/{path.lstrip('/')}" if self.base_url else path
@@ -624,8 +655,13 @@ class RestApiDataAdapter(DataStoreAdapter):
         else:
             data = getattr(response, "data", response)
         if isinstance(data, dict):
+            if getattr(response, "status_code", None) == 202:
+                return {**data, "status": "Accepted"}
             return data
-        return {"ok": True, "data": data}
+        if method.lower() == "post":
+            return {"ok": True, "status": "Accepted" if getattr(response, "status_code", None) == 202
+                    else "Unconfirmed", "data": data}
+        return data
 
     def close(self) -> None:
         if self._owned_client is not None and hasattr(self._owned_client, "close"):
@@ -637,11 +673,11 @@ class RestApiDataAdapter(DataStoreAdapter):
     def get_customer(self, identifier: str) -> Optional[Dict[str, Any]]:
         url = self._url(self.endpoints["customer"], identifier=identifier)
         data = self._request("get", url)
-        customer = data.get("customer") if isinstance(data, dict) and "customer" in data else data
-        if isinstance(customer, dict) and customer.get("ok") is False:
-            self._record_audit({"event": "get_customer", "identifier": identifier, "found": False})
-            return None
-        if isinstance(customer, dict) and customer:
+        if isinstance(data, dict) and data.get("ok") is not False:
+            customer = data.get("customer", data)
+        else:
+            customer = None
+        if isinstance(customer, dict) and customer and customer.get("ok") is not False:
             self._record_audit({"event": "get_customer", "identifier": identifier, "found": True})
             return customer
         self._record_audit({"event": "get_customer", "identifier": identifier, "found": False})
@@ -652,20 +688,28 @@ class RestApiDataAdapter(DataStoreAdapter):
         params = {"customer_id": customer_id, **{k: v for k, v in kwargs.items() if v is not None}}
         data = self._request("get", url, params=params)
         if isinstance(data, list):
-            return [dict(r) for r in data]
-        if isinstance(data, dict):
-            txns = data.get("transactions") or data.get("data") or data.get("items") or []
-            if isinstance(txns, list):
-                return [dict(r) for r in txns if isinstance(r, Mapping)]
+            return [dict(r) for r in data if isinstance(r, Mapping)]
+        if isinstance(data, dict) and data.get("ok") is not False:
+            for field in ("transactions", "data", "items"):
+                txns = data.get(field)
+                if txns is not None:
+                    if isinstance(txns, list):
+                        return [dict(r) for r in txns if isinstance(r, Mapping)]
+                    break
         return []
 
     def execute_action(self, action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         url = self._url(self.endpoints["action"], action_name=action_name)
-        data = self._request("post", url, json=dict(params or {}))
+        try:
+            data = self._request("post", url, json=dict(params or {}))
+        except TransportError:
+            data = {"status": "Unconfirmed", "error": "The remote tool did not return an action outcome."}
         if isinstance(data, dict):
             result = data
         else:
             result = {"ok": True, "data": data}
+        if result.get("ok") is not False and not str(result.get("status") or "").strip():
+            result["status"] = "Unconfirmed"
         result.setdefault("ok", True)
         result.setdefault("action", action_name)
         self._record_audit({"event": "execute_action", "action": action_name, "params": dict(params or {}), "ok": bool(result.get("ok"))})

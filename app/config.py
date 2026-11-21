@@ -15,6 +15,7 @@ def parse_allowed_origins() -> List[str]:
 class Settings(BaseModel):
     port: int = Field(default_factory=lambda: int(os.getenv("PORT", "3000")))
     auth_mode: str = Field(default_factory=lambda: os.getenv("AUTH_MODE", "optional").lower())
+    webhook_token: str = Field(default_factory=lambda: os.getenv("TROY_WEBHOOK_TOKEN", ""))
     llm_provider: str = Field(default_factory=lambda: os.getenv("LLM_PROVIDER", "lmstudio").lower())
     llm_model: str = Field(default_factory=lambda: os.getenv("LLM_MODEL", "qwen/qwen3.5-9b"))
     lmstudio_base_url: str = Field(
@@ -39,13 +40,11 @@ class Settings(BaseModel):
     )
     key_encryption_secret: str = Field(
         default_factory=lambda: os.getenv(
-            "KEY_ENCRYPTION_SECRET", "6c407159a54cc53fe814dda34fd67f8dc74dedb0830c0d99a5a539b73e524eb6"
+            "KEY_ENCRYPTION_SECRET", ""
         )
     )
-    firebase_project_id: str = Field(default_factory=lambda: os.getenv("FIREBASE_PROJECT_ID", "llm-council-4da2d"))
-    firebase_web_api_key: str = Field(
-        default_factory=lambda: os.getenv("FIREBASE_WEB_API_KEY", "AIzaSyDIwGeB4nnmpb2Ufhh8AMNvw0OKFYi67gQ")
-    )
+    firebase_project_id: str = Field(default_factory=lambda: os.getenv("FIREBASE_PROJECT_ID", ""))
+    firebase_web_api_key: str = Field(default_factory=lambda: os.getenv("FIREBASE_WEB_API_KEY", ""))
     log_level: str = Field(default_factory=lambda: os.getenv("LOG_LEVEL", "info"))
 
 

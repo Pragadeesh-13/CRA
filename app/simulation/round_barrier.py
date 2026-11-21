@@ -1,22 +1,20 @@
 import asyncio
-import math
+from decimal import Decimal, InvalidOperation
 from typing import Optional, Dict, List, Set, Callable, Any
 
 
 def normalize_round_number(value: Any) -> Optional[int]:
-    if value is None or isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
         return None
-    if isinstance(value, (dict, list)):
-        return None
-    if isinstance(value, str) and not value.strip():
-        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
     try:
-        parsed = float(value)
-        if not math.isfinite(parsed) or parsed < 0:
-            return None
-        return int(parsed)
-    except (ValueError, TypeError):
+        parsed = Decimal(value)
+    except InvalidOperation:
         return None
+    if not parsed.is_finite() or parsed < 0 or parsed.adjusted() > 308:
+        return None
+    return int(parsed) if parsed == parsed.to_integral_value() else None
 
 
 class RoundBarrier:

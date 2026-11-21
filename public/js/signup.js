@@ -18,13 +18,12 @@ if (signupForm) {
     setSignupFeedback("");
 
     const fullName = document.getElementById("full-name")?.value?.trim() || "";
-    const username = document.getElementById("username")?.value?.trim() || "";
     const email = document.getElementById("email")?.value?.trim() || "";
     const password = document.getElementById("password")?.value || "";
     const confirmPassword = document.getElementById("confirm-password")?.value || "";
     const termsAccepted = Boolean(document.getElementById("terms")?.checked);
 
-    if (!fullName || !username || !email || !password || !confirmPassword) {
+    if (!fullName || !email || !password || !confirmPassword) {
       setSignupFeedback("Please fill in all required fields.");
       return;
     }
@@ -58,7 +57,7 @@ if (signupForm) {
       const response = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fullName, username, email, password, confirmPassword }),
+        body: JSON.stringify({ fullName, email, password, confirmPassword }),
       });
       const payload = await response.json();
 
@@ -67,10 +66,7 @@ if (signupForm) {
         return;
       }
 
-      setSignupFeedback("Account created. Redirecting to login...", "success");
-      setTimeout(() => {
-        window.location.href = "login.html";
-      }, 800);
+      setSignupFeedback(payload.message || "Verify your email before signing in.", "success");
     } catch (error) {
       setSignupFeedback("Unable to reach server. Please try again.");
     } finally {

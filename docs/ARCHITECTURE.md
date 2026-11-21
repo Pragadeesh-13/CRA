@@ -110,13 +110,18 @@ fixed, auditable pipeline:
    customer + transaction + order, so replays are safe.
 6. **Report** — a JSON-serialisable result is returned containing the
    status (`resolved` / `already_refunded` / `dry_run` /
-   `pending_approval`), category, team, SLA, extracted entities,
-   actions taken, and a customer-ready `customer_communication` message.
+   `pending_approval` / `needs_review` / `not_executed` /
+   `action_failed` / `action_unconfirmed`), category, recommended team, SLA,
+   extracted entities, action outcome and a draft `customer_communication` message.
 
-The interactive console (`app/simulation/troy.py`) runs the same intent
-routing with an LLM, streams progress over SSE, and — for refund-domain
-tickets — inspects the ledger and executes the duplicate-charge
-remediation autonomously before generating the final report.
+The interactive console (`app/simulation/troy.py`) streams a demo assessment
+over SSE. Refund-domain tickets can update the local CSV ledger when the
+duplicate is verified. Other console actions and routing are illustrative.
+Triage supplies static category examples by default. If configured with
+`TROY_PRECEDENT_INDEX`, it performs a local SQLite FTS5 keyword search over
+resolved ticket descriptions and returns source ticket IDs and notes. The
+console renders matches as text. Corpus content stays out of model prompts.
+The console uses no live payment, notification or ticketing service.
 
 ## 4. Configuration model
 

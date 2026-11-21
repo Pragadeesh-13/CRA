@@ -67,21 +67,13 @@
 
                 <form id="login-form" action="" class="form" autocomplete="on" novalidate>
                     <div class="field-group">
-                        <label for="username">Username</label>
-                        <input type="text" id="username" name="username" placeholder="Enter your username" required>
+                        <label for="email">Email</label>
+                        <input type="email" id="email" name="email" autocomplete="username" placeholder="Enter your email" required>
                     </div>
 
                     <div class="field-group">
                         <label for="password">Password</label>
                         <input type="password" id="password" name="password" placeholder="Enter your password" required>
-                    </div>
-
-                    <div class="form-meta">
-                        <label class="remember-wrap" for="remember-me">
-                            <input type="checkbox" id="remember-me" name="remember-me">
-                            <span>Remember me</span>
-                        </label>
-                        <a href="#" class="meta-link">Forgot password?</a>
                     </div>
 
                     <button type="submit" class="login-btn">
@@ -104,7 +96,10 @@
                     <p id="login-feedback" class="form-feedback" aria-live="polite"></p>
                 </form>
 
-                <p class="signup-row">
+                <p class="signup-row" id="demo-access" hidden>
+                    <button type="button" class="google-btn" id="continue-as-guest">Continue to shared demo as a guest</button>
+                </p>
+                <p class="signup-row" id="account-signup">
                     New here?
                     <a href="signup.html" class="meta-link">Create an account</a>
                 </p>

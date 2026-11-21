@@ -36,12 +36,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_ENTITY_PATTERNS: Dict[str, List[str]] = {
-    "orders": [r"ORD-\d+", r"order[\s:_#-]*([A-Z0-9-]{4,})"],
-    "customers": [r"USR-\d+", r"customer[\s:_#-]*([A-Z0-9-]{4,})"],
-    "transactions": [r"TXN-\d+"],
-    "invoices": [r"INV-\d+", r"invoice[\s:_#-]*([A-Z0-9-]{4,})"],
-    "subscriptions": [r"SUB-\d+", r"subscription[\s:_#-]*([A-Z0-9-]{4,})"],
-    "tickets": [r"TCK-\d+", r"ticket[\s:_#-]*([A-Z0-9-]{4,})"],
+    "orders": [r"\bORD-\d+\b", r"\border[\s:_#]+([A-Z0-9-]*\d[A-Z0-9-]*)\b"],
+    "customers": [r"\bUSR-\d+\b", r"\bcustomer[\s:_#]+([A-Z0-9-]*\d[A-Z0-9-]*)\b"],
+    "transactions": [r"\bTXN-\d+\b"],
+    "events": [r"\b(?:EVT|EVENT)[_-][A-Z0-9]+\b"],
+    "invoices": [r"\bINV-\d+\b", r"\binvoice[\s:_#]+([A-Z0-9-]*\d[A-Z0-9-]*)\b"],
+    "subscriptions": [r"\bSUB-\d+\b", r"\bsubscription[\s:_#]+([A-Z0-9-]*\d[A-Z0-9-]*)\b"],
+    "tickets": [r"\bTCK-\d+\b", r"\bticket[\s:_#]+([A-Z0-9-]*\d[A-Z0-9-]*)\b"],
 }
 
 
@@ -146,6 +147,7 @@ class PolicyConfig(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     auto_refund_limit: float = 50.0
+    auto_credit_limit: float = 50.0
     # Aliases that mean the same thing in caller-supplied dicts.
     approval_required: bool = False
     require_approval: Optional[bool] = None
@@ -312,7 +314,9 @@ class SaaSConfig(BaseModel):
             raise RuntimeError(
                 "PyYAML is required to load YAML SaaS configs; install with `pip install pyyaml`"
             ) from exc
-        data = yaml.safe_load(text) or {}
+        data = yaml.safe_load(text)
+        if data is None:
+            data = {}
         if not isinstance(data, Mapping):
             raise ValueError("YAML SaaS config must be a mapping at the top level")
         return cls.model_validate(dict(data))

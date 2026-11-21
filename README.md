@@ -1,10 +1,7 @@
 
 # Complaint Resolution Agent (CRA) — Troy
 
-**Troy** is an autonomous AI agent designed to investigate, triage, and resolve customer complaints end-to-end.
-
-Rather than functioning as a traditional chatbot that offers generic canned responses or links to FAQs, Troy acts as an autonomous resolution specialist: he diagnoses issues, verifies live customer records, retrieves precedent solutions from hundreds of thousands of past tickets, and executes concrete remediations (such as issuing refunds, adjusting account balances, resetting locked accounts, or dispatching invoices) in real time.
-
+**Troy** classifies customer complaints, checks records supplied by a data adapter, and can execute a supported remediation through a configured tool. The operator console uses example scenarios and a local CSV ledger.
 ---
 
 ## Troy as an Open-Source Tool
@@ -43,13 +40,56 @@ Canonical exports: `Troy`, `resolve`, `tool`, `load_config`,
 import troy
 
 config = troy.load_config({'product_name': 'MyApp', 'domain': 'example.com'})
-agent = troy.Troy(
-    config=config,
-    adapter=troy.InMemoryDataAdapter(customers=[...], transactions=[...]),
-    # or: troy.CsvDataAdapter() / troy.RestApiDataAdapter("https://api.example.com")
+adapter = troy.InMemoryDataAdapter(
+    customers=[{
+        'customer_id': 'USR-10492',
+        'customer_name': 'Alex Morgan',
+        'reference_order_id': 'ORD-88219',
+    }],
+    transactions=[
+        {
+            'transaction_id': 'TXN-9011',
+            'customer_id': 'USR-10492',
+            'order_id': 'ORD-88219',
+            'transaction_date': '2026-10-20',
+            'amount': '49.00',
+            'status': 'Settled',
+        },
+        {
+            'transaction_id': 'TXN-9012',
+            'customer_id': 'USR-10492',
+            'order_id': 'ORD-88219',
+            'transaction_date': '2026-10-21',
+            'amount': '49.00',
+            'status': 'Settled',
+        },
+    ],
 )
-result = agent.resolve('complaint text', dry_run=True)  # preview, no changes
+agent = troy.Troy(config=config, adapter=adapter)
+result = agent.resolve(
+    'I was charged twice for order ORD-88219, customer USR-10492.',
+    dry_run=True,
+)
+print(result['status'], result['summary'])
+print(result['customer_communication'])
 ```
+
+With LM Studio stopped, Troy uses its built-in message template.
+
+### Jev classification with LM Studio Bionic
+
+Load a decision model in Bionic or LM Studio and start its API server. Use the model's server identifier as `TROY_JEV_MODEL`.
+
+```bash
+export TROY_JEV_MODEL='your-decision-model-id'
+python troy.py 'Webhook deliveries are timing out with HTTP 504.' --dry-run --json
+```
+
+The classifier uses `POST /v1/systemone` and scores all 11 complaint categories by default. The Python SDK, CLI, and SaaS API use the categories from the product configuration. The operator console and triage API use the standard CRA categories.
+
+The endpoint defaults to `LMSTUDIO_BASE_URL` or `http://localhost:1234/v1`. Set `TROY_JEV_BASE_URL` if the decision model runs on a different server and `TROY_JEV_API_KEY` if that server requires a token. Set these variables in `.env` for the web server or export them for CLI and Python usage. Keep `LLM_MODEL` set to your chat model for customer replies and summaries.
+
+When `TROY_JEV_MODEL` is unset, Troy uses its existing classifiers. If the decision server is unavailable or returns an invalid answer, the SDK uses its existing intent-based routing and the console and triage API use their rules fallback. Classification does not authorize actions. The SDK still checks the complaint, the records, and the configured tools and policies.
 
 ### CLI usage
 
@@ -80,94 +120,40 @@ python -m pytest tests/test_troy_opensource_tool.py tests/test_saas_plug_and_pla
 
 ---
 
-## 🎥 Walkthrough: Meet Troy in Action
+## Supported SDK actions
 
-> Watch Troy autonomously triage a live complaint, verify customer transactional ledgers, cross-reference institutional precedents, and execute remediation in real time.
+| Request | Category and default team | Tool | Verified inputs |
+|---|---|---|---|
+| Duplicate charge | Refunds · Billing | `issue_refund` (default) | Matching customer, order and transactions. Two distinct settled charges with equal positive amounts, currency and billing cycle when recorded. |
+| Invoice delivery | Billing · Billing | `send_invoice` | `customer_id`, `invoice_id` |
+| Account lockout | Authentication & Access · Tier 1 Support | `unlock_account` | `customer_id` |
+| Subscription credit | Subscriptions · Billing | `apply_subscription_credit` | `customer_id`, `subscription_id`, `amount` |
+| Webhook retry | Integrations & APIs · Engineering | `retry_webhook` | `customer_id`, `event_id` |
 
-https://github.com/user-attachments/assets/a54769be-e2e2-4f77-818a-992695f4c85f
+Register the exact tool name with `agent.register_tool(..., name=...)` or pass a configured tool registry when constructing the SDK or SaaS router. The default agent and standalone CLI have no invoice, unlock, credit or webhook integration. Specify the resource ID in the complaint or in the request context. Tools receive identifiers checked against the adapter's customer record. Store `invoice_id`, `subscription_id` or `event_id` on that record. The adapter can also provide lists in `invoice_ids`, `subscription_ids` or `event_ids`. Credits use the primary subscription's stored `subscription_credit_amount`. A caller-supplied amount cannot replace a ledger or credit record. Let the tool enforce service-specific authorization, account recovery, recipient and delivery rules.
 
-## What Problem Does CRA Solve?
+`approval_required`, the refund and credit limits, `dry_run`, and `auto_execute` control dispatch. The SDK, CLI JSON and SaaS routes return the same outcome and report. `needs_review` means a tool, verified evidence or consistent instructions are missing. `pending_approval`, `dry_run` and `not_executed` leave the action open. `action_failed` means execution failed and `action_unconfirmed` means the tool did not confirm completion. A draft customer message is included in the result.
 
-Customer support teams face a recurring challenge: high ticket volumes filled with predictable, actionable issues (double billing, proration disputes, account lockouts, API webhook timeouts). Human agents spend hours manually cross-referencing customer IDs, checking payment gateways, copying past precedents, and applying standard fixes.
+## Operator console demo
 
-CRA transforms this workflow into an **autonomous resolution pipeline**:
-- **Zero-touch remediation for standard issues:** Troy identifies the root problem, inspects transactional databases, and applies the necessary fixes autonomously.
-- **Institutional memory at scale:** Every new complaint is cross-referenced with 248,000+ historical precedents to ensure consistency and compliance with company policies.
-- **Auditable and safe:** Troy verifies database states before taking action, enforces idempotency to prevent duplicate refunds, and documents every decision transparently for human operators.
+The walkthrough illustrates the demo workflow. https://github.com/user-attachments/assets/a54769be-e2e2-4f77-818a-992695f4c85f
 
----
+The console classifies complaints and shows recommended teams, SLA estimates, case references and drafted responses. With the default configuration it displays static category examples.
 
-## How It Works: The Resolution Lifecycle
+Refund and flag-for-review actions in the console can update `data/transactions.csv` and its demo account records. The console has no payment gateway or notification service. Non-refund action and routing cards illustrate the workflow with demo records. For real business actions, configure tools on an SDK or SaaS client and authorize the caller before dispatch.
 
-When a customer submits a complaint, Troy guides the ticket through a 5-stage resolution process:
+### Optional local precedent search
 
-```
-Customer Complaint
-       │
-       ▼
-1. Triage & Classification ──► Identifies complaint category, urgency & department
-       │
-       ▼
-2. Precedent Retrieval   ──► Searches 248,000+ historical cases for proven resolutions
-       │
-       ▼
-3. Account Verification  ──► Inspects live transactions, order IDs & account status
-       │
-       ▼
-4. Autonomous Execution  ──► Issues refunds, updates ledger, resets access, or syncs data
-       │
-       ▼
-5. Customer Resolution   ──► Streams an empathetic, detailed resolution report to the user
+Import a de-identified CSV in the [documented ticket format](dataset_details.md) with a Python build that includes SQLite FTS5. Keep the source and index outside the web root.
+
+```bash
+python -m app.precedents /path/to/complaints-deduplicated.csv /path/to/precedents.sqlite3
+TROY_PRECEDENT_INDEX=/path/to/precedents.sqlite3 python run.py
 ```
 
-1. **Intelligent Triage & Categorization**  
-   Analyzes the customer's text to determine intent across 11 key operational domains (Billing, Refunds, Subscriptions, Security, Authentication, Bugs, System Performance, Data Sync, Integrations & APIs, Account Management, and Onboarding).
+The importer indexes `Resolved` and `Closed` rows with resolution notes. Use `--replace` to rebuild an existing index. Triage searches complaint text against the indexed issue descriptions and returns up to three keyword matches with the original ticket IDs and notes. The console labels these as local corpus results. The search returns no similarity percentages, and corpus text is kept out of model prompts.
 
-2. **Precedent Retrieval & Institutional Memory**  
-   Semantically compares the incoming complaint against a vector database of **248,000+ historically resolved complaints**, identifying institutional precedents and benchmark resolution strategies with similarity confidence scores.
-
-3. **System of Record & Ledger Investigation**  
-   Extracts key references (Order numbers, User IDs, dates, monetary amounts) and queries live customer databases. Troy determines whether the customer actually experienced an erroneous charge, a system lock, or a service outage before taking action.
-
-4. **Autonomous Remediation & Execution**  
-   Executes real state updates directly against databases and service APIs:
-   - Identifies duplicate debits and issues automated refunds via payment gateways.
-   - Recalculates subscription tiers and credits prorated differences.
-   - Clears failed login counters and initiates backup authentication codes.
-   - Flushes message queues and adjusts API timeout thresholds.
-   - *All actions are state-aware and idempotent: if a refund was already processed, Troy detects the existing refund ID rather than double-crediting.*
-
-5. **Live Transparent Communication**  
-   Troy live-streams his analytical thought process, data findings, and final empathetic resolution letter directly into an interactive console for real-time customer or operator visibility.
-
----
-
-## Supported Complaint Scenarios
-
-Troy comes pre-configured with resolution playbooks across multiple domains:
-
-| Scenario | What Troy Investigates | Autonomous Action Executed |
-|---|---|---|
-| **Duplicate Subscription Debit** | Audits customer billing ledger across dates and order IDs | Detects duplicate settled transactions, initiates gateway refund, and updates ledger to clean standing. |
-| **Prorated Tier Downgrade** | Compares active subscription tier with requested tier and invoice amount | Calculates proration delta ($50.00 difference) and credits customer account balance. |
-| **2FA / SMS Gateway Lockout** | Checks user authentication logs for gateway delivery failures | Flushes SMS session locks and dispatches emergency backup OTP. |
-| **API Webhook 504 Timeouts** | Inspects endpoint logs and delivery retry queues | Triggers webhook queue re-delivery and adjusts gateway retry thresholds. |
-| **Corporate Tax & VAT Invoicing** | Checks enterprise customer tax ID and jurisdiction status | Generates compliant EU VAT reverse-charge tax invoice and attaches receipt. |
-| **Department Routing & SLA Tracking** | Evaluates issue complexity, product line, and urgency | Routes ticket to Engineering, Billing, Security, or Tier 1 Support with SLA resolution timeframes. |
-
----
-
-## The Interactive Operator Console
-
-The CRA interface offers a complete command center for managing and observing complaints:
-
-- **Live Streaming Resolution:** Watch Troy's reasoning unfold token-by-token as he verifies data, compares precedents, and formulates customer responses.
-- **Customer Verification & Ledger Card:** Displays live before-and-after database records, customer metadata, and audit logs showing the exact timestamp and ID of actions taken.
-- **Autonomous & Manual Modes:** Choose between full autonomous remediation by Troy or human-in-the-loop approval where operators review recommendations before executing changes.
-- **Precedent Comparison Panel:** Review the exact historical tickets Troy referenced, including their match scores and original resolution notes.
-- **Theme & Interface Controls:** Modern light and dark themes with real-time status indicators.
-
----
+A configured index with no matches or an unreadable index produces an empty result with an explicit search status. An unset `TROY_PRECEDENT_INDEX` retains static category examples. The triage API and console return the notes verbatim. Use only data approved for those audiences and enable `AUTH_MODE=required` for restricted deployments.
 
 ## Quickstart
 
@@ -199,7 +185,9 @@ Create your `.env` file (or copy from `.env.example`):
 cp .env.example .env
 ```
 
-Configure your preferred LLM provider in `.env` (defaults to local LM Studio on port 1235, or set `LLM_PROVIDER=openai` / `anthropic` with your API key).
+Configure your preferred LLM provider in `.env` (defaults to local LM Studio on port 1234, or set `LLM_PROVIDER=openai` / `anthropic` with your API key).
+
+For a shared local demo, leave `AUTH_MODE=optional`. Guest sessions share the demo workspace. For account access, set `AUTH_MODE=required` or `production`, configure `FIREBASE_PROJECT_ID` and `FIREBASE_WEB_API_KEY` for your Firebase project, enable the desired Firebase sign-in methods, and serve the console over HTTPS. Password signup creates a Firebase account and sends an email verification link. The server checks credentials and email verification before starting an account session. Google sign-in exchanges a verified Firebase ID token for the same kind of session. Application sessions are held in process and expire after 12 hours.
 
 ### 3. Launch the Application
 
@@ -213,7 +201,7 @@ Open your browser at **http://localhost:3000** to enter the Complaint Resolution
 
 ## Running Tests
 
-Run the test suite to verify classification, precedent matching, database actions, and resolution workflows:
+Run the test suite to verify classification, demo case reporting, database actions, and resolution workflows:
 
 ```bash
 pytest

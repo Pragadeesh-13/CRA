@@ -38,7 +38,7 @@ def clean_env(monkeypatch):
     yield
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def isolated_database(tmp_path, monkeypatch):
     """
     Database isolation fixture (Feature 8).

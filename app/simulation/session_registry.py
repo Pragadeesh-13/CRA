@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import Dict, Any, Optional
 from app.simulation.state import SimulationState
@@ -16,8 +17,17 @@ class SessionBundle:
         self.state = state
         self.barrier = barrier
         self.orchestrator = orchestrator
+        self.task: Optional[asyncio.Task] = None
         self.troy = orchestrator
         self.last_used_at = time.time()
+
+    def is_busy(self) -> bool:
+        return (self.task is not None and not self.task.done()) or self.orchestrator.is_running()
+
+    def close(self, reason: str):
+        if self.task and not self.task.done():
+            self.task.cancel()
+        self.sse_manager.close_all(reason)
 
 
 class SessionRegistry:
@@ -70,7 +80,7 @@ class SessionRegistry:
             )
             if oldest_key:
                 old = self._sessions.pop(oldest_key)
-                old.sse_manager.close_all("Session expired")
+                old.close("Session expired")
 
         new_bundle = self._create_bundle()
         self._sessions[user_id] = new_bundle
@@ -78,7 +88,7 @@ class SessionRegistry:
 
     def close_all(self):
         for bundle in self._sessions.values():
-            bundle.sse_manager.close_all()
+            bundle.close("Server shutting down")
         self._sessions.clear()
         self._default = self._create_bundle()
         self._sessions[DEFAULT_SESSION_ID] = self._default

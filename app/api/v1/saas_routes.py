@@ -21,15 +21,20 @@ See ``docs/MODULES.md`` for the full module reference.
 
 from __future__ import annotations
 
-import logging
+from decimal import Decimal
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from app.auth.session import has_webhook_relay_token
+from app.config import settings
+from app.http.execution_flags import execution_flag
+from app.http.request_json import (
+    COMPLAINT_FIELDS, ID_TYPES, EnvelopeError, check_field, envelope_error,
+    read_field, read_json_object, resolution_fields,
+)
 from app.sdk.client import TroyClient, _jsonable
-
-logger = logging.getLogger(__name__)
 
 SUPPORTED_PROVIDERS = ["zendesk", "intercom", "stripe", "freshdesk", "shopify", "slack", "generic"]
 
@@ -84,6 +89,47 @@ def _dig(payload: Dict[str, Any], *paths: str) -> Optional[Any]:
 # ---------------------------------------------------------------------------
 
 
+def _webhook_text(data: dict, *keys: str) -> Optional[str]:
+    for key in ("message", "comment"):
+        nested = data.get(key)
+        if key in keys and isinstance(nested, dict):
+            data = {**data, key: read_field(nested, "text", "body", "description", kind="text", types=(str,))}
+    return read_field(data, *keys, kind="text", types=(str,))
+
+
+def _webhook_id(data: dict, *keys: str) -> Optional[str | int]:
+    return read_field(data, *keys, kind="text or an integer", types=ID_TYPES)
+
+
+def _event_label(data: dict, *keys: str) -> Optional[str]:
+    if "event" in keys and isinstance(data.get("event"), dict):
+        data = {**data, "event": data["event"].get("type")}
+    return read_field(data, *keys, kind="text", types=(str,))
+
+
+def _webhook_replay_key(provider: str, request: Request, body: dict) -> Optional[str]:
+    """Use delivery identity only after the trusted relay authenticates."""
+    if provider not in SUPPORTED_PROVIDERS:
+        return None
+    event_id = request.headers.get("X-Troy-Webhook-Event-Id")
+    if event_id is None:
+        if provider == "stripe" and body.get("object") == "event":
+            event_id = body.get("id")
+        elif provider == "slack" and body.get("type") == "event_callback":
+            event_id = body.get("event_id")
+        elif provider == "intercom" and body.get("type") == "notification_event":
+            event_id = body.get("id")
+        elif provider == "shopify":
+            event_id = request.headers.get("X-Shopify-Event-Id")
+    if event_id is None:
+        return None
+    check_field(event_id, "webhook event ID", "text", (str,))
+    event_id = event_id.strip()
+    if not event_id or len(event_id) > 255 or any(not 33 <= ord(char) <= 126 for char in event_id):
+        raise EnvelopeError("Webhook event ID must be a nonempty delivery identifier of at most 255 characters.")
+    return f"webhook:{provider}:{event_id}"
+
+
 def normalize_webhook_payload(provider: str, payload: Any) -> Dict[str, Any]:
     """
     Normalise a provider webhook payload into Troy's canonical shape::
@@ -106,17 +152,19 @@ def normalize_webhook_payload(provider: str, payload: Any) -> Dict[str, Any]:
     extra: Dict[str, Any] = {}
 
     if provider_name == "zendesk":
-        ticket = data.get("ticket") if isinstance(data.get("ticket"), dict) else data
+        ticket = check_field(data.get("ticket"), "ticket", "an object", (dict,))
+        if ticket is None:
+            ticket = data
         requester = ticket.get("requester") if isinstance(ticket.get("requester"), dict) else data.get("requester") or {}
         if not isinstance(requester, dict):
             requester = {}
-        subject = _first(ticket, "subject", "title") or _first(data, "subject", "title")
-        complaint = _first(ticket, "description", "comment", "body", "complaint", "query", "text") or _first(data, "description", "comment", "body", "complaint")
-        customer_id = _first(ticket, "customer_id", "requester_id", "requesterId") or _first(requester, "id", "customer_id")
+        subject = _webhook_text(ticket, "subject", "title") or _webhook_text(data, "subject", "title")
+        complaint = _webhook_text(ticket, "description", "comment", "body", "complaint", "query", "text") or _webhook_text(data, "description", "comment", "body", "complaint")
+        customer_id = _webhook_id(ticket, "customer_id", "requester_id", "requesterId") or _webhook_id(requester, "id", "customer_id")
         customer_email = _first(requester, "email", "customer_email") or _first(ticket, "email", "customer_email")
         customer_name = _first(requester, "name", "customer_name") or _first(ticket, "name", "customer_name")
-        order_id = _first(ticket, "order_id", "orderId") or _first(data, "order_id")
-        event_type = _first(data, "type", "event", "event_type") or _first(ticket, "status")
+        order_id = _webhook_id(ticket, "order_id", "orderId") or _webhook_id(data, "order_id")
+        event_type = _event_label(data, "type", "event", "event_type") or _first(ticket, "status")
         extra = {"ticket_id": _first(ticket, "id", "ticket_id")}
 
     elif provider_name == "intercom":
@@ -126,54 +174,69 @@ def normalize_webhook_payload(provider: str, payload: Any) -> Dict[str, Any]:
         user = _dig(data, "data.user", "user", "contact", "customer") or {}
         if not isinstance(user, dict):
             user = {}
-        subject = _first(item, "title", "subject", "name") or _first(data, "subject", "title")
+        subject = _webhook_text(item, "title", "subject", "name") or _webhook_text(data, "subject", "title")
         complaint = (
-            _first(item, "body", "description", "complaint", "query", "text", "message")
-            or _first(data, "body", "description", "complaint", "query", "text", "message")
+            _webhook_text(item, "body", "description", "complaint", "query", "text", "message")
+            or _webhook_text(data, "body", "description", "complaint", "query", "text", "message")
         )
-        customer_id = _first(item, "customer_id") or _first(user, "id", "customer_id", "external_id")
+        customer_id = _webhook_id(item, "customer_id") or _webhook_id(user, "id", "customer_id", "external_id")
         customer_email = _first(user, "email", "customer_email") or _first(item, "email")
         customer_name = _first(user, "name", "customer_name") or _first(item, "name")
-        order_id = _first(item, "order_id", "orderId") or _first(data, "order_id")
-        event_type = _first(data, "type", "event", "event_type", "topic")
+        order_id = _webhook_id(item, "order_id", "orderId") or _webhook_id(data, "order_id")
+        event_type = _event_label(data, "type", "event", "event_type", "topic")
         extra = {"conversation_id": _first(item, "id", "conversation_id")}
 
     elif provider_name == "freshdesk":
-        ticket = data.get("ticket") if isinstance(data.get("ticket"), dict) else data
+        ticket = check_field(data.get("ticket"), "ticket", "an object", (dict,))
+        if ticket is None:
+            ticket = data
         requester = ticket.get("requester") if isinstance(ticket.get("requester"), dict) else data.get("requester") or {}
         if not isinstance(requester, dict):
             requester = {}
-        subject = _first(ticket, "subject", "title") or _first(data, "subject", "title")
-        complaint = _first(ticket, "description", "body", "complaint", "query", "text") or _first(data, "description", "body", "complaint")
-        customer_id = _first(ticket, "customer_id", "requester_id", "requesterId", "contact_id") or _first(requester, "id", "customer_id")
+        subject = _webhook_text(ticket, "subject", "title") or _webhook_text(data, "subject", "title")
+        complaint = _webhook_text(ticket, "description", "body", "complaint", "query", "text") or _webhook_text(data, "description", "body", "complaint")
+        customer_id = _webhook_id(ticket, "customer_id", "requester_id", "requesterId", "contact_id") or _webhook_id(requester, "id", "customer_id")
         customer_email = _first(requester, "email", "customer_email") or _first(ticket, "email", "customer_email")
         customer_name = _first(requester, "name", "customer_name") or _first(ticket, "name", "customer_name")
-        order_id = _first(ticket, "order_id", "orderId") or _first(data, "order_id")
-        event_type = _first(data, "type", "event", "event_type") or _first(ticket, "status")
+        order_id = _webhook_id(ticket, "order_id", "orderId") or _webhook_id(data, "order_id")
+        event_type = _event_label(data, "type", "event", "event_type") or _first(ticket, "status")
         extra = {"ticket_id": _first(ticket, "id", "ticket_id")}
 
     elif provider_name == "stripe":
+        event_data = check_field(data.get("data"), "data", "an object", (dict,)) or {}
+        check_field(event_data.get("object"), "data.object", "an object", (dict,))
         obj = _dig(data, "data.object", "data", "object", "charge", "payment_intent", "invoice") or {}
         if not isinstance(obj, dict):
             obj = {}
-        event_type = _first(data, "type", "event", "event_type") or _first(obj, "type", "status")
+        if not obj and data.get("object") != "event":
+            obj = data
+        for field in ("customer", "invoice"):
+            if isinstance(obj.get(field), dict):
+                reference = _webhook_id(obj[field], "id")
+                if reference is None:
+                    raise EnvelopeError(f"Stripe {field} object must include an ID.")
+                obj = {**obj, field: reference}
+        event_type = _event_label(data, "type", "event", "event_type") or _event_label(obj, "type", "status")
         metadata = obj.get("metadata") if isinstance(obj.get("metadata"), dict) else data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
-        amount = obj.get("amount") or obj.get("amount_refunded") or obj.get("total")
+        amount = read_field(obj, "amount", "amount_refunded", "total", kind="text or a number", types=(str, int, float))
         amount_str = ""
         if isinstance(amount, (int, float)) and amount:
-            amount_str = f" ${amount / 100:.2f}" if amount >= 100 else f" ${amount:.2f}"
-        description = _first(obj, "description", "reason", "statement_descriptor") or _first(data, "description", "")
-        subject = _first(obj, "id", "invoice", "customer") and f"Stripe event {event_type or 'charge'}"
-        complaint = (
-            f"Stripe webhook {event_type or 'event'}: {description or 'charge event'}"
-            f"{amount_str} for customer {obj.get('customer') or ''}".strip()
-        )
-        if "refund" in str(event_type or "").lower() or "refund" in str(description or "").lower():
-            complaint = f"Customer was charged twice and requests a refund. {complaint}"
-        customer_id = _first(metadata, "customer_id", "customerId") or _first(obj, "customer", "customer_id")
+            monetary_amount = Decimal(str(amount))
+            amount_str = f" ${monetary_amount / 100 if amount >= 100 else monetary_amount:.2f}"
+        description = _webhook_text(obj, "description", "reason", "statement_descriptor") or _webhook_text(data, "description")
+        resource = _webhook_id(obj, "id", "invoice", "customer")
+        subject = f"Stripe event {event_type or 'charge'}" if resource is not None else None
+        if description or resource is not None:
+            complaint = (
+                f"Stripe webhook {event_type or 'event'}: {description or 'charge event'}"
+                f"{amount_str} for customer {obj.get('customer') or ''}".strip()
+            )
+            if "refund" in (event_type or "").lower() or "refund" in (description or "").lower():
+                complaint = f"Customer was charged twice and requests a refund. {complaint}"
+        customer_id = _webhook_id(metadata, "customer_id", "customerId") or _webhook_id(obj, "customer", "customer_id")
         customer_email = _first(obj, "receipt_email", "email", "customer_email") or _first(metadata, "customer_email", "email")
-        order_id = _first(metadata, "order_id", "orderId") or _first(obj, "order_id", "invoice")
-        transaction_id = _first(metadata, "transaction_id", "transactionId") or _first(obj, "id", "transaction_id")
+        order_id = _webhook_id(metadata, "order_id", "orderId") or _webhook_id(obj, "order_id", "invoice")
+        transaction_id = _webhook_id(metadata, "transaction_id", "transactionId") or _webhook_id(obj, "id", "transaction_id")
         # Stripe ids (ch_..., pi_...) are not TXN- ids; only keep them as the
         # transaction reference when no TXN-style id is present.
         extra = {"stripe_event_id": _first(data, "id", "event_id"), "amount": amount, "currency": obj.get("currency")}
@@ -189,19 +252,19 @@ def normalize_webhook_payload(provider: str, payload: Any) -> Dict[str, Any]:
             customer = {}
         # Complaint: note / cancel_reason / reason (plus generic fallbacks).
         complaint = (
-            _first(order, "note", "cancel_reason", "cancelReason", "reason", "description", "body", "complaint", "query", "text")
-            or _first(data, "note", "cancel_reason", "cancelReason", "reason", "description", "body", "complaint", "query", "text")
+            _webhook_text(order, "note", "cancel_reason", "cancelReason", "reason", "description", "body", "complaint", "query", "text")
+            or _webhook_text(data, "note", "cancel_reason", "cancelReason", "reason", "description", "body", "complaint", "query", "text")
             or _dig(data, "order.note", "order.cancel_reason", "data.note", "data.cancel_reason")
         )
         # Order id: name ("#1001") / order_number / order_id / id.
         order_id = (
-            _first(order, "name", "order_number", "order_id", "orderId", "id")
-            or _first(data, "name", "order_number", "order_id", "orderId")
+            _webhook_id(order, "name", "order_number", "order_id", "orderId", "id")
+            or _webhook_id(data, "name", "order_number", "order_id", "orderId")
         )
         customer_id = (
-            _first(customer, "id", "customer_id", "customerId")
-            or _first(order, "customer_id", "customerId")
-            or _first(data, "customer_id", "customerId")
+            _webhook_id(customer, "id", "customer_id", "customerId")
+            or _webhook_id(order, "customer_id", "customerId")
+            or _webhook_id(data, "customer_id", "customerId")
         )
         customer_email = (
             _first(customer, "email", "customer_email")
@@ -220,8 +283,8 @@ def normalize_webhook_payload(provider: str, payload: Any) -> Dict[str, Any]:
             or _first(data, "customer_name", "name")
         )
         subject = (
-            _first(order, "title", "subject")
-            or _first(data, "title", "subject")
+            _webhook_text(order, "title", "subject")
+            or _webhook_text(data, "title", "subject")
             or (f"Shopify order {order_id}" if order_id else None)
         )
         event_type = (
@@ -229,10 +292,10 @@ def normalize_webhook_payload(provider: str, payload: Any) -> Dict[str, Any]:
             or _first(order, "financial_status", "fulfillment_status", "cancel_reason")
         )
         extra = {
-            "order_number": _first(order, "order_number") or _first(data, "order_number"),
+            "order_number": _webhook_id(order, "order_number") or _webhook_id(data, "order_number"),
             "shopify_order_id": _first(order, "id") or _first(data, "id"),
             "financial_status": _first(order, "financial_status"),
-            "cancel_reason": _first(order, "cancel_reason", "cancelReason") or _first(data, "cancel_reason", "cancelReason"),
+            "cancel_reason": _webhook_text(order, "cancel_reason", "cancelReason") or _webhook_text(data, "cancel_reason", "cancelReason"),
         }
 
     elif provider_name == "slack":
@@ -246,13 +309,13 @@ def normalize_webhook_payload(provider: str, payload: Any) -> Dict[str, Any]:
         if not isinstance(user_obj, dict):
             user_obj = {}
         complaint = (
-            _first(data, "text", "message", "complaint", "body", "query", "description")
-            or _first(message, "text", "message", "complaint", "body")
+            _webhook_text(data, "text", "message", "complaint", "body", "query", "description")
+            or _webhook_text(message, "text", "message", "complaint", "body")
         )
         customer_id = (
-            _first(data, "user_id", "userId", "customer_id", "customerId")
-            or _first(message, "user_id", "userId", "customer_id", "customerId")
-            or _first(user_obj, "id", "customer_id", "user_id")
+            _webhook_id(data, "user_id", "userId", "customer_id", "customerId")
+            or _webhook_id(message, "user_id", "userId", "customer_id", "customerId")
+            or _webhook_id(user_obj, "id", "customer_id", "user_id")
         )
         # ``user`` may itself be the id string.
         if customer_id is None:
@@ -269,10 +332,10 @@ def normalize_webhook_payload(provider: str, payload: Any) -> Dict[str, Any]:
             or _first(message, "customer_email", "email")
             or _first(user_obj, "email", "customer_email")
         )
-        order_id = _first(data, "order_id", "orderId") or _first(message, "order_id", "orderId")
-        transaction_id = _first(data, "transaction_id", "transactionId") or _first(message, "transaction_id", "transactionId")
-        subject = _first(data, "subject", "title") or _first(message, "subject", "title")
-        event_type = _first(data, "type", "event", "event_type", "topic", "action") or _first(message, "type", "event_type")
+        order_id = _webhook_id(data, "order_id", "orderId") or _webhook_id(message, "order_id", "orderId")
+        transaction_id = _webhook_id(data, "transaction_id", "transactionId") or _webhook_id(message, "transaction_id", "transactionId")
+        subject = _webhook_text(data, "subject", "title") or _webhook_text(message, "subject", "title")
+        event_type = _event_label(data, "type", "event", "event_type", "topic", "action") or _first(message, "type", "event_type")
         extra = {
             "channel": _first(data, "channel", "channel_id", "channelId") or _first(message, "channel", "channel_id"),
             "user_id": customer_id,
@@ -282,15 +345,15 @@ def normalize_webhook_payload(provider: str, payload: Any) -> Dict[str, Any]:
 
     # Generic (and fallback for every provider).
     if complaint is None:
-        complaint = _first(
+        complaint = _webhook_text(
             data,
             "complaint", "query", "text", "message", "description", "body", "content", "issue",
             "note", "cancel_reason", "cancelReason", "reason",
         ) or _dig(data, "ticket.description", "ticket.body", "ticket.complaint", "conversation.body", "data.item.body", "data.object.description", "order.note", "order.cancel_reason", "event.text", "message.text")
     if subject is None:
-        subject = _first(data, "subject", "title") or _dig(data, "ticket.subject", "ticket.title", "data.item.title")
+        subject = _webhook_text(data, "subject", "title") or _dig(data, "ticket.subject", "ticket.title", "data.item.title")
     if customer_id is None:
-        customer_id = _first(data, "customer_id", "customerId", "user_id", "userId", "requester_id") or _dig(data, "customer.id", "user.id", "user_id", "requester.id", "ticket.requester_id", "event.user", "message.user")
+        customer_id = _webhook_id(data, "customer_id", "customerId", "user_id", "userId", "requester_id") or _dig(data, "customer.id", "user.id", "user_id", "requester.id", "ticket.requester_id", "event.user", "message.user")
         if isinstance(customer_id, dict):
             customer_id = _first(customer_id, "id", "customer_id", "user_id")
     if customer_email is None:
@@ -298,11 +361,20 @@ def normalize_webhook_payload(provider: str, payload: Any) -> Dict[str, Any]:
     if customer_name is None:
         customer_name = _first(data, "customer_name", "name", "user_name", "userName", "username") or _dig(data, "customer.name", "user.name", "user_name", "requester.name", "customer.first_name")
     if order_id is None:
-        order_id = _first(data, "order_id", "orderId", "order_number") or _dig(data, "customer.order_id", "ticket.order_id", "data.object.metadata.order_id", "order.name", "order.order_number", "order.order_id")
+        order_id = _webhook_id(data, "order_id", "orderId", "order_number") or _dig(data, "customer.order_id", "ticket.order_id", "data.object.metadata.order_id", "order.name", "order.order_number", "order.order_id")
     if transaction_id is None:
-        transaction_id = _first(data, "transaction_id", "transactionId", "txn_id") or _dig(data, "ticket.transaction_id", "data.object.metadata.transaction_id")
+        transaction_id = _webhook_id(data, "transaction_id", "transactionId", "txn_id") or _dig(data, "ticket.transaction_id", "data.object.metadata.transaction_id")
     if event_type is None:
-        event_type = _first(data, "type", "event", "event_type", "topic", "action")
+        event_type = _event_label(data, "type", "event", "event_type", "topic", "action")
+
+    check_field(complaint, "webhook complaint", "text", (str,))
+    check_field(subject, "webhook subject", "text", (str,))
+    for field, value in (("customer_id", customer_id), ("order_id", order_id), ("transaction_id", transaction_id)):
+        check_field(value, field, "text or an integer", ID_TYPES)
+    for field, value in (("customer_email", customer_email), ("customer_name", customer_name)):
+        check_field(value, field, "text", (str,))
+    # Some provider status codes (e.g. Freshdesk ticket status) are integers.
+    check_field(event_type, "event_type", "text or an integer", ID_TYPES)
 
     if subject and complaint and str(subject).lower() not in str(complaint).lower():
         complaint_text = f"{subject}: {complaint}"
@@ -334,29 +406,24 @@ normalize_payload = normalize_webhook_payload
 normalize_webhook = normalize_webhook_payload
 
 
-async def _json_body(request: Request) -> Dict[str, Any]:
-    try:
-        body = await request.json()
-    except Exception:
-        return {}
-    return body if isinstance(body, dict) else {"value": body}
-
-
 def _client_for_body(body: Dict[str, Any], base_client: TroyClient) -> TroyClient:
     """Honour a per-request ``config`` override while sharing data."""
     config = body.get("config") if isinstance(body, dict) else None
     if config is None:
         return base_client
+    allowed = {"product_name", "support_email", "domain", "branding"}
+    if not isinstance(config, dict) or set(config) - allowed:
+        raise HTTPException(400, "Request config supports product_name, support_email, domain and branding")
     try:
         return TroyClient(
-            config=config,
+            config={**base_client.config.model_dump(), **config},
             adapter=base_client.adapter,
             tool_registry=base_client.tool_registry,
             driver=base_client.driver,
+            review_queue=base_client.review_queue,
         )
-    except Exception as exc:
-        logger.warning("Ignoring invalid per-request SaaS config: %s", exc)
-        return base_client
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid request branding configuration") from exc
 
 
 def _info_payload(client: TroyClient) -> Dict[str, Any]:
@@ -410,26 +477,38 @@ def create_saas_router(client: Optional[TroyClient] = None, **_ignored: Any) -> 
 
     @router.post("/resolve")
     async def saas_resolve(request: Request, dep_client: TroyClient = Depends(get_saas_client)):
-        body = await _json_body(request)
-        complaint = _first(body, "complaint", "query", "text", "message", "ticket", "description", "body")
-        if not complaint or not str(complaint).strip():
-            return JSONResponse(status_code=400, content={"ok": False, "status": "Failed", "error": "Complaint text is required."})
+        body = await read_json_object(request)
+        if body is None:
+            return envelope_error()
+        try:
+            complaint = read_field(body, *COMPLAINT_FIELDS, kind="text", types=(str,))
+            options = resolution_fields(body, request.headers.get("Idempotency-Key"))
+        except EnvelopeError as exc:
+            return envelope_error(str(exc))
+        if not complaint or not complaint.strip():
+            return envelope_error("Complaint text is required.")
         troy_client = _client_for_body(body, _resolve_client(dep_client))
-        context = body.get("context") if isinstance(body.get("context"), dict) else None
-        result = await troy_client.resolve_ticket(
-            str(complaint),
-            customer_id=_first(body, "customer_id", "customerId"),
-            order_id=_first(body, "order_id", "orderId"),
-            context=context,
-            auto_execute=bool(body.get("auto_execute", body.get("autoExecute", True))),
-            dry_run=bool(body.get("dry_run", body.get("dryRun", False))),
+        return await troy_client.resolve_ticket(
+            complaint,
+            **options,
+            auto_execute=execution_flag(body, "auto_execute", "autoExecute", True),
+            dry_run=execution_flag(body, "dry_run", "dryRun", False),
         )
-        return result
 
     @router.post("/webhooks/{provider}")
     async def saas_webhook(provider: str, request: Request, dep_client: TroyClient = Depends(get_saas_client)):
-        body = await _json_body(request)
-        normalized = normalize_webhook_payload(provider, body)
+        verified_relay = has_webhook_relay_token(request)
+        if settings.webhook_token and not verified_relay:
+            raise HTTPException(401, "Webhook relay authentication required")
+        body = await read_json_object(request)
+        if body is None:
+            return envelope_error()
+        try:
+            options = resolution_fields(body, request.headers.get("Idempotency-Key"))
+            normalized = normalize_webhook_payload(provider, body)
+            delivery_key = _webhook_replay_key(normalized["provider"], request, body) if verified_relay else None
+        except EnvelopeError as exc:
+            return envelope_error(str(exc))
         complaint = normalized.get("complaint") or ""
         if not str(complaint).strip():
             return JSONResponse(
@@ -438,17 +517,21 @@ def create_saas_router(client: Optional[TroyClient] = None, **_ignored: Any) -> 
             )
         troy_client = _client_for_body(body, _resolve_client(dep_client))
         context = dict(normalized.get("context") or {})
-        if isinstance(body.get("context"), dict):
-            context.update(body["context"])
+        context.update(options["context"] or {})
+        idempotency_key = options["idempotency_key"]
+        idempotency_key = idempotency_key or delivery_key
         result = await troy_client.resolve_ticket(
             str(complaint),
             customer_id=normalized.get("customer_id"),
             order_id=normalized.get("order_id"),
             context=context,
-            auto_execute=bool(body.get("auto_execute", body.get("autoExecute", True))),
-            dry_run=bool(body.get("dry_run", body.get("dryRun", False))),
+            transaction_id=options["transaction_id"] if options["transaction_id"] is not None else normalized.get("transaction_id"),
+            idempotency_key=idempotency_key,
+            _verified_delivery_key=delivery_key,
+            auto_execute=execution_flag(body, "auto_execute", "autoExecute", True),
+            dry_run=execution_flag(body, "dry_run", "dryRun", False),
         )
-        return {
+        response = {
             **result,
             "provider": normalized.get("provider") or provider,
             "normalized": normalized,
@@ -459,6 +542,11 @@ def create_saas_router(client: Optional[TroyClient] = None, **_ignored: Any) -> 
             "subject": normalized.get("subject"),
             "event_type": normalized.get("event_type"),
         }
+        if result.get("status") in {"delivery_in_progress", "action_in_progress"}:
+            return JSONResponse(status_code=409, headers={"Retry-After": "1"}, content=response)
+        if result.get("status") == "delivery_requires_reconciliation":
+            return JSONResponse(status_code=409, content=response)
+        return response
 
     return router
 

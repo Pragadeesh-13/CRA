@@ -171,3 +171,34 @@ def test_api_config_show_reasoning_get_and_post():
     )
     assert update_res.status_code == 200
     assert update_res.json()["showReasoning"] is True
+
+
+def test_reasoning_preference_is_scoped_to_the_signed_in_session(monkeypatch):
+    from app import main
+    from app.simulation.session_registry import SessionRegistry
+
+    monkeypatch.setattr(main.settings, "show_reasoning", False)
+    monkeypatch.setattr(main.guard, "_mode", "required")
+    registry = SessionRegistry(main.settings, main.session_registry.driver)
+    monkeypatch.setattr(main, "session_registry", registry)
+    alice = {"id": "reasoning-alice"}
+    bob = {"id": "reasoning-bob"}
+    tokens = [main.guard.create_session(identity) for identity in (alice, bob)]
+    a, b = [{"Authorization": f"Bearer {token}"} for token in tokens]
+    try:
+        with TestClient(app) as client:
+            changed = client.post("/api/config", headers=a, json={"provider": "lmstudio", "showReasoning": True})
+            assert changed.json()["showReasoning"] is True
+            assert client.get("/api/config", headers=b).json()["showReasoning"] is False
+            assert registry.resolve(alice).orchestrator.show_reasoning is True
+            assert registry.resolve(bob).orchestrator.show_reasoning is False
+            assert main.settings.show_reasoning is False
+
+            rejected = client.post("/api/config", headers=a, json={"provider": "invalid", "showReasoning": False})
+            assert rejected.status_code == 400
+            assert client.get("/api/config", headers=a).json()["showReasoning"] is True
+            changed = client.post("/api/config", headers=a, json={"provider": "lmstudio", "showReasoning": "false"})
+            assert changed.json()["showReasoning"] is False
+    finally:
+        for token in tokens:
+            main.guard.revoke_session(token)

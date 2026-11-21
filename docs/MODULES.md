@@ -295,7 +295,7 @@ Endpoints (the only three):
 
 | Method & path | Behaviour |
 |---|---|
-| `POST /api/v1/saas/resolve` | JSON resolution: accepts `complaint` (or `query`/`text`/`message`/`ticket`/`description`/`body`), `customer_id`, `order_id`, `context`, `auto_execute`, `dry_run`, and an optional per-request `config` override. Missing complaint → `400`. |
+| `POST /api/v1/saas/resolve` | JSON resolution: accepts `complaint` (or `query`/`text`/`message`/`ticket`/`description`/`body`), `customer_id`, `order_id`, `context`, `auto_execute`, `dry_run`, and an optional per-request `config` for product name, support email, domain, or branding. Missing complaint → `400`. |
 | `POST /api/v1/saas/webhooks/{provider}` | Normalises the provider payload, resolves it, and returns the resolution merged with `provider`, `normalized`, `complaint`, `customer_email`, `customer_name`, `subject`, and `event_type`. |
 | `GET /api/v1/saas/info` | Product name, capabilities (providers, tools, adapter type, categories, policies), and the endpoint list. |
 
@@ -420,9 +420,10 @@ Turns a complaint into a category, team, and SLA:
 - `predict_category(complaint)` / `triage_complaint(...)` (sync) and
   `async_predict_category` / `async_triage_complaint` (async) — ask the
   LLM driver for a structured triage report (predicted category,
-  confidence, entities, similar precedents, team, SLA), with a
-  deterministic heuristic fallback computed directly from category
-  defaults when the LLM is unavailable. Used by
+  confidence, entities, team, SLA), with a deterministic heuristic
+  fallback when the LLM is unavailable. Both paths attach static category examples by default. Set
+  `TROY_PRECEDENT_INDEX` to attach matches from a local resolved-ticket
+  FTS5 index instead. Run `python -m app.precedents --help` for import options. Used by
   `POST /api/cra/resolve` and `POST /api/cra/classify` in `app/main.py`.
 
 ---
@@ -435,7 +436,7 @@ Turns a complaint into a category, team, and SLA:
 - `app/http/sse_manager.py` — `SseManager`: fan-out of server-sent
   events to connected console clients.
 - `app/auth/` — `SessionGuard` (optional/required auth modes),
-  `KeyVault` (encrypted per-session LLM keys), `crypto` helpers.
+  `KeyVault` (process-local storage for per-session LLM keys), `crypto` helpers.
 - `app/prompts/` — ticket title/summary and policy prompt builders used
   by the orchestrator and triage.
 - `app/utils/` — `sanitizer` (model output cleanup), `json_extractor`

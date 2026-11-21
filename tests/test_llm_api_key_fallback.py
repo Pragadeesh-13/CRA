@@ -14,6 +14,7 @@ configured key, and that a request built with ``apiKey: ""`` authenticates
 against an auth-enforcing fake llama-server without MockDriver fallback.
 """
 
+import asyncio
 import json
 import threading
 import time
@@ -178,7 +179,7 @@ class TestFakeLlamaServerAuth:
                 assert res.json().get("ok") is True
 
                 # The vault must hold the *resolved* key/model, not "".
-                stored = key_vault._guest_slot
+                stored = asyncio.run(key_vault.get())
                 assert stored.get("apiKey") == FAKE_KEY
                 assert stored.get("model") == FAKE_MODEL
 
@@ -209,9 +210,57 @@ class TestFakeLlamaServerAuth:
                 },
             )
             assert res.status_code == 200
-            stored = key_vault._guest_slot
+            stored = asyncio.run(key_vault.get())
             assert stored.get("model") == FAKE_MODEL
             assert stored.get("apiKey") == FAKE_KEY
         finally:
             key_vault._guest_slot.clear()
             key_vault._guest_slot.update(guest_before)
+
+
+def test_console_provider_switch_keeps_key_fallback_provider_scoped(monkeypatch):
+    from app import main
+    from app.auth.key_vault import KeyVault
+    from app.simulation.session_registry import SessionRegistry
+
+    monkeypatch.setattr(main, "key_vault", KeyVault())
+    monkeypatch.setattr(main, "session_registry", SessionRegistry(settings, main.session_registry.driver))
+    monkeypatch.setattr(settings, "llm_provider", "lmstudio")
+    monkeypatch.setattr(settings, "llm_api_key", "local-server-fixture")
+    model_requests = []
+
+    def make_driver(provider, **kwargs):
+        class Driver:
+            async def fetch_models(self, api_key):
+                model_requests.append((provider, api_key))
+                return {"ok": True, "models": []}
+
+        return Driver()
+
+    monkeypatch.setattr(main, "create_driver", make_driver)
+    client = TestClient(app)
+    assert client.post("/api/config", json={
+        "provider": "openrouter", "model": "fixture-model", "apiKey": "openrouter-fixture",
+    }).json()["hasApiKey"] is True
+    for provider in ("anthropic", "openrouter", "lmstudio"):
+        assert client.get("/api/models", params={"provider": provider}).status_code == 200
+    assert model_requests == [
+        ("anthropic", ""), ("openrouter", "openrouter-fixture"), ("lmstudio", "local-server-fixture"),
+    ]
+
+    request = {"query": "Synthetic complaint", "provider": "anthropic", "model": "fixture-model", "apiKey": ""}
+    response = client.post("/api/next", json=request)
+    assert response.status_code == 400
+    assert response.json()["error"] == "API key has not been entered."
+    assert main.session_registry.default_session.task is None
+
+    saved = client.post("/api/config", json=request).json()
+    assert saved["hasApiKey"] is False
+    cfg = client.get("/api/config").json()
+    assert cfg["provider"] == "anthropic"
+    assert cfg["hasApiKey"] is False
+    assert cfg["maskedKey"] == ""
+
+    assert client.get("/api/models", params={"provider": "anthropic"},
+                      headers={"X-API-Key": "explicit-fixture"}).status_code == 200
+    assert model_requests[-1] == ("anthropic", "explicit-fixture")
